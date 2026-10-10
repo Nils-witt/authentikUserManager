@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -38,9 +37,7 @@ type Config struct {
 	ClientSecret string
 	// RedirectURL is this app's callback URL, ending in /auth/callback.
 	RedirectURL string
-	// AllowedGroups lists the authentik groups whose members may log in.
-	AllowedGroups []string
-	SessionTTL    time.Duration
+	SessionTTL  time.Duration
 }
 
 // Authenticator serves the /auth/ endpoints and guards other handlers.
@@ -48,7 +45,6 @@ type Authenticator struct {
 	oauth         oauth2.Config
 	verifier      *oidc.IDTokenVerifier
 	endSessionURL string
-	allowedGroups []string
 	sessions      *sessionStore
 	secure        bool
 	sessionCookie string
@@ -60,9 +56,6 @@ type Authenticator struct {
 // New discovers the provider's configuration. ctx must outlive the
 // Authenticator: go-oidc uses it to refresh the provider's signing keys.
 func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, error) {
-	if len(cfg.AllowedGroups) == 0 {
-		return nil, errors.New("auth: at least one allowed group is required")
-	}
 	redirect, err := url.Parse(cfg.RedirectURL)
 	if err != nil || !redirect.IsAbs() {
 		return nil, fmt.Errorf("auth: redirect url %q must be absolute", cfg.RedirectURL)
@@ -100,7 +93,6 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 		},
 		verifier:      provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
 		endSessionURL: meta.EndSessionEndpoint,
-		allowedGroups: slices.Clone(cfg.AllowedGroups),
 		sessions:      newSessionStore(cfg.SessionTTL),
 		secure:        secure,
 		sessionCookie: sessionCookie,
@@ -205,12 +197,6 @@ func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Login failed.", http.StatusBadGateway)
 		return
 	}
-	if !a.isAllowed(user.Groups) {
-		a.logger.WarnContext(r.Context(), "login denied: not in an allowed group", slog.String("username", user.Username))
-		http.Error(w, "Access denied: your account is not allowed to use this application.", http.StatusForbidden)
-		return
-	}
-
 	id := a.sessions.create(user, rawIDToken)
 	a.setCookie(w, a.sessionCookie, id, "/", 0)
 	a.logger.InfoContext(r.Context(), "login", slog.String("username", user.Username))
@@ -269,12 +255,6 @@ func (a *Authenticator) exchange(ctx context.Context, code string, st loginState
 		Email:    claims.Email,
 		Groups:   claims.Groups,
 	}, rawIDToken, nil
-}
-
-func (a *Authenticator) isAllowed(groups []string) bool {
-	return slices.ContainsFunc(groups, func(g string) bool {
-		return slices.Contains(a.allowedGroups, g)
-	})
 }
 
 // logout ends the local session. The response carries the provider's

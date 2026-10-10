@@ -26,8 +26,6 @@ type Config struct {
 	OIDCClientSecret string
 	// OIDCRedirectURL is this app's public callback URL, ending in /auth/callback.
 	OIDCRedirectURL string
-	// OIDCAllowedGroups lists the authentik groups whose members may log in.
-	OIDCAllowedGroups []string
 
 	// DatabaseURL is the PostgreSQL connection URL that stores the access rules.
 	DatabaseURL string
@@ -47,11 +45,10 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		ListenAddr:     getenv("LISTEN_ADDR"),
 		StaticDir:      getenv("STATIC_DIR"),
 
-		OIDCIssuer:        getenv("OIDC_ISSUER"),
-		OIDCClientID:      getenv("OIDC_CLIENT_ID"),
-		OIDCClientSecret:  getenv("OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:   getenv("OIDC_REDIRECT_URL"),
-		OIDCAllowedGroups: splitList(getenv("OIDC_ALLOWED_GROUPS")),
+		OIDCIssuer:       getenv("OIDC_ISSUER"),
+		OIDCClientID:     getenv("OIDC_CLIENT_ID"),
+		OIDCClientSecret: getenv("OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:  getenv("OIDC_REDIRECT_URL"),
 
 		DatabaseURL:       getenv("DATABASE_URL"),
 		AccessAdminGroups: splitList(getenv("ACCESS_ADMIN_GROUPS")),
@@ -74,9 +71,6 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		if r.value == "" {
 			errs = append(errs, fmt.Errorf("%s is required", r.name))
 		}
-	}
-	if len(cfg.OIDCAllowedGroups) == 0 {
-		errs = append(errs, errors.New("OIDC_ALLOWED_GROUPS is required (comma-separated authentik group names)"))
 	}
 	if len(cfg.AccessAdminGroups) == 0 {
 		errs = append(errs, errors.New("ACCESS_ADMIN_GROUPS is required (comma-separated authentik group names)"))

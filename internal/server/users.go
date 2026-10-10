@@ -25,6 +25,8 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		PageSize:       20,
 		Path:           q.Get("path"),
 		PathStartsWith: q.Get("path_startswith"),
+		// Only internal users are managed here; service accounts and external users are hidden.
+		Type: []authentik.UserType{authentik.UserTypeInternal},
 	}
 	var err error
 	if v := q.Get("page"); v != "" {
@@ -38,14 +40,6 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("page_size must be between 1 and %d", maxPageSize), nil)
 			return
 		}
-	}
-	for _, t := range q["type"] {
-		ut := authentik.UserType(t)
-		if !ut.Valid() {
-			writeError(w, http.StatusBadRequest, "unknown user type", nil)
-			return
-		}
-		params.Type = append(params.Type, ut)
 	}
 
 	scope, ok := s.scope(w, r)
@@ -67,14 +61,16 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Defense in depth: authentik silently ignores filters it does not know,
-	// so drop anything outside the scope even if the filters were not applied.
-	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool { return !scope.Allows(&u) })
+	// so drop anything outside the scope or not internal even if the filters were not applied.
+	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
+		return u.Type != authentik.UserTypeInternal || !scope.Allows(&u)
+	})
 	writeJSON(w, http.StatusOK, list)
 }
 
 // allowedUser loads the user with the {id} path value and checks that the
-// operator may manage it. Users outside the scope are reported as not found so
-// their existence is not revealed. It writes the error response when it returns false.
+// operator may manage it. Only internal users are managed. Users outside the
+// scope or of another type are reported as not found so their existence is not revealed. It writes the error response when it returns false.
 func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik.User, bool) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -89,7 +85,7 @@ func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik
 	if !ok {
 		return nil, false
 	}
-	if !scope.Allows(user) {
+	if user.Type != authentik.UserTypeInternal || !scope.Allows(user) {
 		s.audit(r, "access denied", slog.Int("user_id", id))
 		writeError(w, http.StatusNotFound, "user not found", nil)
 		return nil, false
@@ -98,6 +94,15 @@ func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik
 }
 
 func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	// Any authentik user may log in, so do not reveal the folders to operators without access.
+	if scope.Empty() {
+		writeJSON(w, http.StatusOK, map[string][]string{"paths": {}})
+		return
+	}
 	paths, err := s.users.ListUserPaths(r.Context())
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
@@ -137,7 +142,7 @@ func (in createUserInput) validate(scope access.Scope) (authentik.CreateUserRequ
 		Email:    in.Email,
 		IsActive: in.IsActive,
 		Path:     in.Path,
-		Type:     in.Type,
+		Type:     authentik.UserTypeInternal,
 	}
 	fields := map[string][]string{}
 	if req.Username == "" {
@@ -146,8 +151,8 @@ func (in createUserInput) validate(scope access.Scope) (authentik.CreateUserRequ
 	if req.Name == "" {
 		fields["name"] = []string{"Name is required."}
 	}
-	if req.Type != "" && !req.Type.Valid() {
-		fields["type"] = []string{"Unknown user type."}
+	if in.Type != "" && in.Type != authentik.UserTypeInternal {
+		fields["type"] = []string{"Only internal users can be managed."}
 	}
 	switch {
 	case in.Group == "" && !scope.All:
@@ -226,8 +231,9 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Type != nil && !req.Type.Valid() {
-		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"type": {"Unknown user type."}})
+	// Changing the type would turn the user into one this application no longer manages.
+	if req.Type != nil && *req.Type != authentik.UserTypeInternal {
+		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"type": {"Only internal users can be managed."}})
 		return
 	}
 

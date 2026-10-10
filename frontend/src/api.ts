@@ -4,13 +4,6 @@ export type UserType =
   | 'service_account'
   | 'internal_service_account'
 
-export const USER_TYPES: UserType[] = [
-  'internal',
-  'external',
-  'service_account',
-  'internal_service_account',
-]
-
 export interface User {
   pk: number
   uuid: string
@@ -45,7 +38,6 @@ export interface UserInput {
   email: string
   is_active: boolean
   path: string
-  type: UserType
 }
 
 export interface CreateUserInput extends UserInput {

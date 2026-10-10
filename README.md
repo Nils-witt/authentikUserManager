@@ -27,7 +27,6 @@ Set these environment variables (see `.env.example`):
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
 | `OIDC_REDIRECT_URL`  | yes   |                  | Public callback URL of this app, ending in `/auth/callback` |
-| `OIDC_ALLOWED_GROUPS` | yes  |                  | Comma-separated authentik groups whose members may log in |
 | `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, e.g. `postgres://am:secret@db:5432/am` |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 
@@ -106,7 +105,7 @@ the frontend, run `make build` again.
 
 - Users are filtered by the access rules on the server for every route; the UI only mirrors it.
   If the rules cannot be loaded, requests fail with 500 instead of falling back to more access.
-- Every `/api/` route requires a login. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Only members of `OIDC_ALLOWED_GROUPS` get in.
+- Every `/api/` route requires a login. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Any authentik user may log in; operators without an access rule see and manage no users.
 - The browser only holds an opaque session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` with a `__Host-` prefix when served over https). ID and access tokens never reach the browser.
 - Sessions live in memory for 8 hours. A restart logs everyone out, and you must run a single instance.
 - Cross-origin state-changing requests are rejected (Go's `http.CrossOriginProtection`).

@@ -12,7 +12,6 @@
 //	OIDC_CLIENT_ID       OIDC client ID (required)
 //	OIDC_CLIENT_SECRET   OIDC client secret (required)
 //	OIDC_REDIRECT_URL    public callback URL, ending in /auth/callback (required)
-//	OIDC_ALLOWED_GROUPS  comma-separated authentik groups allowed to log in (required)
 //
 //	DATABASE_URL         PostgreSQL URL storing the access rules (required)
 //	ACCESS_ADMIN_GROUPS  comma-separated authentik groups with full access that may edit
@@ -73,11 +72,10 @@ func run(logger *slog.Logger) error {
 	}
 
 	authn, err := auth.New(ctx, auth.Config{
-		IssuerURL:     cfg.OIDCIssuer,
-		ClientID:      cfg.OIDCClientID,
-		ClientSecret:  cfg.OIDCClientSecret,
-		RedirectURL:   cfg.OIDCRedirectURL,
-		AllowedGroups: cfg.OIDCAllowedGroups,
+		IssuerURL:    cfg.OIDCIssuer,
+		ClientID:     cfg.OIDCClientID,
+		ClientSecret: cfg.OIDCClientSecret,
+		RedirectURL:  cfg.OIDCRedirectURL,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("setting up oidc login: %w", err)

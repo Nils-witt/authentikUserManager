@@ -156,11 +156,10 @@ func newApp(t *testing.T, provider *fakeProvider) (string, *http.Client) {
 	t.Cleanup(app.Close)
 
 	a, err := auth.New(t.Context(), auth.Config{
-		IssuerURL:     provider.srv.URL,
-		ClientID:      clientID,
-		ClientSecret:  "secret",
-		RedirectURL:   app.URL + "/auth/callback",
-		AllowedGroups: []string{"admins"},
+		IssuerURL:    provider.srv.URL,
+		ClientID:     clientID,
+		ClientSecret: "secret",
+		RedirectURL:  app.URL + "/auth/callback",
 	}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
@@ -246,15 +245,16 @@ func TestLoginFlow(t *testing.T) {
 	}
 }
 
-func TestLoginFlow_deniedWithoutAllowedGroup(t *testing.T) {
+// Any authentik user may log in; the access rules decide what they may manage.
+func TestLoginFlow_withoutGroups(t *testing.T) {
 	t.Parallel()
-	appURL, client := newApp(t, newFakeProvider(t, []string{"users"}))
+	appURL, client := newApp(t, newFakeProvider(t, nil))
 
-	if code, _ := get(t, client, appURL+"/auth/login"); code != http.StatusForbidden {
-		t.Fatalf("login status = %d, want 403", code)
+	if code, _ := get(t, client, appURL+"/auth/login"); code != http.StatusNotFound {
+		t.Fatalf("login flow ended with %d, want 404 from /", code)
 	}
-	if code, _ := get(t, client, appURL+"/api/ping"); code != http.StatusUnauthorized {
-		t.Errorf("after denied login: status = %d, want 401", code)
+	if code, body := get(t, client, appURL+"/api/ping"); code != http.StatusOK || body != "pong alice" {
+		t.Errorf("after login: %d %q, want 200 \"pong alice\"", code, body)
 	}
 }
 

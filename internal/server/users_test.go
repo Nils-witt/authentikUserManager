@@ -58,7 +58,7 @@ func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*
 	if f.listed != nil {
 		return &authentik.UserList{Results: slices.Clone(f.listed)}, nil
 	}
-	return &authentik.UserList{Results: []authentik.User{{PK: 1, Username: "ann"}}}, nil
+	return &authentik.UserList{Results: []authentik.User{{PK: 1, Username: "ann", Type: authentik.UserTypeInternal}}}, nil
 }
 
 func (f *fakeUsers) ListUserPaths(context.Context) ([]string, error) {
@@ -77,7 +77,7 @@ func (f *fakeUsers) GetUser(_ context.Context, id int) (*authentik.User, error) 
 		u.PK = id
 		return &u, nil
 	}
-	return &authentik.User{PK: id}, nil
+	return &authentik.User{PK: id, Type: authentik.UserTypeInternal}, nil
 }
 
 func (f *fakeUsers) FindGroup(_ context.Context, name string) (*authentik.Group, error) {
@@ -212,7 +212,7 @@ func newScopedServer(t *testing.T, users server.UserService, groups ...string) *
 
 // member returns a user who belongs to the named groups.
 func member(groups ...string) *authentik.User {
-	u := &authentik.User{Username: "target"}
+	u := &authentik.User{Username: "target", Type: authentik.UserTypeInternal}
 	for _, g := range groups {
 		u.Groups = append(u.Groups, authentik.UserGroup{PK: "pk-" + g, Name: g})
 	}
@@ -266,7 +266,6 @@ func TestServer_listUsers(t *testing.T) {
 		{name: "search and paging", target: "/api/users?search=ann&page=2&page_size=50", wantStatus: http.StatusOK},
 		{name: "bad page", target: "/api/users?page=0", wantStatus: http.StatusBadRequest},
 		{name: "page size too large", target: "/api/users?page_size=1000", wantStatus: http.StatusBadRequest},
-		{name: "unknown type", target: "/api/users?type=admin", wantStatus: http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -288,6 +287,30 @@ func TestServer_listUsers_pathFilter(t *testing.T) {
 	}
 	if fake.listParams.Path != "users" || fake.listParams.PathStartsWith != "users/staff" {
 		t.Errorf("params = %+v, want Path=users PathStartsWith=users/staff", fake.listParams)
+	}
+}
+
+func TestServer_listUsers_internalOnly(t *testing.T) {
+	t.Parallel()
+	fake := &fakeUsers{listed: []authentik.User{
+		{PK: 1, Username: "ann", Type: authentik.UserTypeInternal},
+		{PK: 2, Username: "bot", Type: authentik.UserTypeServiceAccount},
+		{PK: 3, Username: "guest", Type: authentik.UserTypeExternal},
+	}}
+	rec := do(t, newServer(t, fake), http.MethodGet, "/api/users?type=external", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusOK, rec.Body)
+	}
+	if !slices.Equal(fake.listParams.Type, []authentik.UserType{authentik.UserTypeInternal}) {
+		t.Errorf("Type = %v, want [internal]", fake.listParams.Type)
+	}
+	var body authentik.UserList
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	// Non-internal users are dropped even when authentik ignored the filter.
+	if len(body.Results) != 1 || body.Results[0].Username != "ann" {
+		t.Errorf("results = %+v, want ann only", body.Results)
 	}
 }
 
@@ -324,6 +347,14 @@ func TestServer_listUserPaths(t *testing.T) {
 	}
 }
 
+func TestServer_listUserPaths_noAccess(t *testing.T) {
+	t.Parallel()
+	rec := do(t, newScopedServer(t, &fakeUsers{}, "guests"), http.MethodGet, "/api/users/paths", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"paths":[]`) {
+		t.Errorf("GET /api/users/paths = %d %s, want empty paths", rec.Code, rec.Body)
+	}
+}
+
 func TestServer_createUser(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -334,6 +365,13 @@ func TestServer_createUser(t *testing.T) {
 		wantField  string
 	}{
 		{name: "ok", body: `{"username":" ann ","name":"Ann"}`, wantStatus: http.StatusCreated},
+		{name: "internal type", body: `{"username":"ann","name":"Ann","type":"internal"}`, wantStatus: http.StatusCreated},
+		{
+			name:       "non-internal type",
+			body:       `{"username":"ann","name":"Ann","type":"service_account"}`,
+			wantStatus: http.StatusBadRequest,
+			wantField:  "type",
+		},
 		{name: "missing username", body: `{"name":"Ann"}`, wantStatus: http.StatusBadRequest, wantField: "username"},
 		{name: "unknown field", body: `{"username":"ann","name":"Ann","is_superuser":true}`, wantStatus: http.StatusBadRequest},
 		{name: "malformed json", body: `{`, wantStatus: http.StatusBadRequest},
@@ -377,6 +415,9 @@ func TestServer_createUser(t *testing.T) {
 			if tt.wantStatus == http.StatusCreated && fake.created.Username != "ann" {
 				t.Errorf("username = %q, want trimmed %q", fake.created.Username, "ann")
 			}
+			if tt.wantStatus == http.StatusCreated && fake.created.Type != authentik.UserTypeInternal {
+				t.Errorf("type = %q, want %q", fake.created.Type, authentik.UserTypeInternal)
+			}
 		})
 	}
 }
@@ -402,6 +443,8 @@ func TestServer_userByID(t *testing.T) {
 			wantStatus: http.StatusNotFound,
 		},
 		{name: "patch", method: http.MethodPatch, target: "/api/users/4", body: `{"is_active":false}`, wantStatus: http.StatusOK},
+		{name: "patch internal type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"internal"}`, wantStatus: http.StatusOK},
+		{name: "patch non-internal type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"external"}`, wantStatus: http.StatusBadRequest},
 		{name: "patch bad type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"root"}`, wantStatus: http.StatusBadRequest},
 		{name: "delete", method: http.MethodDelete, target: "/api/users/4", wantStatus: http.StatusNoContent},
 		{name: "password", method: http.MethodPost, target: "/api/users/4/password", body: `{"password":"s3cret!"}`, wantStatus: http.StatusNoContent},
@@ -544,6 +587,10 @@ func TestServer_userByID_scoped(t *testing.T) {
 	t.Parallel()
 	admin := member("staff")
 	admin.IsSuperuser = true
+	serviceAccount := member("staff")
+	serviceAccount.Type = authentik.UserTypeServiceAccount
+	external := member("staff")
+	external.Type = authentik.UserTypeExternal
 	requests := []struct{ method, target, body string }{
 		{http.MethodGet, "/api/users/4", ""},
 		{http.MethodPatch, "/api/users/4", `{"name":"x"}`},
@@ -561,6 +608,8 @@ func TestServer_userByID_scoped(t *testing.T) {
 		{name: "superuser for restricted operator", groups: []string{"helpdesk"}, target: admin, allowed: false},
 		{name: "superuser for full access", groups: []string{"admins"}, target: admin, allowed: true},
 		{name: "operator without rule", groups: []string{"guests"}, target: member("staff"), allowed: false},
+		{name: "service account for full access", groups: []string{"admins"}, target: serviceAccount, allowed: false},
+		{name: "external user for full access", groups: []string{"admins"}, target: external, allowed: false},
 	}
 	for _, tt := range tests {
 		for _, req := range requests {

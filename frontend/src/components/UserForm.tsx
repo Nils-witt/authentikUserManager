@@ -8,14 +8,7 @@ import Stack from '@mui/material/Stack'
 import Switch from '@mui/material/Switch'
 import TextField from '@mui/material/TextField'
 import { useState, type FormEvent } from 'react'
-import {
-  ApiError,
-  USER_TYPES,
-  type CreateUserInput,
-  type User,
-  type UserInput,
-  type UserType,
-} from '../api'
+import { ApiError, type CreateUserInput, type User, type UserInput } from '../api'
 import { Modal } from './Modal'
 
 interface UserFormProps {
@@ -36,7 +29,6 @@ export function UserForm({ user, defaultPath, groups, onSubmit, onClose }: UserF
     email: user?.email ?? '',
     is_active: user?.is_active ?? true,
     path: user?.path ?? defaultPath ?? 'users',
-    type: user?.type ?? 'internal',
   })
   const [group, setGroup] = useState(groups?.length === 1 ? groups[0] : '')
   const [error, setError] = useState<ApiError | null>(null)
@@ -123,19 +115,6 @@ export function UserForm({ user, defaultPath, groups, onSubmit, onClose }: UserF
                 ))}
               </TextField>
             )}
-            <TextField
-              select
-              label="Type"
-              value={input.type}
-              onChange={(e) => set('type', e.target.value as UserType)}
-              {...fieldError('type')}
-            >
-              {USER_TYPES.map((t) => (
-                <MenuItem key={t} value={t}>
-                  {t.replaceAll('_', ' ')}
-                </MenuItem>
-              ))}
-            </TextField>
             <FormControlLabel
               label="Active"
               control={
