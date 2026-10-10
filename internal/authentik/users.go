@@ -297,3 +297,18 @@ func (c *Client) RemoveUserFromGroup(ctx context.Context, groupPK string, userID
 	}
 	return nil
 }
+
+// SendRecoveryEmail emails the user with primary key id a link to recover their
+// account, using the email stage with UUID emailStage. authentik refuses it
+// with a 400 error when the user has no email address or the brand has no recovery flow.
+func (c *Client) SendRecoveryEmail(ctx context.Context, id int, emailStage string) error {
+	body := struct {
+		EmailStage string `json:"email_stage"`
+	}{EmailStage: emailStage}
+	// Older authentik versions read the stage from the query, newer ones from the body.
+	q := url.Values{"email_stage": {emailStage}}
+	if err := c.do(ctx, http.MethodPost, userPath(id)+"recovery_email/", q, body, nil); err != nil {
+		return fmt.Errorf("sending recovery email to user %d: %w", id, err)
+	}
+	return nil
+}

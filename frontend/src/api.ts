@@ -53,6 +53,8 @@ export interface Access {
   groups: string[]
   /** The operator may edit the access rules. */
   admin: boolean
+  /** Password recovery emails can be sent. */
+  recovery_email: boolean
 }
 
 /** Members of operator_group may manage members of target_groups ('*': all users). */
@@ -166,6 +168,10 @@ export const updateUser = (id: number, input: Partial<UserInput>) =>
 /** Replaces the user's groups with the named ones. */
 export const setUserGroups = (id: number, groups: string[]) =>
   request<User>('PUT', `/api/users/${id}/groups`, { groups })
+
+/** Emails the user a link to recover their account and set a new password. */
+export const sendRecoveryEmail = (id: number) =>
+  request<void>('POST', `/api/users/${id}/recovery-email`)
 
 export const deleteUser = (id: number) => request<void>('DELETE', `/api/users/${id}`)
 

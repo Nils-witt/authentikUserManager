@@ -32,6 +32,7 @@ type UserService interface {
 	FindGroup(ctx context.Context, name string) (*authentik.Group, error)
 	AddUserToGroup(ctx context.Context, groupPK string, userID int) error
 	RemoveUserFromGroup(ctx context.Context, groupPK string, userID int) error
+	SendRecoveryEmail(ctx context.Context, id int, emailStage string) error
 	ListGroups(ctx context.Context, search string) ([]authentik.Group, error)
 }
 
@@ -74,6 +75,9 @@ type Deps struct {
 	Logger *slog.Logger
 	// Static, when non-nil, is the built frontend.
 	Static fs.FS
+	// RecoveryEmailStage is the UUID of the email stage that sends password
+	// recovery emails. When empty, sending them is disabled.
+	RecoveryEmailStage string
 }
 
 // Server is the HTTP handler for the application.
@@ -82,6 +86,8 @@ type Server struct {
 	policy Policy
 	rules  RuleStore
 	logger *slog.Logger
+	// recoveryEmailStage is the email stage for recovery emails; empty disables them.
+	recoveryEmailStage string
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
@@ -91,7 +97,13 @@ type Server struct {
 // When d.Static is non-nil it is served for all other paths, falling back to
 // index.html so client-side routing works; the SPA holds no data itself.
 func New(d Deps) *Server {
-	s := &Server{users: d.Users, policy: d.Policy, rules: d.Rules, logger: d.Logger}
+	s := &Server{
+		users:              d.Users,
+		policy:             d.Policy,
+		rules:              d.Rules,
+		logger:             d.Logger,
+		recoveryEmailStage: d.RecoveryEmailStage,
+	}
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/access", s.getAccess)
@@ -106,6 +118,7 @@ func New(d Deps) *Server {
 	api.HandleFunc("PATCH /api/users/{id}", s.updateUser)
 	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteUser))
 	api.HandleFunc("PUT /api/users/{id}/groups", s.setUserGroups)
+	api.HandleFunc("POST /api/users/{id}/recovery-email", s.sendRecoveryEmail)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
 	})
@@ -197,7 +210,13 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 		access.Scope
 		// Admin is set when the operator may edit the access rules and delete users.
 		Admin bool `json:"admin"`
-	}{Scope: scope, Admin: s.policy.IsAdmin(operatorGroups(r))})
+		// RecoveryEmail is set when password recovery emails can be sent.
+		RecoveryEmail bool `json:"recovery_email"`
+	}{
+		Scope:         scope,
+		Admin:         s.policy.IsAdmin(operatorGroups(r)),
+		RecoveryEmail: s.recoveryEmailStage != "",
+	})
 }
 
 // requireAdmin restricts h to access administrators, who may edit the access rules and delete users.

@@ -11,7 +11,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete. Group-based access rules limit which users each operator may manage.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Group-based access rules limit which users each operator may manage.
 
 ## Configuration
 
@@ -23,6 +23,7 @@ Set these environment variables (see `.env.example`):
 | `AUTHENTIK_TOKEN` | yes      |                  | API token (Directory → Tokens, intent "API")            |
 | `LISTEN_ADDR`     | no       | `127.0.0.1:8080` | Address the server listens on                           |
 | `STATIC_DIR`      | no       |                  | Serve the frontend from this directory instead of the embedded build |
+| `AUTHENTIK_RECOVERY_EMAIL_STAGE` | no |              | UUID of the email stage that sends [recovery emails](#password-recovery-emails); disabled when unset |
 | `OIDC_ISSUER`     | yes      |                  | Issuer of the OIDC provider, `https://<host>/application/o/<slug>/` |
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
@@ -31,6 +32,19 @@ Set these environment variables (see `.env.example`):
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 
 The token's user needs permission to view, add, change and delete users, and to add users to groups and remove them.
+
+## Password recovery emails
+
+Operators can send a user an email with a link to set a new password (the envelope icon in
+the user list). authentik sends it through its recovery API, so it needs:
+
+- an **email stage** (Flows and Stages → Stages); set its UUID as `AUTHENTIK_RECOVERY_EMAIL_STAGE`,
+- a **recovery flow** on the brand (System → Brands), which the link opens,
+- the permission "Can reset user password" for the token's user,
+- an email address on the target user.
+
+When `AUTHENTIK_RECOVERY_EMAIL_STAGE` is unset the action is hidden. Operators can send the
+email to every user they may manage.
 
 ## Access rules
 

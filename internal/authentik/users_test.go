@@ -336,3 +336,26 @@ func TestClient_groupMembership(t *testing.T) {
 		})
 	}
 }
+
+func TestClient_SendRecoveryEmail(t *testing.T) {
+	t.Parallel()
+	const stage = "5f2e8a3c-1b4d-4e6f-9a7b-0c1d2e3f4a5b"
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v3/core/users/3/recovery_email/" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("email_stage"); got != stage {
+			t.Errorf("query email_stage = %q, want %q", got, stage)
+		}
+		var body struct {
+			EmailStage string `json:"email_stage"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.EmailStage != stage {
+			t.Errorf("body email_stage = %q (err %v), want %q", body.EmailStage, err, stage)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := c.SendRecoveryEmail(t.Context(), 3, stage); err != nil {
+		t.Fatalf("SendRecoveryEmail: %v", err)
+	}
+}

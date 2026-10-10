@@ -11,6 +11,8 @@ interface ConfirmOptions {
   message: ReactNode
   /** Label of the confirm button, e.g. "Delete". */
   confirmLabel: string
+  /** Color of the confirm button; destructive ("error") by default. */
+  color?: 'error' | 'primary'
 }
 
 interface Pending extends ConfirmOptions {
@@ -49,7 +51,7 @@ export function useConfirm(): [(options: ConfirmOptions) => Promise<boolean>, Re
         <Button onClick={() => close(false)} autoFocus>
           Cancel
         </Button>
-        <Button color="error" variant="contained" onClick={() => close(true)}>
+        <Button color={pending?.color ?? 'error'} variant="contained" onClick={() => close(true)}>
           {pending?.confirmLabel}
         </Button>
       </DialogActions>

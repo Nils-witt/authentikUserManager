@@ -50,7 +50,9 @@ type fakeUsers struct {
 	added   []string
 	removed []string
 	mutated bool
-	err     error
+	// recoveryStage records the email stage passed to SendRecoveryEmail.
+	recoveryStage string
+	err           error
 }
 
 func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*authentik.UserList, error) {
@@ -134,6 +136,12 @@ func (f *fakeUsers) RemoveUserFromGroup(_ context.Context, groupPK string, _ int
 	return f.err
 }
 
+func (f *fakeUsers) SendRecoveryEmail(_ context.Context, _ int, emailStage string) error {
+	f.mutated = true
+	f.recoveryStage = emailStage
+	return f.err
+}
+
 func do(t *testing.T, h http.Handler, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader(body))
@@ -205,8 +213,13 @@ func newTestServer(t *testing.T, users server.UserService, rules *fakeRules, aut
 		Policy: policy,
 		Rules:  rules,
 		Logger: slog.New(slog.DiscardHandler),
+
+		RecoveryEmailStage: testRecoveryStage,
 	})
 }
+
+// testRecoveryStage is the email stage configured by newTestServer.
+const testRecoveryStage = "5f2e8a3c-1b4d-4e6f-9a7b-0c1d2e3f4a5b"
 
 // newServer returns a server for an access administrator (full access).
 func newServer(t *testing.T, users server.UserService) *server.Server {
@@ -222,7 +235,7 @@ func newScopedServer(t *testing.T, users server.UserService, groups ...string) *
 
 // member returns a user who belongs to the named groups.
 func member(groups ...string) *authentik.User {
-	u := &authentik.User{Username: "target", Type: authentik.UserTypeInternal}
+	u := &authentik.User{Username: "target", Email: "target@example.com", Type: authentik.UserTypeInternal}
 	for _, g := range groups {
 		u.Groups = append(u.Groups, authentik.UserGroup{PK: "pk-" + g, Name: g})
 	}
@@ -629,6 +642,7 @@ func TestServer_userByID_scoped(t *testing.T) {
 	requests := []struct{ method, target, body string }{
 		{http.MethodGet, "/api/users/4", ""},
 		{http.MethodPatch, "/api/users/4", `{"name":"x"}`},
+		{http.MethodPost, "/api/users/4/recovery-email", ""},
 	}
 	tests := []struct {
 		name    string
@@ -870,5 +884,65 @@ func TestServer_setUserGroups_outOfScope(t *testing.T) {
 	rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodPut, "/api/users/4/groups", `{"groups":["other","staff"]}`)
 	if rec.Code != http.StatusNotFound || fake.mutated {
 		t.Errorf("status = %d, mutated = %v, want 404 without change", rec.Code, fake.mutated)
+	}
+}
+
+func TestServer_sendRecoveryEmail(t *testing.T) {
+	t.Parallel()
+	noEmail := member("staff")
+	noEmail.Email = ""
+	tests := []struct {
+		name       string
+		target     *authentik.User
+		err        error
+		wantStatus int
+	}{
+		{name: "sent", target: member("staff"), wantStatus: http.StatusNoContent},
+		{name: "no email address", target: noEmail, wantStatus: http.StatusBadRequest},
+		{
+			name:       "no recovery flow",
+			target:     member("staff"),
+			err:        &authentik.APIError{StatusCode: http.StatusBadRequest, Detail: "No recovery flow set."},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{user: tt.target, err: tt.err}
+			rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodPost, "/api/users/4/recovery-email", "")
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus == http.StatusNoContent && fake.recoveryStage != testRecoveryStage {
+				t.Errorf("email stage = %q, want %q", fake.recoveryStage, testRecoveryStage)
+			}
+		})
+	}
+}
+
+func TestServer_sendRecoveryEmail_disabled(t *testing.T) {
+	t.Parallel()
+	rules := newFakeRules()
+	policy, err := access.NewPolicy([]string{"admins"}, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeUsers{user: member("staff")}
+	h := server.New(server.Deps{
+		Users:  fake,
+		Auth:   fakeAuth{groups: []string{"admins"}},
+		Policy: policy,
+		Rules:  rules,
+		Logger: slog.New(slog.DiscardHandler),
+	})
+
+	rec := do(t, h, http.MethodPost, "/api/users/4/recovery-email", "")
+	if rec.Code != http.StatusNotImplemented || fake.mutated {
+		t.Errorf("status = %d, mutated = %v, want 501 without sending", rec.Code, fake.mutated)
+	}
+	rec = do(t, h, http.MethodGet, "/api/access", "")
+	if !strings.Contains(rec.Body.String(), `"recovery_email":false`) {
+		t.Errorf("GET /api/access = %s, want recovery_email false", rec.Body)
 	}
 }

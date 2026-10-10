@@ -3,6 +3,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import DeleteIcon from '@mui/icons-material/Delete'
 import EditIcon from '@mui/icons-material/Edit'
 import LogoutIcon from '@mui/icons-material/Logout'
+import MailLockIcon from '@mui/icons-material/MailLock'
 import SearchIcon from '@mui/icons-material/Search'
 import Alert from '@mui/material/Alert'
 import AppBar from '@mui/material/AppBar'
@@ -217,6 +218,22 @@ function UserAdmin({ me }: { me: Me }) {
     }
   }
 
+  async function sendRecovery(user: User) {
+    const ok = await confirm({
+      title: `Send recovery email to ${user.username}?`,
+      message: `${user.email} receives a link to set a new password.`,
+      confirmLabel: 'Send',
+      color: 'primary',
+    })
+    if (!ok) return
+    try {
+      await api.sendRecoveryEmail(user.pk)
+      done(`Recovery email sent to ${user.email}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function remove(user: User) {
     const ok = await confirm({
       title: `Delete ${user.username}?`,
@@ -395,6 +412,19 @@ function UserAdmin({ me }: { me: Me }) {
                             )}
                           </IconButton>
                         </Tooltip>
+                        {access?.recovery_email && (
+                          <Tooltip title={user.email ? 'Send recovery email' : 'No email address'}>
+                            <span>
+                              <IconButton
+                                size="small"
+                                disabled={!user.email}
+                                onClick={() => void sendRecovery(user)}
+                              >
+                                <MailLockIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        )}
                         {isAdmin && (
                           <Tooltip title="Delete">
                             <IconButton size="small" color="error" onClick={() => void remove(user)}>

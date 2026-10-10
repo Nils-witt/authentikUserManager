@@ -18,6 +18,9 @@ type Config struct {
 	ListenAddr string
 	// StaticDir, when set, is served as the frontend instead of the embedded build.
 	StaticDir string
+	// RecoveryEmailStage is the UUID of the authentik email stage that sends
+	// password recovery emails. When empty, sending them is disabled.
+	RecoveryEmailStage string
 
 	// OIDCIssuer is the issuer URL of the authentik OAuth2/OIDC provider,
 	// e.g. https://sso.example.com/application/o/authentik-manager/.
@@ -44,6 +47,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		AuthentikToken: getenv("AUTHENTIK_TOKEN"),
 		ListenAddr:     getenv("LISTEN_ADDR"),
 		StaticDir:      getenv("STATIC_DIR"),
+
+		RecoveryEmailStage: strings.TrimSpace(getenv("AUTHENTIK_RECOVERY_EMAIL_STAGE")),
 
 		OIDCIssuer:       getenv("OIDC_ISSUER"),
 		OIDCClientID:     getenv("OIDC_CLIENT_ID"),

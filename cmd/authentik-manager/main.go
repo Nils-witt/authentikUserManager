@@ -7,6 +7,8 @@
 //	AUTHENTIK_TOKEN  authentik API token (required)
 //	LISTEN_ADDR      listen address (default 127.0.0.1:8080)
 //	STATIC_DIR       serve the frontend from this directory instead of the embedded build (optional)
+//	AUTHENTIK_RECOVERY_EMAIL_STAGE  UUID of the email stage for password recovery emails;
+//	                                sending them is disabled when unset (optional)
 //
 //	OIDC_ISSUER          issuer URL of the authentik OIDC provider (required)
 //	OIDC_CLIENT_ID       OIDC client ID (required)
@@ -100,6 +102,8 @@ func run(logger *slog.Logger) error {
 			Rules:  rules,
 			Logger: logger,
 			Static: static,
+
+			RecoveryEmailStage: cfg.RecoveryEmailStage,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

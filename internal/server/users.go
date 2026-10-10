@@ -363,6 +363,28 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// sendRecoveryEmail emails the user a link to recover their account and set a new password.
+func (s *Server) sendRecoveryEmail(w http.ResponseWriter, r *http.Request) {
+	if s.recoveryEmailStage == "" {
+		writeError(w, http.StatusNotImplemented, "recovery emails are not configured", nil)
+		return
+	}
+	user, _, ok := s.allowedUser(w, r)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(user.Email) == "" {
+		writeError(w, http.StatusBadRequest, "the user has no email address", nil)
+		return
+	}
+	if err := s.users.SendRecoveryEmail(r.Context(), user.PK, s.recoveryEmailStage); err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	s.audit(r, "recovery email sent", slog.Int("user_id", user.PK))
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // pathID parses the {id} path segment, writing a 400 response when invalid.
 func pathID(w http.ResponseWriter, r *http.Request) (int, bool) {
 	id, err := strconv.Atoi(r.PathValue("id"))
