@@ -19,6 +19,8 @@ func validEnv(overrides map[string]string) map[string]string {
 		"OIDC_CLIENT_SECRET":  "secret",
 		"OIDC_REDIRECT_URL":   "https://am.example.com/auth/callback",
 		"OIDC_ALLOWED_GROUPS": "admins, helpdesk ,",
+		"DATABASE_URL":        "postgres://am@localhost/am",
+		"ACCESS_ADMIN_GROUPS": "admins",
 	}
 	maps.Copy(env, overrides)
 	return env
@@ -38,6 +40,8 @@ func TestFromEnv(t *testing.T) {
 		{name: "missing oidc client secret", env: validEnv(map[string]string{"OIDC_CLIENT_SECRET": ""}), wantErr: true},
 		{name: "blank allowed groups", env: validEnv(map[string]string{"OIDC_ALLOWED_GROUPS": " , "}), wantErr: true},
 		{name: "missing static dir", env: validEnv(map[string]string{"STATIC_DIR": "/does/not/exist"}), wantErr: true},
+		{name: "missing database url", env: validEnv(map[string]string{"DATABASE_URL": ""}), wantErr: true},
+		{name: "blank admin groups", env: validEnv(map[string]string{"ACCESS_ADMIN_GROUPS": " , "}), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

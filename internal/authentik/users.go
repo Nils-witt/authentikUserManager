@@ -45,6 +45,30 @@ type User struct {
 	LastLogin   *time.Time     `json:"last_login"`
 	DateJoined  time.Time      `json:"date_joined"`
 	Attributes  map[string]any `json:"attributes"`
+	// Groups are the groups the user is a direct member of.
+	Groups []UserGroup `json:"groups_obj"`
+}
+
+// UserGroup is a group as embedded in a User.
+type UserGroup struct {
+	PK   string `json:"pk"`
+	Name string `json:"name"`
+}
+
+// GroupNames returns the names of the user's groups.
+func (u *User) GroupNames() []string {
+	names := make([]string, len(u.Groups))
+	for i, g := range u.Groups {
+		names[i] = g.Name
+	}
+	return names
+}
+
+// Group is the subset of authentik's Group serializer this application uses.
+type Group struct {
+	PK          string `json:"pk"`
+	Name        string `json:"name"`
+	IsSuperuser bool   `json:"is_superuser"`
 }
 
 // Pagination is authentik's pagination envelope.
@@ -75,6 +99,10 @@ type ListUsersParams struct {
 	Path string
 	// PathStartsWith matches users whose path has this prefix, e.g. a folder and its subfolders.
 	PathStartsWith string
+	// GroupsByName matches users who are a member of any of these groups.
+	GroupsByName []string
+	// IsSuperuser, when non-nil, matches only superusers (true) or only other users (false).
+	IsSuperuser *bool
 }
 
 func (p ListUsersParams) values() url.Values {
@@ -100,6 +128,12 @@ func (p ListUsersParams) values() url.Values {
 	if p.PathStartsWith != "" {
 		q.Set("path_startswith", p.PathStartsWith)
 	}
+	for _, g := range p.GroupsByName {
+		q.Add("groups_by_name", g)
+	}
+	if p.IsSuperuser != nil {
+		q.Set("is_superuser", strconv.FormatBool(*p.IsSuperuser))
+	}
 	return q
 }
 
@@ -111,6 +145,8 @@ type CreateUserRequest struct {
 	IsActive *bool    `json:"is_active,omitempty"`
 	Path     string   `json:"path,omitempty"`
 	Type     UserType `json:"type,omitempty"`
+	// Groups lists the primary keys of the groups the new user joins.
+	Groups []string `json:"groups,omitempty"`
 }
 
 // UpdateUserRequest is a partial update; nil fields are left unchanged.
@@ -151,6 +187,49 @@ func (c *Client) ListUserPaths(ctx context.Context) ([]string, error) {
 		out.Paths = []string{}
 	}
 	return out.Paths, nil
+}
+
+// FindGroup returns the group named name, or an error matching ErrNotFound.
+func (c *Client) FindGroup(ctx context.Context, name string) (*Group, error) {
+	q := url.Values{"name": {name}, "include_users": {"false"}}
+	var out struct {
+		Results []Group `json:"results"`
+	}
+	if err := c.do(ctx, http.MethodGet, "core/groups/", q, nil, &out); err != nil {
+		return nil, fmt.Errorf("finding group %q: %w", name, err)
+	}
+	// The name filter is exact, but guard against an older authentik ignoring it.
+	for _, g := range out.Results {
+		if g.Name == name {
+			return &g, nil
+		}
+	}
+	return nil, fmt.Errorf("finding group %q: %w", name, ErrNotFound)
+}
+
+// maxGroupResults bounds ListGroups; it serves suggestions, not a full listing.
+const maxGroupResults = 100
+
+// ListGroups returns up to 100 groups whose name matches search (all when empty), ordered by name.
+func (c *Client) ListGroups(ctx context.Context, search string) ([]Group, error) {
+	q := url.Values{
+		"ordering":      {"name"},
+		"page_size":     {strconv.Itoa(maxGroupResults)},
+		"include_users": {"false"},
+	}
+	if search != "" {
+		q.Set("search", search)
+	}
+	var out struct {
+		Results []Group `json:"results"`
+	}
+	if err := c.do(ctx, http.MethodGet, "core/groups/", q, nil, &out); err != nil {
+		return nil, fmt.Errorf("listing groups: %w", err)
+	}
+	if out.Results == nil {
+		out.Results = []Group{}
+	}
+	return out.Results, nil
 }
 
 // GetUser returns the user with primary key id.

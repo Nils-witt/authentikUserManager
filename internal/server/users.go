@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
+	"authentikManager/internal/access"
 	"authentikManager/internal/authentik"
 )
 
@@ -46,12 +48,53 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		params.Type = append(params.Type, ut)
 	}
 
+	scope, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if scope.Empty() {
+		writeJSON(w, http.StatusOK, authentik.UserList{Results: []authentik.User{}})
+		return
+	}
+	if !scope.All {
+		params.GroupsByName = scope.Groups
+		params.IsSuperuser = new(false)
+	}
+
 	list, err := s.users.ListUsers(r.Context(), params)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
+	// Defense in depth: authentik silently ignores filters it does not know,
+	// so drop anything outside the scope even if the filters were not applied.
+	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool { return !scope.Allows(&u) })
 	writeJSON(w, http.StatusOK, list)
+}
+
+// allowedUser loads the user with the {id} path value and checks that the
+// operator may manage it. Users outside the scope are reported as not found so
+// their existence is not revealed. It writes the error response when it returns false.
+func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik.User, bool) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return nil, false
+	}
+	user, err := s.users.GetUser(r.Context(), id)
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return nil, false
+	}
+	scope, ok := s.scope(w, r)
+	if !ok {
+		return nil, false
+	}
+	if !scope.Allows(user) {
+		s.audit(r, "access denied", slog.Int("user_id", id))
+		writeError(w, http.StatusNotFound, "user not found", nil)
+		return nil, false
+	}
+	return user, true
 }
 
 func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
@@ -64,25 +107,38 @@ func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	user, ok := s.allowedUser(w, r)
 	if !ok {
-		return
-	}
-	user, err := s.users.GetUser(r.Context(), id)
-	if err != nil {
-		s.writeUpstreamError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
 }
 
-func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
-	var req authentik.CreateUserRequest
-	if !decodeJSON(w, r, &req) {
-		return
+// createUserInput is the body of POST /api/users. It is decoded separately from
+// authentik.CreateUserRequest so clients cannot pass arbitrary group keys.
+type createUserInput struct {
+	Username string             `json:"username"`
+	Name     string             `json:"name"`
+	Email    string             `json:"email"`
+	IsActive *bool              `json:"is_active"`
+	Path     string             `json:"path"`
+	Type     authentik.UserType `json:"type"`
+	// Group is the name of a group the new user joins. Operators with
+	// restricted access must name one of their target groups.
+	Group string `json:"group"`
+}
+
+// validate checks the input against the operator's scope and returns the
+// authentik request, or the validation messages per field. in.Group must be trimmed.
+func (in createUserInput) validate(scope access.Scope) (authentik.CreateUserRequest, map[string][]string) {
+	req := authentik.CreateUserRequest{
+		Username: strings.TrimSpace(in.Username),
+		Name:     strings.TrimSpace(in.Name),
+		Email:    in.Email,
+		IsActive: in.IsActive,
+		Path:     in.Path,
+		Type:     in.Type,
 	}
-	req.Username = strings.TrimSpace(req.Username)
-	req.Name = strings.TrimSpace(req.Name)
 	fields := map[string][]string{}
 	if req.Username == "" {
 		fields["username"] = []string{"Username is required."}
@@ -93,9 +149,41 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	if req.Type != "" && !req.Type.Valid() {
 		fields["type"] = []string{"Unknown user type."}
 	}
+	switch {
+	case in.Group == "" && !scope.All:
+		fields["group"] = []string{"Group is required."}
+	case in.Group != "" && !scope.HasGroup(in.Group):
+		fields["group"] = []string{"You may not add users to this group."}
+	}
+	return req, fields
+}
+
+func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if scope.Empty() {
+		writeError(w, http.StatusForbidden, "you may not manage any users", nil)
+		return
+	}
+	var in createUserInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	in.Group = strings.TrimSpace(in.Group)
+	req, fields := in.validate(scope)
 	if len(fields) > 0 {
 		writeError(w, http.StatusBadRequest, "validation failed", fields)
 		return
+	}
+
+	if in.Group != "" {
+		group, ok := s.findGroup(w, r, in.Group, scope)
+		if !ok {
+			return
+		}
+		req.Groups = []string{group.PK}
 	}
 
 	user, err := s.users.CreateUser(r.Context(), req)
@@ -107,11 +195,33 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, user)
 }
 
+// findGroup resolves the group a new user joins, writing the error response
+// when it returns false.
+func (s *Server) findGroup(w http.ResponseWriter, r *http.Request, name string, scope access.Scope) (*authentik.Group, bool) {
+	group, err := s.users.FindGroup(r.Context(), name)
+	if errors.Is(err, authentik.ErrNotFound) {
+		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"group": {"Unknown group."}})
+		return nil, false
+	}
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return nil, false
+	}
+	// A superuser group would create an administrator the operator could not manage.
+	if group.IsSuperuser && !scope.All {
+		writeError(w, http.StatusBadRequest, "validation failed",
+			map[string][]string{"group": {"You may not add users to an administrator group."}})
+		return nil, false
+	}
+	return group, true
+}
+
 func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	target, ok := s.allowedUser(w, r)
 	if !ok {
 		return
 	}
+	id := target.PK
 	var req authentik.UpdateUserRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -131,10 +241,11 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	target, ok := s.allowedUser(w, r)
 	if !ok {
 		return
 	}
+	id := target.PK
 	if err := s.users.DeleteUser(r.Context(), id); err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
@@ -144,10 +255,11 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setPassword(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r)
+	target, ok := s.allowedUser(w, r)
 	if !ok {
 		return
 	}
+	id := target.PK
 	var req struct {
 		Password string `json:"password"`
 	}

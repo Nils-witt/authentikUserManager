@@ -5,7 +5,10 @@ BIN     := bin/authentik-manager
 # Vite build output, embedded into the binary by internal/web.
 DIST    := internal/web/dist
 
-.PHONY: all build build-backend build-frontend dev-backend dev-frontend run test lint fmt vuln hooks clean
+.PHONY: all build build-backend build-frontend dev-backend dev-frontend dev-db run test test-integration lint fmt vuln hooks clean
+
+# Throwaway PostgreSQL for test-integration.
+TEST_PG := authentik-manager-test-pg
 
 all: build
 
@@ -29,6 +32,10 @@ dev-backend: $(DIST)/index.html
 dev-frontend:
 	cd frontend && npm run dev
 
+## Start PostgreSQL for development (compose.yaml).
+dev-db:
+	docker compose up -d db
+
 ## Build and run the binary with the embedded frontend.
 run: build
 	./$(BIN)
@@ -36,6 +43,14 @@ run: build
 test: $(DIST)/index.html
 	go vet $(GO_PKGS)
 	go test -race $(GO_PKGS)
+
+## Run all tests, including the PostgreSQL ones, against a temporary container.
+test-integration: $(DIST)/index.html
+	docker run -d --rm --name $(TEST_PG) -e POSTGRES_PASSWORD=test -e POSTGRES_DB=am_test \
+		-p 127.0.0.1:55433:5432 postgres:17-alpine
+	until docker exec $(TEST_PG) pg_isready -h 127.0.0.1 -U postgres -d am_test >/dev/null 2>&1; do sleep 1; done
+	TEST_DATABASE_URL='postgres://postgres:test@127.0.0.1:55433/am_test?sslmode=disable' \
+		go test -race -count=1 $(GO_PKGS); status=$$?; docker stop $(TEST_PG) >/dev/null; exit $$status
 
 lint: $(DIST)/index.html
 	golangci-lint run $(GO_PKGS)

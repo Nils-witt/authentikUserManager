@@ -28,6 +28,12 @@ type Config struct {
 	OIDCRedirectURL string
 	// OIDCAllowedGroups lists the authentik groups whose members may log in.
 	OIDCAllowedGroups []string
+
+	// DatabaseURL is the PostgreSQL connection URL that stores the access rules.
+	DatabaseURL string
+	// AccessAdminGroups lists the groups whose members have full access and may
+	// edit the access rules.
+	AccessAdminGroups []string
 }
 
 const defaultListenAddr = "127.0.0.1:8080"
@@ -46,6 +52,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		OIDCClientSecret:  getenv("OIDC_CLIENT_SECRET"),
 		OIDCRedirectURL:   getenv("OIDC_REDIRECT_URL"),
 		OIDCAllowedGroups: splitList(getenv("OIDC_ALLOWED_GROUPS")),
+
+		DatabaseURL:       getenv("DATABASE_URL"),
+		AccessAdminGroups: splitList(getenv("ACCESS_ADMIN_GROUPS")),
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListenAddr
@@ -59,6 +68,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		{"OIDC_CLIENT_ID", cfg.OIDCClientID},
 		{"OIDC_CLIENT_SECRET", cfg.OIDCClientSecret},
 		{"OIDC_REDIRECT_URL", cfg.OIDCRedirectURL},
+		{"DATABASE_URL", cfg.DatabaseURL},
 	}
 	for _, r := range required {
 		if r.value == "" {
@@ -67,6 +77,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.OIDCAllowedGroups) == 0 {
 		errs = append(errs, errors.New("OIDC_ALLOWED_GROUPS is required (comma-separated authentik group names)"))
+	}
+	if len(cfg.AccessAdminGroups) == 0 {
+		errs = append(errs, errors.New("ACCESS_ADMIN_GROUPS is required (comma-separated authentik group names)"))
 	}
 	if cfg.StaticDir != "" {
 		if fi, err := os.Stat(cfg.StaticDir); err != nil || !fi.IsDir() {

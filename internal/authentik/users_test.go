@@ -87,6 +87,81 @@ func TestClient_ListUsers_pathFilter(t *testing.T) {
 	}
 }
 
+func TestClient_ListUsers_groupFilter(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if got := q["groups_by_name"]; len(got) != 2 || got[0] != "staff" || got[1] != "students" {
+			t.Errorf("groups_by_name = %v", got)
+		}
+		if q.Get("is_superuser") != "false" {
+			t.Errorf("is_superuser = %q", q.Get("is_superuser"))
+		}
+		_, _ = io.WriteString(w, `{"pagination":{},"results":[{"pk":1,"groups_obj":[{"pk":"g1","name":"staff"}]}]}`)
+	})
+
+	params := authentik.ListUsersParams{GroupsByName: []string{"staff", "students"}, IsSuperuser: new(false)}
+	got, err := c.ListUsers(t.Context(), params)
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if names := got.Results[0].GroupNames(); len(names) != 1 || names[0] != "staff" {
+		t.Errorf("GroupNames = %v", names)
+	}
+}
+
+func TestClient_FindGroup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		body         string
+		wantPK       string
+		wantNotFound bool
+	}{
+		{name: "found", body: `{"results":[{"pk":"g1","name":"staff","is_superuser":true}]}`, wantPK: "g1"},
+		{name: "none", body: `{"results":[]}`, wantNotFound: true},
+		{name: "filter ignored", body: `{"results":[{"pk":"g2","name":"staff-old"}]}`, wantNotFound: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v3/core/groups/" || r.URL.Query().Get("name") != "staff" {
+					t.Errorf("request = %s", r.URL)
+				}
+				_, _ = io.WriteString(w, tt.body)
+			})
+
+			got, err := c.FindGroup(t.Context(), "staff")
+			if got := errors.Is(err, authentik.ErrNotFound); got != tt.wantNotFound {
+				t.Fatalf("FindGroup error = %v, want not found %v", err, tt.wantNotFound)
+			}
+			if !tt.wantNotFound && (got.PK != tt.wantPK || !got.IsSuperuser) {
+				t.Errorf("FindGroup = %+v", got)
+			}
+		})
+	}
+}
+
+func TestClient_ListGroups(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if r.URL.Path != "/api/v3/core/groups/" || q.Get("search") != "sta" || q.Get("include_users") != "false" {
+			t.Errorf("request = %s", r.URL)
+		}
+		_, _ = io.WriteString(w, `{"pagination":{},"results":[{"pk":"g1","name":"staff"}]}`)
+	})
+
+	got, err := c.ListGroups(t.Context(), "sta")
+	if err != nil {
+		t.Fatalf("ListGroups: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "staff" {
+		t.Errorf("ListGroups = %+v", got)
+	}
+}
+
 func TestClient_ListUserPaths(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

@@ -13,6 +13,10 @@
 //	OIDC_CLIENT_SECRET   OIDC client secret (required)
 //	OIDC_REDIRECT_URL    public callback URL, ending in /auth/callback (required)
 //	OIDC_ALLOWED_GROUPS  comma-separated authentik groups allowed to log in (required)
+//
+//	DATABASE_URL         PostgreSQL URL storing the access rules (required)
+//	ACCESS_ADMIN_GROUPS  comma-separated authentik groups with full access that may edit
+//	                     the access rules (required)
 package main
 
 import (
@@ -27,10 +31,12 @@ import (
 	"syscall"
 	"time"
 
+	"authentikManager/internal/access"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/config"
 	"authentikManager/internal/server"
+	"authentikManager/internal/store"
 	"authentikManager/internal/web"
 )
 
@@ -56,6 +62,16 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("creating authentik client: %w", err)
 	}
 
+	rules, err := store.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer rules.Close()
+	policy, err := access.NewPolicy(cfg.AccessAdminGroups, rules)
+	if err != nil {
+		return err
+	}
+
 	authn, err := auth.New(ctx, auth.Config{
 		IssuerURL:     cfg.OIDCIssuer,
 		ClientID:      cfg.OIDCClientID,
@@ -78,8 +94,15 @@ func run(logger *slog.Logger) error {
 	}
 
 	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           server.New(client, authn, logger, static),
+		Addr: cfg.ListenAddr,
+		Handler: server.New(server.Deps{
+			Users:  client,
+			Auth:   authn,
+			Policy: policy,
+			Rules:  rules,
+			Logger: logger,
+			Static: static,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

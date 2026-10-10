@@ -7,17 +7,22 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"authentikManager/internal/access"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/server"
 )
 
-// fakeAuth lets every request through as a fixed user, or rejects all when deny is set.
-type fakeAuth struct{ deny bool }
+// fakeAuth lets every request through as a fixed user in groups, or rejects all when deny is set.
+type fakeAuth struct {
+	deny   bool
+	groups []string
+}
 
 func (fakeAuth) Handler() http.Handler { return http.NotFoundHandler() }
 
@@ -27,7 +32,7 @@ func (f fakeAuth) Require(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{Username: "admin"})))
+		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{Username: "admin", Groups: f.groups})))
 	})
 }
 
@@ -35,13 +40,23 @@ func (f fakeAuth) Require(next http.Handler) http.Handler {
 type fakeUsers struct {
 	listParams authentik.ListUsersParams
 	created    authentik.CreateUserRequest
-	err        error
+	// listed are returned by ListUsers; nil means a single user "ann".
+	listed []authentik.User
+	// user is returned by GetUser; nil means a user without groups.
+	user *authentik.User
+	// groups are found by FindGroup, keyed by name.
+	groups  map[string]authentik.Group
+	mutated bool
+	err     error
 }
 
 func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*authentik.UserList, error) {
 	f.listParams = p
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.listed != nil {
+		return &authentik.UserList{Results: slices.Clone(f.listed)}, nil
 	}
 	return &authentik.UserList{Results: []authentik.User{{PK: 1, Username: "ann"}}}, nil
 }
@@ -57,7 +72,30 @@ func (f *fakeUsers) GetUser(_ context.Context, id int) (*authentik.User, error) 
 	if f.err != nil {
 		return nil, f.err
 	}
+	if f.user != nil {
+		u := *f.user
+		u.PK = id
+		return &u, nil
+	}
 	return &authentik.User{PK: id}, nil
+}
+
+func (f *fakeUsers) FindGroup(_ context.Context, name string) (*authentik.Group, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	g, ok := f.groups[name]
+	if !ok {
+		return nil, authentik.ErrNotFound
+	}
+	return &g, nil
+}
+
+func (f *fakeUsers) ListGroups(context.Context, string) ([]authentik.Group, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []authentik.Group{{PK: "g1", Name: "staff"}, {PK: "g2", Name: "students"}}, nil
 }
 
 func (f *fakeUsers) CreateUser(_ context.Context, req authentik.CreateUserRequest) (*authentik.User, error) {
@@ -69,15 +107,22 @@ func (f *fakeUsers) CreateUser(_ context.Context, req authentik.CreateUserReques
 }
 
 func (f *fakeUsers) UpdateUser(_ context.Context, id int, _ authentik.UpdateUserRequest) (*authentik.User, error) {
+	f.mutated = true
 	if f.err != nil {
 		return nil, f.err
 	}
 	return &authentik.User{PK: id}, nil
 }
 
-func (f *fakeUsers) DeleteUser(context.Context, int) error { return f.err }
+func (f *fakeUsers) DeleteUser(context.Context, int) error {
+	f.mutated = true
+	return f.err
+}
 
-func (f *fakeUsers) SetPassword(context.Context, int, string) error { return f.err }
+func (f *fakeUsers) SetPassword(context.Context, int, string) error {
+	f.mutated = true
+	return f.err
+}
 
 func do(t *testing.T, h http.Handler, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -87,13 +132,95 @@ func do(t *testing.T, h http.Handler, method, target, body string) *httptest.Res
 	return rec
 }
 
-func newServer(users server.UserService) *server.Server {
-	return server.New(users, fakeAuth{}, slog.New(slog.DiscardHandler), nil)
+// fakeRules is an in-memory rule store. Each test uses its own instance.
+type fakeRules struct {
+	rules map[string][]string
+	err   error
+}
+
+// newFakeRules returns the test rules: "helpdesk" manages staff and students,
+// "superhelp" manages everyone. Members of "admins" are access administrators.
+func newFakeRules() *fakeRules {
+	return &fakeRules{rules: map[string][]string{
+		"helpdesk":  {"staff", "students"},
+		"superhelp": {access.Wildcard},
+	}}
+}
+
+func (f *fakeRules) TargetGroups(_ context.Context, operatorGroups []string) ([]string, error) {
+	var out []string
+	for _, g := range operatorGroups {
+		out = append(out, f.rules[g]...)
+	}
+	return out, f.err
+}
+
+func (f *fakeRules) ListRules(context.Context) ([]access.Rule, error) {
+	var out []access.Rule
+	for _, g := range slices.Sorted(maps.Keys(f.rules)) {
+		out = append(out, access.Rule{OperatorGroup: g, TargetGroups: f.rules[g]})
+	}
+	return out, f.err
+}
+
+func (f *fakeRules) PutRule(_ context.Context, r access.Rule, _ string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.rules[r.OperatorGroup] = r.TargetGroups
+	return nil
+}
+
+func (f *fakeRules) DeleteRule(_ context.Context, group string) error {
+	if f.err != nil {
+		return f.err
+	}
+	if _, ok := f.rules[group]; !ok {
+		return access.ErrRuleNotFound
+	}
+	delete(f.rules, group)
+	return nil
+}
+
+// newTestServer returns a server for an operator in groups, with the test rules.
+func newTestServer(t *testing.T, users server.UserService, rules *fakeRules, authn fakeAuth) *server.Server {
+	t.Helper()
+	policy, err := access.NewPolicy([]string{"admins"}, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server.New(server.Deps{
+		Users:  users,
+		Auth:   authn,
+		Policy: policy,
+		Rules:  rules,
+		Logger: slog.New(slog.DiscardHandler),
+	})
+}
+
+// newServer returns a server for an access administrator (full access).
+func newServer(t *testing.T, users server.UserService) *server.Server {
+	t.Helper()
+	return newTestServer(t, users, newFakeRules(), fakeAuth{groups: []string{"admins"}})
+}
+
+// newScopedServer returns a server for an operator in groups.
+func newScopedServer(t *testing.T, users server.UserService, groups ...string) *server.Server {
+	t.Helper()
+	return newTestServer(t, users, newFakeRules(), fakeAuth{groups: groups})
+}
+
+// member returns a user who belongs to the named groups.
+func member(groups ...string) *authentik.User {
+	u := &authentik.User{Username: "target"}
+	for _, g := range groups {
+		u.Groups = append(u.Groups, authentik.UserGroup{PK: "pk-" + g, Name: g})
+	}
+	return u
 }
 
 func TestServer_protection(t *testing.T) {
 	t.Parallel()
-	discard := slog.New(slog.DiscardHandler)
 	tests := []struct {
 		name       string
 		authn      fakeAuth
@@ -115,7 +242,8 @@ func TestServer_protection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := server.New(&fakeUsers{}, tt.authn, discard, nil)
+			tt.authn.groups = []string{"admins"}
+			h := newTestServer(t, &fakeUsers{}, newFakeRules(), tt.authn)
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/users/1", nil)
 			maps.Copy(req.Header, tt.header)
 			rec := httptest.NewRecorder()
@@ -143,7 +271,7 @@ func TestServer_listUsers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			rec := do(t, newServer(&fakeUsers{}), http.MethodGet, tt.target, "")
+			rec := do(t, newServer(t, &fakeUsers{}), http.MethodGet, tt.target, "")
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
 			}
@@ -154,7 +282,7 @@ func TestServer_listUsers(t *testing.T) {
 func TestServer_listUsers_pathFilter(t *testing.T) {
 	t.Parallel()
 	fake := &fakeUsers{}
-	rec := do(t, newServer(fake), http.MethodGet, "/api/users?path=users&path_startswith=users%2Fstaff", "")
+	rec := do(t, newServer(t, fake), http.MethodGet, "/api/users?path=users&path_startswith=users%2Fstaff", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusOK, rec.Body)
 	}
@@ -176,7 +304,7 @@ func TestServer_listUserPaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			rec := do(t, newServer(&fakeUsers{err: tt.err}), http.MethodGet, "/api/users/paths", "")
+			rec := do(t, newServer(t, &fakeUsers{err: tt.err}), http.MethodGet, "/api/users/paths", "")
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
 			}
@@ -227,7 +355,7 @@ func TestServer_createUser(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fake := &fakeUsers{err: tt.err}
-			rec := do(t, newServer(fake), http.MethodPost, "/api/users", tt.body)
+			rec := do(t, newServer(t, fake), http.MethodPost, "/api/users", tt.body)
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
 			}
@@ -283,7 +411,7 @@ func TestServer_userByID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			rec := do(t, newServer(&fakeUsers{err: tt.err}), tt.method, tt.target, tt.body)
+			rec := do(t, newServer(t, &fakeUsers{err: tt.err}), tt.method, tt.target, tt.body)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
 			}
@@ -297,7 +425,18 @@ func TestServer_static(t *testing.T) {
 		"index.html":    {Data: []byte("<html>app</html>")},
 		"assets/app.js": {Data: []byte("console.log(1)")},
 	}
-	h := server.New(&fakeUsers{}, fakeAuth{}, slog.New(slog.DiscardHandler), static)
+	policy, err := access.NewPolicy([]string{"admins"}, newFakeRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := server.New(server.Deps{
+		Users:  &fakeUsers{},
+		Auth:   fakeAuth{},
+		Policy: policy,
+		Rules:  newFakeRules(),
+		Logger: slog.New(slog.DiscardHandler),
+		Static: static,
+	})
 
 	tests := []struct {
 		name     string
@@ -314,6 +453,213 @@ func TestServer_static(t *testing.T) {
 			rec := do(t, h, http.MethodGet, tt.target, "")
 			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tt.wantBody) {
 				t.Errorf("GET %s = %d %q, want 200 containing %q", tt.target, rec.Code, rec.Body, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestServer_getAccess(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		groups     []string
+		wantAll    bool
+		wantGroups []string
+	}{
+		{name: "full access", groups: []string{"admins"}, wantAll: true, wantGroups: []string{}},
+		{name: "restricted", groups: []string{"helpdesk"}, wantGroups: []string{"staff", "students"}},
+		{name: "no rule", groups: []string{"guests"}, wantGroups: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := do(t, newScopedServer(t, &fakeUsers{}, tt.groups...), http.MethodGet, "/api/access", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+			}
+			var got access.Scope
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			if got.All != tt.wantAll || !slices.Equal(got.Groups, tt.wantGroups) {
+				t.Errorf("access = %+v, want All=%v Groups=%v", got, tt.wantAll, tt.wantGroups)
+			}
+		})
+	}
+}
+
+func TestServer_listUsers_scoped(t *testing.T) {
+	t.Parallel()
+	admin := member("staff")
+	admin.IsSuperuser = true
+	listed := []authentik.User{*member("staff"), *member("other"), *admin, *member("students", "other")}
+
+	t.Run("restricted operator", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeUsers{listed: listed}
+		rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodGet, "/api/users", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+		}
+		if !slices.Equal(fake.listParams.GroupsByName, []string{"staff", "students"}) {
+			t.Errorf("GroupsByName = %v", fake.listParams.GroupsByName)
+		}
+		if fake.listParams.IsSuperuser == nil || *fake.listParams.IsSuperuser {
+			t.Errorf("IsSuperuser = %v, want false", fake.listParams.IsSuperuser)
+		}
+		var body authentik.UserList
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding body: %v", err)
+		}
+		// Out-of-scope users are dropped even when authentik ignored the filters.
+		if len(body.Results) != 2 {
+			t.Errorf("results = %+v, want the staff and students members only", body.Results)
+		}
+	})
+
+	t.Run("full access", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeUsers{listed: listed}
+		rec := do(t, newScopedServer(t, fake, "admins"), http.MethodGet, "/api/users", "")
+		var body authentik.UserList
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding body: %v", err)
+		}
+		if fake.listParams.GroupsByName != nil || fake.listParams.IsSuperuser != nil || len(body.Results) != 4 {
+			t.Errorf("params = %+v, %d results, want unfiltered", fake.listParams, len(body.Results))
+		}
+	})
+
+	t.Run("no access", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeUsers{listed: listed}
+		rec := do(t, newScopedServer(t, fake, "guests"), http.MethodGet, "/api/users", "")
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"results":[]`) {
+			t.Errorf("GET /api/users = %d %s, want empty results", rec.Code, rec.Body)
+		}
+	})
+}
+
+func TestServer_userByID_scoped(t *testing.T) {
+	t.Parallel()
+	admin := member("staff")
+	admin.IsSuperuser = true
+	requests := []struct{ method, target, body string }{
+		{http.MethodGet, "/api/users/4", ""},
+		{http.MethodPatch, "/api/users/4", `{"name":"x"}`},
+		{http.MethodDelete, "/api/users/4", ""},
+		{http.MethodPost, "/api/users/4/password", `{"password":"s3cret!"}`},
+	}
+	tests := []struct {
+		name    string
+		groups  []string
+		target  *authentik.User
+		allowed bool
+	}{
+		{name: "member of target group", groups: []string{"helpdesk"}, target: member("students"), allowed: true},
+		{name: "outside target groups", groups: []string{"helpdesk"}, target: member("other"), allowed: false},
+		{name: "superuser for restricted operator", groups: []string{"helpdesk"}, target: admin, allowed: false},
+		{name: "superuser for full access", groups: []string{"admins"}, target: admin, allowed: true},
+		{name: "operator without rule", groups: []string{"guests"}, target: member("staff"), allowed: false},
+	}
+	for _, tt := range tests {
+		for _, req := range requests {
+			t.Run(tt.name+"/"+req.method, func(t *testing.T) {
+				t.Parallel()
+				fake := &fakeUsers{user: tt.target}
+				rec := do(t, newScopedServer(t, fake, tt.groups...), req.method, req.target, req.body)
+				if tt.allowed && rec.Code >= 400 {
+					t.Errorf("status = %d, want success (body %s)", rec.Code, rec.Body)
+				}
+				if !tt.allowed && (rec.Code != http.StatusNotFound || fake.mutated) {
+					t.Errorf("status = %d, mutated = %v, want 404 without change", rec.Code, fake.mutated)
+				}
+			})
+		}
+	}
+}
+
+func TestServer_createUser_scoped(t *testing.T) {
+	t.Parallel()
+	groups := map[string]authentik.Group{
+		"staff":    {PK: "pk-staff", Name: "staff"},
+		"other":    {PK: "pk-other", Name: "other"},
+		"students": {PK: "pk-students", Name: "students", IsSuperuser: true},
+	}
+	tests := []struct {
+		name       string
+		operator   string
+		body       string
+		wantStatus int
+		wantGroups []string
+	}{
+		{
+			name:       "restricted with own group",
+			operator:   "helpdesk",
+			body:       `{"username":"ann","name":"Ann","group":"staff"}`,
+			wantStatus: http.StatusCreated,
+			wantGroups: []string{"pk-staff"},
+		},
+		{
+			name:       "restricted without group",
+			operator:   "helpdesk",
+			body:       `{"username":"ann","name":"Ann"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "restricted with foreign group",
+			operator:   "helpdesk",
+			body:       `{"username":"ann","name":"Ann","group":"other"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "restricted with superuser group",
+			operator:   "helpdesk",
+			body:       `{"username":"ann","name":"Ann","group":"students"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "raw group keys rejected",
+			operator:   "helpdesk",
+			body:       `{"username":"ann","name":"Ann","group":"staff","groups":["pk-admins"]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "full access without group",
+			operator:   "admins",
+			body:       `{"username":"ann","name":"Ann"}`,
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "full access with any group",
+			operator:   "admins",
+			body:       `{"username":"ann","name":"Ann","group":"other"}`,
+			wantStatus: http.StatusCreated,
+			wantGroups: []string{"pk-other"},
+		},
+		{
+			name:       "unknown group",
+			operator:   "admins",
+			body:       `{"username":"ann","name":"Ann","group":"nope"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "operator without rule",
+			operator:   "guests",
+			body:       `{"username":"ann","name":"Ann"}`,
+			wantStatus: http.StatusForbidden,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{groups: groups}
+			rec := do(t, newScopedServer(t, fake, tt.operator), http.MethodPost, "/api/users", tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if !slices.Equal(fake.created.Groups, tt.wantGroups) {
+				t.Errorf("created groups = %v, want %v", fake.created.Groups, tt.wantGroups)
 			}
 		})
 	}

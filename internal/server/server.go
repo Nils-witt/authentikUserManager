@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"authentikManager/internal/access"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 )
@@ -29,6 +30,8 @@ type UserService interface {
 	UpdateUser(ctx context.Context, id int, req authentik.UpdateUserRequest) (*authentik.User, error)
 	DeleteUser(ctx context.Context, id int) error
 	SetPassword(ctx context.Context, id int, password string) error
+	FindGroup(ctx context.Context, name string) (*authentik.Group, error)
+	ListGroups(ctx context.Context, search string) ([]authentik.Group, error)
 }
 
 var _ UserService = (*authentik.Client)(nil)
@@ -43,21 +46,58 @@ type Authenticator interface {
 
 var _ Authenticator = (*auth.Authenticator)(nil)
 
+// Policy resolves which users an operator may manage.
+type Policy interface {
+	ScopeFor(ctx context.Context, operatorGroups []string) (access.Scope, error)
+	// IsAdmin reports whether the operator may edit the access rules.
+	IsAdmin(operatorGroups []string) bool
+}
+
+var _ Policy = (*access.Policy)(nil)
+
+// RuleStore lists and edits the access rules.
+type RuleStore interface {
+	ListRules(ctx context.Context) ([]access.Rule, error)
+	// PutRule creates or replaces a normalized rule.
+	PutRule(ctx context.Context, rule access.Rule, actor string) error
+	// DeleteRule returns access.ErrRuleNotFound when there is no rule.
+	DeleteRule(ctx context.Context, operatorGroup string) error
+}
+
+// Deps are the collaborators of the Server.
+type Deps struct {
+	Users  UserService
+	Auth   Authenticator
+	Policy Policy
+	Rules  RuleStore
+	Logger *slog.Logger
+	// Static, when non-nil, is the built frontend.
+	Static fs.FS
+}
+
 // Server is the HTTP handler for the application.
 type Server struct {
 	users  UserService
+	policy Policy
+	rules  RuleStore
 	logger *slog.Logger
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
 
-// New builds the handler. Every /api/ route requires an authenticated session.
-// When static is non-nil it is served for all other paths, falling back to
+// New builds the handler. Every /api/ route requires an authenticated session,
+// and the policy limits which users each operator may see and manage.
+// When d.Static is non-nil it is served for all other paths, falling back to
 // index.html so client-side routing works; the SPA holds no data itself.
-func New(users UserService, authn Authenticator, logger *slog.Logger, static fs.FS) *Server {
-	s := &Server{users: users, logger: logger}
+func New(d Deps) *Server {
+	s := &Server{users: d.Users, policy: d.Policy, rules: d.Rules, logger: d.Logger}
 
 	api := http.NewServeMux()
+	api.HandleFunc("GET /api/access", s.getAccess)
+	api.Handle("GET /api/access/rules", s.requireAdmin(s.listRules))
+	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
+	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
+	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
 	api.HandleFunc("GET /api/users", s.listUsers)
 	api.HandleFunc("POST /api/users", s.createUser)
 	api.HandleFunc("GET /api/users/paths", s.listUserPaths)
@@ -73,10 +113,10 @@ func New(users UserService, authn Authenticator, logger *slog.Logger, static fs.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.Handle("/auth/", authn.Handler())
-	mux.Handle("/api/", authn.Require(api))
-	if static != nil {
-		mux.Handle("/", spaHandler(static))
+	mux.Handle("/auth/", d.Auth.Handler())
+	mux.Handle("/api/", d.Auth.Require(api))
+	if d.Static != nil {
+		mux.Handle("/", spaHandler(d.Static))
 	}
 
 	// Rejects cross-origin state-changing browser requests (CSRF), on top of SameSite cookies.
@@ -118,10 +158,56 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter 
 
 // audit logs a successful change together with the logged-in user.
 func (s *Server) audit(r *http.Request, msg string, attrs ...slog.Attr) {
-	if u, ok := auth.UserFromContext(r.Context()); ok {
-		attrs = append(attrs, slog.String("actor", u.Username))
-	}
+	attrs = append(attrs, slog.String("actor", actorName(r)))
 	s.logger.LogAttrs(r.Context(), slog.LevelInfo, msg, attrs...)
+}
+
+// actorName returns the username of the logged-in operator.
+func actorName(r *http.Request) string {
+	u, _ := auth.UserFromContext(r.Context())
+	return u.Username
+}
+
+// operatorGroups returns the groups of the logged-in operator.
+func operatorGroups(r *http.Request) []string {
+	u, _ := auth.UserFromContext(r.Context())
+	return u.Groups
+}
+
+// scope returns the users the logged-in operator may manage. Without an
+// operator in the context it grants nothing. It writes a 500 response and
+// returns false when the rules cannot be loaded.
+func (s *Server) scope(w http.ResponseWriter, r *http.Request) (access.Scope, bool) {
+	scope, err := s.policy.ScopeFor(r.Context(), operatorGroups(r))
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "resolving access scope", slog.Any("error", err))
+		writeError(w, http.StatusInternalServerError, "access check failed", nil)
+		return access.Scope{}, false
+	}
+	return scope, true
+}
+
+func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		access.Scope
+		// Admin is set when the operator may edit the access rules.
+		Admin bool `json:"admin"`
+	}{Scope: scope, Admin: s.policy.IsAdmin(operatorGroups(r))})
+}
+
+// requireAdmin restricts h to operators who may edit the access rules.
+func (s *Server) requireAdmin(h http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.policy.IsAdmin(operatorGroups(r)) {
+			writeError(w, http.StatusForbidden, "only access administrators may do this", nil)
+			return
+		}
+		h(w, r)
+	})
 }
 
 // spaHandler serves files from static and falls back to index.html for unknown paths.

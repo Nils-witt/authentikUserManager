@@ -11,7 +11,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), create, edit (username, name, email, path, type, active), activate/deactivate, set password, delete.
+List and search users (paginated), browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, set password, delete. Group-based access rules limit which users each operator may manage.
 
 ## Configuration
 
@@ -28,8 +28,35 @@ Set these environment variables (see `.env.example`):
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
 | `OIDC_REDIRECT_URL`  | yes   |                  | Public callback URL of this app, ending in `/auth/callback` |
 | `OIDC_ALLOWED_GROUPS` | yes  |                  | Comma-separated authentik groups whose members may log in |
+| `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, e.g. `postgres://am:secret@db:5432/am` |
+| `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 
 The token's user needs permission to view, add, change and delete users (and to reset passwords).
+
+## Access rules
+
+Access rules limit which users each operator may see and manage, based on the groups of
+the target user. Access administrators edit them in the UI (**Access rules** in the toolbar);
+they are stored in PostgreSQL.
+
+- **Access administrators** are the members of `ACCESS_ADMIN_GROUPS`. They always have full
+  access and are the only ones who may edit the rules, so nobody can lock themselves out.
+- A **rule** names an operator group (from the `groups` claim at login) and the target groups
+  its members may manage. An operator gets the union of the target groups of all their groups.
+- An operator may manage a user only if the user is a direct member of one of the target groups.
+  Members of inherited (parent) groups are not matched.
+- The target "all users" (`*`) grants access to every user. Superusers are only visible to
+  operators with it and to access administrators.
+- Operators without a matching rule see no users.
+- Users outside an operator's scope are hidden from the list and return 404 on every
+  per-user route.
+- Restricted operators must pick one of their target groups when creating a user.
+  Groups that grant superuser rights are refused.
+- Rule changes apply immediately. An operator's own groups are read at login, so changes to
+  their membership apply after the next login.
+
+The schema is created and migrated automatically at startup
+(`internal/store/migrations`, applied with golang-migrate).
 
 ## Setting up the login in authentik
 
@@ -45,11 +72,13 @@ The token's user needs permission to view, add, change and delete users (and to 
 ## Development
 
 ```sh
+make dev-db                      # PostgreSQL in Docker on 127.0.0.1:5432 (compose.yaml)
 set -a; source .env; set +a      # copy .env.example to .env first
 # for development, OIDC_REDIRECT_URL=http://localhost:5173/auth/callback
 make dev-backend    # API on 127.0.0.1:8080
 make dev-frontend   # Vite on http://localhost:5173, /api and /auth are proxied to the backend
-make test           # go vet + go test -race
+make test           # go vet + go test -race (PostgreSQL tests are skipped)
+make test-integration  # also runs the PostgreSQL tests against a temporary container
 make lint           # golangci-lint (.golangci.yml) + oxlint
 make vuln           # govulncheck
 ```
@@ -75,6 +104,8 @@ the frontend, run `make build` again.
 
 ## Security
 
+- Users are filtered by the access rules on the server for every route; the UI only mirrors it.
+  If the rules cannot be loaded, requests fail with 500 instead of falling back to more access.
 - Every `/api/` route requires a login. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Only members of `OIDC_ALLOWED_GROUPS` get in.
 - The browser only holds an opaque session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` with a `__Host-` prefix when served over https). ID and access tokens never reach the browser.
 - Sessions live in memory for 8 hours. A restart logs everyone out, and you must run a single instance.
@@ -86,8 +117,14 @@ the frontend, run `make build` again.
 
 | Method | Path                       | Body                                                     |
 | ------ | -------------------------- | -------------------------------------------------------- |
-| GET    | `/api/users`               | query: `search`, `page`, `page_size` (≤100), `ordering`, `type` |
-| POST   | `/api/users`               | `{username, name, email?, is_active?, path?, type?}`     |
+| GET    | `/api/access`              | the operator's scope: `{all, groups, admin}`             |
+| GET    | `/api/access/rules`        | admins only: `{rules: [{operator_group, target_groups}]}` |
+| PUT    | `/api/access/rules/{group}` | admins only: `{target_groups}` (creates or replaces)    |
+| DELETE | `/api/access/rules/{group}` | admins only                                             |
+| GET    | `/api/groups`              | admins only: authentik group names (max. 100), query `search` |
+| GET    | `/api/users`               | query: `search`, `page`, `page_size` (≤100), `ordering`, `type`, `path`, `path_startswith` |
+| GET    | `/api/users/paths`         | all user folders: `{paths}`                              |
+| POST   | `/api/users`               | `{username, name, email?, is_active?, path?, type?, group?}` |
 | GET    | `/api/users/{id}`          |                                                          |
 | PATCH  | `/api/users/{id}`          | any subset of the create fields                          |
 | DELETE | `/api/users/{id}`          |                                                          |
