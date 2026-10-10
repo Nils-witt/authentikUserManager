@@ -1,6 +1,6 @@
 #!/bin/sh
-# Pre-commit checks: golangci-lint + govulncheck for Go changes, oxlint for
-# frontend changes. Enable with `make hooks`; bypass once with `git commit --no-verify`.
+# Pre-commit checks: golangci-lint + govulncheck for Go changes, oxlint and
+# prettier for frontend changes. Enable with `make hooks`; bypass once with `git commit --no-verify`.
 #
 # Note: checks run against the working tree, not only the staged content.
 set -eu
@@ -48,4 +48,7 @@ if [ -n "$frontend_changed" ]; then
 	fi
 	echo "pre-commit: oxlint"
 	(cd frontend && npm run --silent lint)
+
+	echo "pre-commit: prettier (fix with: make fmt)"
+	(cd frontend && npm run --silent format:check)
 fi

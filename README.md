@@ -93,7 +93,8 @@ make dev-backend    # API on 127.0.0.1:8080
 make dev-frontend   # Vite on http://localhost:5173, /api and /auth are proxied to the backend
 make test           # go vet + go test -race (PostgreSQL tests are skipped)
 make test-integration  # also runs the PostgreSQL tests against a temporary container
-make lint           # golangci-lint (.golangci.yml) + oxlint
+make lint           # golangci-lint (.golangci.yml) + oxlint + prettier --check
+make fmt            # golangci-lint fmt + prettier --write (frontend/.prettierrc.json)
 make vuln           # govulncheck
 ```
 
@@ -101,7 +102,7 @@ make vuln           # govulncheck
 
 Run `make hooks` once per clone. It enables `.githooks/pre-commit`, which runs
 `golangci-lint` and `govulncheck` when Go files, `go.mod`/`go.sum` or `.golangci.yml`
-are staged, and `oxlint` when files under `frontend/` are staged. You need
+are staged, and `oxlint` plus a Prettier check when files under `frontend/` are staged. You need
 `golangci-lint` (v2) and `govulncheck` (`go install golang.org/x/vuln/cmd/govulncheck@latest`).
 Skip the checks once with `git commit --no-verify`.
 

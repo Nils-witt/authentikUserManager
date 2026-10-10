@@ -54,10 +54,11 @@ test-integration: $(DIST)/index.html
 
 lint: $(DIST)/index.html
 	golangci-lint run $(GO_PKGS)
-	cd frontend && npm run lint
+	cd frontend && npm run lint && npm run format:check
 
 fmt:
 	golangci-lint fmt cmd internal
+	cd frontend && npm run format
 
 ## Report known vulnerabilities reachable from the code.
 vuln: $(DIST)/index.html

@@ -1,7 +1,5 @@
 import Alert from '@mui/material/Alert'
-import Autocomplete from '@mui/material/Autocomplete'
 import Button from '@mui/material/Button'
-import Chip from '@mui/material/Chip'
 import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
 import FormControlLabel from '@mui/material/FormControlLabel'
@@ -10,8 +8,9 @@ import Stack from '@mui/material/Stack'
 import Switch from '@mui/material/Switch'
 import TextField from '@mui/material/TextField'
 import { useState, type FormEvent } from 'react'
-import { ApiError, type CreateUserInput, type User, type UserInput } from '../api'
-import { Modal } from './Modal'
+import { ApiError, type CreateUserInput, type User, type UserInput } from '../../api'
+import { Modal } from '../common/Modal'
+import { UserGroupsField } from './UserGroupsField'
 
 interface UserFormProps {
   /** The user being edited, or undefined to create a new one. */
@@ -30,6 +29,7 @@ interface UserFormProps {
   onClose: () => void
 }
 
+/** Dialog creating a user, or editing one including their groups. */
 export function UserForm({
   user,
   defaultPath,
@@ -47,9 +47,6 @@ export function UserForm({
   })
   const [group, setGroup] = useState(groups?.length === 1 ? groups[0] : '')
   const [memberOf, setMemberOf] = useState(() => (user?.groups_obj ?? []).map((g) => g.name))
-  // Groups outside the operator's scope stay as they are.
-  const editable = (g: string) => !groups || groups.includes(g)
-  const fixed = memberOf.filter((g) => !editable(g))
   const [error, setError] = useState<ApiError | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -135,39 +132,12 @@ export function UserForm({
               </TextField>
             )}
             {user && (
-              <Autocomplete
-                multiple
-                freeSolo={!groups}
-                disableClearable
-                options={(groups ?? groupSuggestions ?? []).filter((g) => !memberOf.includes(g))}
+              <UserGroupsField
                 value={memberOf}
-                onChange={(_, value) =>
-                  setMemberOf([
-                    ...new Set([...fixed, ...value.map((v) => v.trim()).filter(Boolean)]),
-                  ])
-                }
-                renderValue={(value, getItemProps) =>
-                  value.map((g, index) => {
-                    const { key, onDelete, ...itemProps } = getItemProps({ index })
-                    return (
-                      <Chip
-                        key={key}
-                        size="small"
-                        label={g}
-                        {...itemProps}
-                        onDelete={editable(g) ? onDelete : undefined}
-                      />
-                    )
-                  })
-                }
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    label="Groups"
-                    placeholder={groups ? 'Add a group' : 'Group name, then Enter'}
-                    {...fieldError('groups')}
-                  />
-                )}
+                onChange={setMemberOf}
+                groups={groups}
+                suggestions={groupSuggestions}
+                errorProps={fieldError('groups')}
               />
             )}
             <FormControlLabel

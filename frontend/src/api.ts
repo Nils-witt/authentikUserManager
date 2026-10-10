@@ -1,8 +1,4 @@
-export type UserType =
-  | 'internal'
-  | 'external'
-  | 'service_account'
-  | 'internal_service_account'
+export type UserType = 'internal' | 'external' | 'service_account' | 'internal_service_account'
 
 export interface User {
   pk: number
