@@ -1,4 +1,5 @@
 # authentik-manager
+This app it not affiliated with the [authentik](https://goauthentik.io) project.
 
 A small web app for managing users in an [authentik](https://goauthentik.io) instance.
 
