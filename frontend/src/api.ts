@@ -124,6 +124,8 @@ export function listUsers(params: {
   pageSize: number
   /** Only users in this folder or one of its subfolders. */
   path?: string
+  /** Only active (true) or only inactive (false) users; all when omitted. */
+  active?: boolean
 }) {
   const q = new URLSearchParams({
     page: String(params.page),
@@ -131,6 +133,7 @@ export function listUsers(params: {
   })
   if (params.search) q.set('search', params.search)
   if (params.path) q.set('path_startswith', params.path)
+  if (params.active !== undefined) q.set('is_active', String(params.active))
   return request<UserList>('GET', `/api/users?${q}`)
 }
 

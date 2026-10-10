@@ -103,6 +103,8 @@ type ListUsersParams struct {
 	GroupsByName []string
 	// IsSuperuser, when non-nil, matches only superusers (true) or only other users (false).
 	IsSuperuser *bool
+	// IsActive, when non-nil, matches only active (true) or only inactive (false) users.
+	IsActive *bool
 }
 
 func (p ListUsersParams) values() url.Values {
@@ -133,6 +135,9 @@ func (p ListUsersParams) values() url.Values {
 	}
 	if p.IsSuperuser != nil {
 		q.Set("is_superuser", strconv.FormatBool(*p.IsSuperuser))
+	}
+	if p.IsActive != nil {
+		q.Set("is_active", strconv.FormatBool(*p.IsActive))
 	}
 	return q
 }

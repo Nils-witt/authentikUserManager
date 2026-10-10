@@ -104,7 +104,7 @@ func New(d Deps) *Server {
 	api.HandleFunc("GET /api/users/paths", s.listUserPaths)
 	api.HandleFunc("GET /api/users/{id}", s.getUser)
 	api.HandleFunc("PATCH /api/users/{id}", s.updateUser)
-	api.HandleFunc("DELETE /api/users/{id}", s.deleteUser)
+	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteUser))
 	api.HandleFunc("PUT /api/users/{id}/groups", s.setUserGroups)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
@@ -195,12 +195,12 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, struct {
 		access.Scope
-		// Admin is set when the operator may edit the access rules.
+		// Admin is set when the operator may edit the access rules and delete users.
 		Admin bool `json:"admin"`
 	}{Scope: scope, Admin: s.policy.IsAdmin(operatorGroups(r))})
 }
 
-// requireAdmin restricts h to operators who may edit the access rules.
+// requireAdmin restricts h to access administrators, who may edit the access rules and delete users.
 func (s *Server) requireAdmin(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.policy.IsAdmin(operatorGroups(r)) {

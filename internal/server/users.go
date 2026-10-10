@@ -35,6 +35,14 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if v := q.Get("is_active"); v != "" {
+		active, err := strconv.ParseBool(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "is_active must be true or false", nil)
+			return
+		}
+		params.IsActive = &active
+	}
 	if v := q.Get("page_size"); v != "" {
 		if params.PageSize, err = strconv.Atoi(v); err != nil || params.PageSize < 1 || params.PageSize > maxPageSize {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("page_size must be between 1 and %d", maxPageSize), nil)

@@ -276,6 +276,7 @@ func TestServer_listUsers(t *testing.T) {
 		{name: "search and paging", target: "/api/users?search=ann&page=2&page_size=50", wantStatus: http.StatusOK},
 		{name: "bad page", target: "/api/users?page=0", wantStatus: http.StatusBadRequest},
 		{name: "page size too large", target: "/api/users?page_size=1000", wantStatus: http.StatusBadRequest},
+		{name: "bad is_active", target: "/api/users?is_active=maybe", wantStatus: http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -297,6 +298,32 @@ func TestServer_listUsers_pathFilter(t *testing.T) {
 	}
 	if fake.listParams.Path != "users" || fake.listParams.PathStartsWith != "users/staff" {
 		t.Errorf("params = %+v, want Path=users PathStartsWith=users/staff", fake.listParams)
+	}
+}
+
+func TestServer_listUsers_activeFilter(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		target string
+		want   *bool
+	}{
+		{name: "all", target: "/api/users", want: nil},
+		{name: "active", target: "/api/users?is_active=true", want: new(true)},
+		{name: "inactive", target: "/api/users?is_active=false", want: new(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{}
+			rec := do(t, newServer(t, fake), http.MethodGet, tt.target, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusOK, rec.Body)
+			}
+			if got := fake.listParams.IsActive; (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+				t.Errorf("IsActive = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -602,7 +629,6 @@ func TestServer_userByID_scoped(t *testing.T) {
 	requests := []struct{ method, target, body string }{
 		{http.MethodGet, "/api/users/4", ""},
 		{http.MethodPatch, "/api/users/4", `{"name":"x"}`},
-		{http.MethodDelete, "/api/users/4", ""},
 	}
 	tests := []struct {
 		name    string
@@ -632,6 +658,36 @@ func TestServer_userByID_scoped(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestServer_deleteUser_admin(t *testing.T) {
+	t.Parallel()
+	serviceAccount := member("staff")
+	serviceAccount.Type = authentik.UserTypeServiceAccount
+	tests := []struct {
+		name       string
+		groups     []string
+		target     *authentik.User
+		wantStatus int
+	}{
+		{name: "admin", groups: []string{"admins"}, target: member("staff"), wantStatus: http.StatusNoContent},
+		{name: "admin, service account", groups: []string{"admins"}, target: serviceAccount, wantStatus: http.StatusNotFound},
+		{name: "restricted operator in scope", groups: []string{"helpdesk"}, target: member("staff"), wantStatus: http.StatusForbidden},
+		{name: "full access without admin", groups: []string{"superhelp"}, target: member("staff"), wantStatus: http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{user: tt.target}
+			rec := do(t, newScopedServer(t, fake, tt.groups...), http.MethodDelete, "/api/users/4", "")
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if wantMutated := tt.wantStatus == http.StatusNoContent; fake.mutated != wantMutated {
+				t.Errorf("mutated = %v, want %v", fake.mutated, wantMutated)
+			}
+		})
 	}
 }
 

@@ -107,7 +107,7 @@ func TestServer_storeErrors(t *testing.T) {
 			body:   `{"target_groups":["y"]}`,
 		},
 		{name: "scope for list", groups: []string{"helpdesk"}, method: http.MethodGet, target: "/api/users"},
-		{name: "scope for user", groups: []string{"helpdesk"}, method: http.MethodDelete, target: "/api/users/4"},
+		{name: "scope for user", groups: []string{"helpdesk"}, method: http.MethodPatch, target: "/api/users/4", body: `{"name":"x"}`},
 		{name: "scope for access", groups: []string{"helpdesk"}, method: http.MethodGet, target: "/api/access"},
 	}
 	for _, tt := range tests {

@@ -26,6 +26,8 @@ import TableContainer from '@mui/material/TableContainer'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import TextField from '@mui/material/TextField'
+import ToggleButton from '@mui/material/ToggleButton'
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Toolbar from '@mui/material/Toolbar'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
@@ -38,6 +40,9 @@ import { FolderTree } from './components/FolderTree'
 import { UserForm } from './components/UserForm'
 
 const PAGE_SIZE = 20
+
+/** Which users the list shows by their active flag. */
+type StatusFilter = 'all' | 'active' | 'inactive'
 
 type Dialog =
   | { kind: 'create' }
@@ -100,6 +105,7 @@ function UserAdmin({ me }: { me: Me }) {
   const [page, setPage] = useState(1)
   // Selected user folder (path), or null for all users.
   const [folder, setFolder] = useState<string | null>(null)
+  const [status, setStatus] = useState<StatusFilter>('all')
   const [paths, setPaths] = useState<string[]>([])
   const [access, setAccess] = useState<Access | null>(null)
   const [data, setData] = useState<UserList | null>(null)
@@ -118,14 +124,20 @@ function UserAdmin({ me }: { me: Me }) {
 
   // Bumped after every mutation to refetch the current page.
   const [version, setVersion] = useState(0)
-  const requestKey = `${query}|${folder}|${page}|${version}`
+  const requestKey = `${query}|${folder}|${status}|${page}|${version}`
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const loading = loadedKey !== requestKey
 
   useEffect(() => {
     let cancelled = false
     api
-      .listUsers({ search: query, page, pageSize: PAGE_SIZE, path: folder ?? undefined })
+      .listUsers({
+        search: query,
+        page,
+        pageSize: PAGE_SIZE,
+        path: folder ?? undefined,
+        active: status === 'all' ? undefined : status === 'active',
+      })
       .then((list) => {
         if (cancelled) return
         setData(list)
@@ -140,7 +152,7 @@ function UserAdmin({ me }: { me: Me }) {
     return () => {
       cancelled = true
     }
-  }, [query, folder, page, requestKey])
+  }, [query, folder, status, page, requestKey])
 
   // Reload the folders after mutations too, since a user's path may have changed.
   useEffect(() => {
@@ -180,6 +192,13 @@ function UserAdmin({ me }: { me: Me }) {
 
   function selectFolder(path: string | null) {
     setFolder(path)
+    setPage(1)
+  }
+
+  function selectStatus(value: StatusFilter | null) {
+    // Exclusive toggle groups report null when the selected button is clicked again.
+    if (value === null) return
+    setStatus(value)
     setPage(1)
   }
 
@@ -261,6 +280,17 @@ function UserAdmin({ me }: { me: Me }) {
               },
             }}
           />
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            aria-label="Filter by status"
+            value={status}
+            onChange={(_, value: StatusFilter | null) => selectStatus(value)}
+          >
+            <ToggleButton value="all">All</ToggleButton>
+            <ToggleButton value="active">Active</ToggleButton>
+            <ToggleButton value="inactive">Inactive</ToggleButton>
+          </ToggleButtonGroup>
           <Box sx={{ flexGrow: 1 }} />
           {access?.admin && (
             <Button variant="outlined" onClick={() => setDialog({ kind: 'rules' })}>
@@ -365,11 +395,13 @@ function UserAdmin({ me }: { me: Me }) {
                             )}
                           </IconButton>
                         </Tooltip>
-                        <Tooltip title="Delete">
-                          <IconButton size="small" color="error" onClick={() => void remove(user)}>
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
+                        {isAdmin && (
+                          <Tooltip title="Delete">
+                            <IconButton size="small" color="error" onClick={() => void remove(user)}>
+                              <DeleteIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}

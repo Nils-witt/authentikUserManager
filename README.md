@@ -11,7 +11,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete. Group-based access rules limit which users each operator may manage.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete. Group-based access rules limit which users each operator may manage.
 
 ## Configuration
 
@@ -40,6 +40,7 @@ they are stored in PostgreSQL.
 
 - **Access administrators** are the members of `ACCESS_ADMIN_GROUPS`. They always have full
   access and are the only ones who may edit the rules, so nobody can lock themselves out.
+  They are also the only ones who may delete users; other operators can deactivate them.
 - A **rule** names an operator group (from the `groups` claim at login) and the target groups
   its members may manage. An operator gets the union of the target groups of all their groups.
 - An operator may manage a user only if the user is a direct member of one of the target groups.
@@ -121,12 +122,12 @@ the frontend, run `make build` again.
 | PUT    | `/api/access/rules/{group}` | admins only: `{target_groups}` (creates or replaces)    |
 | DELETE | `/api/access/rules/{group}` | admins only                                             |
 | GET    | `/api/groups`              | admins only: authentik group names (max. 100), query `search` |
-| GET    | `/api/users`               | internal users only; query: `search`, `page`, `page_size` (≤100), `ordering`, `path`, `path_startswith` |
+| GET    | `/api/users`               | internal users only; query: `search`, `page`, `page_size` (≤100), `ordering`, `path`, `path_startswith`, `is_active` |
 | GET    | `/api/users/paths`         | all user folders: `{paths}`                              |
 | POST   | `/api/users`               | `{username, name, email?, is_active?, path?, type?, group?}`; `type` must be `internal` |
 | GET    | `/api/users/{id}`          |                                                          |
 | PATCH  | `/api/users/{id}`          | any subset of the create fields                          |
-| DELETE | `/api/users/{id}`          |                                                          |
+| DELETE | `/api/users/{id}`          | admins only                                              |
 | PUT    | `/api/users/{id}/groups`   | `{groups}`: the group names the user should be in. Restricted operators may only add or remove their target groups, and the user must keep one of them |
 | GET    | `/healthz`                 | no login required                                        |
 | GET    | `/auth/login`              | starts the OIDC login                                     |

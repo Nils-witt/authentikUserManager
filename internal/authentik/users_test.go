@@ -88,6 +88,34 @@ func TestClient_ListUsers_pathFilter(t *testing.T) {
 	}
 }
 
+func TestClient_ListUsers_activeFilter(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		isActive *bool
+		want     string
+	}{
+		{name: "unset", isActive: nil, want: ""},
+		{name: "active", isActive: new(true), want: "true"},
+		{name: "inactive", isActive: new(false), want: "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				if got := q.Get("is_active"); got != tt.want || q.Has("is_active") != (tt.want != "") {
+					t.Errorf("is_active = %q, want %q", got, tt.want)
+				}
+				_, _ = io.WriteString(w, `{"pagination":{},"results":[]}`)
+			})
+			if _, err := c.ListUsers(t.Context(), authentik.ListUsersParams{IsActive: tt.isActive}); err != nil {
+				t.Fatalf("ListUsers: %v", err)
+			}
+		})
+	}
+}
+
 func TestClient_ListUsers_groupFilter(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
