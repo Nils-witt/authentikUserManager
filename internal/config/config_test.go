@@ -3,6 +3,7 @@ package config_test
 import (
 	"maps"
 	"testing"
+	"time"
 
 	"authentikManager/internal/config"
 )
@@ -52,6 +53,36 @@ func TestFromEnv(t *testing.T) {
 			}
 			if cfg.ListenAddr != tt.wantListen {
 				t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, tt.wantListen)
+			}
+		})
+	}
+}
+
+func TestFromEnv_auditRetention(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		value    string
+		expected time.Duration
+		wantErr  bool
+	}{
+		{value: "", expected: 0},
+		{value: " 90 ", expected: 90 * 24 * time.Hour},
+		{value: "36500", expected: 36500 * 24 * time.Hour},
+		{value: "0", wantErr: true},
+		{value: "-1", wantErr: true},
+		{value: "36501", wantErr: true},
+		{value: "30d", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run("value "+tt.value, func(t *testing.T) {
+			t.Parallel()
+			env := validEnv(map[string]string{"AUDIT_RETENTION_DAYS": tt.value})
+			cfg, err := config.FromEnv(func(k string) string { return env[k] })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FromEnv error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if cfg.AuditRetention != tt.expected {
+				t.Errorf("AuditRetention = %v, want %v", cfg.AuditRetention, tt.expected)
 			}
 		})
 	}

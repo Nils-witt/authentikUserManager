@@ -97,6 +97,7 @@ export function UserAdmin({ me }: { me: Me }) {
           status={filters.status}
           onStatusChange={filters.selectStatus}
           onOpenRules={isAdmin ? () => setDialog({ kind: 'rules' }) : undefined}
+          onOpenAudit={isAdmin ? () => setDialog({ kind: 'audit' }) : undefined}
           onCreate={access && !noAccess ? () => setDialog({ kind: 'create' }) : undefined}
         />
 

@@ -12,7 +12,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Group-based access rules limit which users each operator may manage.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -29,7 +29,8 @@ Set these environment variables (see `.env.example`):
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
 | `OIDC_REDIRECT_URL`  | yes   |                  | Public callback URL of this app, ending in `/auth/callback` |
-| `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, e.g. `postgres://am:secret@db:5432/am` |
+| `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules and the audit log, e.g. `postgres://am:secret@db:5432/am` |
+| `AUDIT_RETENTION_DAYS` | no |                | Days to keep [audit log](#audit-log) entries; kept forever when unset |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 
 The token's user needs permission to view, add, change and delete users, and to add users to groups and remove them.
@@ -72,6 +73,21 @@ they are stored in PostgreSQL.
 
 The schema is created and migrated automatically at startup
 (`internal/store/migrations`, applied with golang-migrate).
+
+## Audit log
+
+Every change made through the app is recorded in PostgreSQL with the time, the operator,
+the action, the affected user or rule, and details such as the changed fields or groups:
+creating, updating and deleting users, changing their groups, sending recovery emails,
+saving and deleting access rules, and requests for users outside the operator's scope.
+Access administrators review it in the UI (**Audit log** in the toolbar) or through
+`GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
+
+Entries are also written to the application log (message `audit`). A change is not rolled
+back when its entry cannot be stored; the failure is logged instead.
+
+Entries are kept forever unless `AUDIT_RETENTION_DAYS` is set. Then entries older than that
+are deleted at startup and every hour after.
 
 ## Setting up the login in authentik
 

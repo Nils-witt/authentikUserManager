@@ -203,6 +203,12 @@ func (f *fakeRules) DeleteRule(_ context.Context, group string) error {
 // newTestServer returns a server for an operator in groups, with the test rules.
 func newTestServer(t *testing.T, users server.UserService, rules *fakeRules, authn fakeAuth) *server.Server {
 	t.Helper()
+	return newAuditedServer(t, users, rules, &fakeAudit{}, authn)
+}
+
+// newAuditedServer is newTestServer recording to log.
+func newAuditedServer(t *testing.T, users server.UserService, rules *fakeRules, log *fakeAudit, authn fakeAuth) *server.Server {
+	t.Helper()
 	policy, err := access.NewPolicy([]string{"admins"}, rules)
 	if err != nil {
 		t.Fatal(err)
@@ -212,6 +218,7 @@ func newTestServer(t *testing.T, users server.UserService, rules *fakeRules, aut
 		Auth:   authn,
 		Policy: policy,
 		Rules:  rules,
+		Audit:  log,
 		Logger: slog.New(slog.DiscardHandler),
 
 		RecoveryEmailStage: testRecoveryStage,
@@ -525,6 +532,7 @@ func TestServer_static(t *testing.T) {
 		Auth:   fakeAuth{},
 		Policy: policy,
 		Rules:  newFakeRules(),
+		Audit:  &fakeAudit{},
 		Logger: slog.New(slog.DiscardHandler),
 		Static: static,
 	})
@@ -934,6 +942,7 @@ func TestServer_sendRecoveryEmail_disabled(t *testing.T) {
 		Auth:   fakeAuth{groups: []string{"admins"}},
 		Policy: policy,
 		Rules:  rules,
+		Audit:  &fakeAudit{},
 		Logger: slog.New(slog.DiscardHandler),
 	})
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"authentikManager/internal/access"
+	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 )
@@ -66,12 +67,20 @@ type RuleStore interface {
 	DeleteRule(ctx context.Context, operatorGroup string) error
 }
 
+// AuditLog records the changes operators make and lists them.
+type AuditLog interface {
+	RecordAudit(ctx context.Context, e audit.Entry) error
+	// ListAudit returns the entries matching a normalized query, newest first.
+	ListAudit(ctx context.Context, q audit.Query) ([]audit.Entry, error)
+}
+
 // Deps are the collaborators of the Server.
 type Deps struct {
 	Users  UserService
 	Auth   Authenticator
 	Policy Policy
 	Rules  RuleStore
+	Audit  AuditLog
 	Logger *slog.Logger
 	// Static, when non-nil, is the built frontend.
 	Static fs.FS
@@ -85,7 +94,9 @@ type Server struct {
 	users  UserService
 	policy Policy
 	rules  RuleStore
-	logger *slog.Logger
+	// auditLog records changes; see Server.record.
+	auditLog AuditLog
+	logger   *slog.Logger
 	// recoveryEmailStage is the email stage for recovery emails; empty disables them.
 	recoveryEmailStage string
 	// handler is the router wrapped in CSRF protection.
@@ -101,6 +112,7 @@ func New(d Deps) *Server {
 		users:              d.Users,
 		policy:             d.Policy,
 		rules:              d.Rules,
+		auditLog:           d.Audit,
 		logger:             d.Logger,
 		recoveryEmailStage: d.RecoveryEmailStage,
 	}
@@ -111,6 +123,7 @@ func New(d Deps) *Server {
 	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
 	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
+	api.Handle("GET /api/audit", s.requireAdmin(s.listAudit))
 	api.HandleFunc("GET /api/users", s.listUsers)
 	api.HandleFunc("POST /api/users", s.createUser)
 	api.HandleFunc("GET /api/users/paths", s.listUserPaths)
@@ -170,12 +183,6 @@ func (r *statusRecorder) WriteHeader(code int) {
 
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
-// audit logs a successful change together with the logged-in user.
-func (s *Server) audit(r *http.Request, msg string, attrs ...slog.Attr) {
-	attrs = append(attrs, slog.String("actor", actorName(r)))
-	s.logger.LogAttrs(r.Context(), slog.LevelInfo, msg, attrs...)
-}
-
 // actorName returns the username of the logged-in operator.
 func actorName(r *http.Request) string {
 	u, _ := auth.UserFromContext(r.Context())
@@ -219,7 +226,8 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// requireAdmin restricts h to access administrators, who may edit the access rules and delete users.
+// requireAdmin restricts h to access administrators, who may edit the access
+// rules, delete users and read the audit log.
 func (s *Server) requireAdmin(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.policy.IsAdmin(operatorGroups(r)) {

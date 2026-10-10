@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the runtime configuration.
@@ -30,14 +32,20 @@ type Config struct {
 	// OIDCRedirectURL is this app's public callback URL, ending in /auth/callback.
 	OIDCRedirectURL string
 
-	// DatabaseURL is the PostgreSQL connection URL that stores the access rules.
+	// DatabaseURL is the PostgreSQL connection URL that stores the access rules
+	// and the audit log.
 	DatabaseURL string
+	// AuditRetention is how long audit log entries are kept. Zero keeps them forever.
+	AuditRetention time.Duration
 	// AccessAdminGroups lists the groups whose members have full access and may
 	// edit the access rules.
 	AccessAdminGroups []string
 }
 
 const defaultListenAddr = "127.0.0.1:8080"
+
+// maxAuditRetentionDays bounds AUDIT_RETENTION_DAYS (100 years).
+const maxAuditRetentionDays = 36500
 
 // FromEnv reads the configuration from the environment, using getenv
 // (normally os.Getenv) so it can be tested without touching the process env.
@@ -80,6 +88,11 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if len(cfg.AccessAdminGroups) == 0 {
 		errs = append(errs, errors.New("ACCESS_ADMIN_GROUPS is required (comma-separated authentik group names)"))
 	}
+	retention, err := parseRetention(getenv("AUDIT_RETENTION_DAYS"))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.AuditRetention = retention
 	if cfg.StaticDir != "" {
 		if fi, err := os.Stat(cfg.StaticDir); err != nil || !fi.IsDir() {
 			errs = append(errs, fmt.Errorf("STATIC_DIR %q is not a readable directory", cfg.StaticDir))
@@ -89,6 +102,19 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+// parseRetention parses AUDIT_RETENTION_DAYS; empty means zero, keeping entries forever.
+func parseRetention(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	days, err := strconv.Atoi(v)
+	if err != nil || days < 1 || days > maxAuditRetentionDays {
+		return 0, fmt.Errorf("AUDIT_RETENTION_DAYS must be a number of days between 1 and %d", maxAuditRetentionDays)
+	}
+	return time.Duration(days) * 24 * time.Hour, nil
 }
 
 // splitList splits a comma-separated value, dropping empty entries.

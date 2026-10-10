@@ -1,11 +1,12 @@
 import * as api from '../../api'
 import type { Access, User } from '../../api'
 import { AccessRules } from '../access-rules/AccessRules'
+import { AuditLog } from '../audit/AuditLog'
 import { UserForm } from './UserForm'
 
 /** The dialog open on the user admin page, if any. */
 export type UserDialogState =
-  { kind: 'create' } | { kind: 'edit'; user: User } | { kind: 'rules' } | null
+  { kind: 'create' } | { kind: 'edit'; user: User } | { kind: 'rules' } | { kind: 'audit' } | null
 
 interface UserDialogProps {
   dialog: UserDialogState
@@ -69,6 +70,8 @@ export function UserDialog({
     }
     case 'rules':
       return <AccessRules onClose={onRulesClose} />
+    case 'audit':
+      return <AuditLog onClose={onClose} />
     default:
       return null
   }

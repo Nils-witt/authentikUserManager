@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 
 	"authentikManager/internal/access"
+	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
 )
 
@@ -95,7 +95,7 @@ func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik
 		return nil, access.Scope{}, false
 	}
 	if user.Type != authentik.UserTypeInternal || !scope.Allows(user) {
-		s.audit(r, "access denied", slog.Int("user_id", id))
+		s.recordUser(r, audit.ActionAccessDenied, user, nil)
 		writeError(w, http.StatusNotFound, "user not found", nil)
 		return nil, access.Scope{}, false
 	}
@@ -205,7 +205,11 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	s.audit(r, "user created", slog.Int("user_id", user.PK), slog.String("username", user.Username))
+	details := map[string]string{}
+	if in.Group != "" {
+		details["group"] = in.Group
+	}
+	s.recordUser(r, audit.ActionUserCreated, user, details)
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -251,7 +255,14 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	s.audit(r, "user updated", slog.Int("user_id", id))
+	details := map[string]string{"fields": updatedFields(req)}
+	if req.Username != nil && user.Username != target.Username {
+		details["previous_username"] = target.Username
+	}
+	if req.IsActive != nil {
+		details["is_active"] = strconv.FormatBool(*req.IsActive)
+	}
+	s.recordUser(r, audit.ActionUserUpdated, user, details)
 	writeJSON(w, http.StatusOK, user)
 }
 
@@ -289,14 +300,14 @@ func (s *Server) setUserGroups(w http.ResponseWriter, r *http.Request) {
 			s.writeUpstreamError(w, r, err)
 			return
 		}
-		s.audit(r, "user added to group", slog.Int("user_id", user.PK), slog.String("group", g.Name))
+		s.recordUser(r, audit.ActionUserGroupAdded, user, map[string]string{"group": g.Name})
 	}
 	for _, g := range change.removed {
 		if err := s.users.RemoveUserFromGroup(r.Context(), g.PK, user.PK); err != nil {
 			s.writeUpstreamError(w, r, err)
 			return
 		}
-		s.audit(r, "user removed from group", slog.Int("user_id", user.PK), slog.String("group", g.Name))
+		s.recordUser(r, audit.ActionUserGroupRemoved, user, map[string]string{"group": g.Name})
 	}
 
 	updated, err := s.users.GetUser(r.Context(), user.PK)
@@ -354,12 +365,11 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id := target.PK
-	if err := s.users.DeleteUser(r.Context(), id); err != nil {
+	if err := s.users.DeleteUser(r.Context(), target.PK); err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	s.audit(r, "user deleted", slog.Int("user_id", id))
+	s.recordUser(r, audit.ActionUserDeleted, target, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -381,7 +391,7 @@ func (s *Server) sendRecoveryEmail(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	s.audit(r, "recovery email sent", slog.Int("user_id", user.PK))
+	s.recordUser(r, audit.ActionRecoveryEmailSent, user, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

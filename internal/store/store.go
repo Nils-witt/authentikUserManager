@@ -1,4 +1,4 @@
-// Package store persists the access rules in PostgreSQL.
+// Package store persists the access rules and the audit log in PostgreSQL.
 package store
 
 import (
@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"authentikManager/internal/access"
+	"authentikManager/internal/audit"
 )
 
 //go:embed migrations/*.sql
@@ -28,12 +29,15 @@ const (
 	maxConnIdleTime = 5 * time.Minute
 )
 
-// Store is the PostgreSQL-backed rule store. It is safe for concurrent use.
+// Store is the PostgreSQL-backed rule store and audit log. It is safe for concurrent use.
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-var _ access.Store = (*Store)(nil)
+var (
+	_ access.Store = (*Store)(nil)
+	_ audit.Pruner = (*Store)(nil)
+)
 
 // Open connects to the database at url (a postgres:// URL or key=value DSN)
 // and applies pending migrations.

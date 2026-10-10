@@ -61,6 +61,37 @@ export interface AccessRule {
 
 export const WILDCARD = '*'
 
+/** What an operator did, as recorded in the audit log. */
+export type AuditAction =
+  | 'user.created'
+  | 'user.updated'
+  | 'user.deleted'
+  | 'user.group_added'
+  | 'user.group_removed'
+  | 'user.recovery_email_sent'
+  | 'user.access_denied'
+  | 'access_rule.saved'
+  | 'access_rule.deleted'
+
+/** One record in the audit log. */
+export interface AuditEntry {
+  id: number
+  time: string
+  /** Username of the operator. */
+  actor: string
+  action: AuditAction
+  /** Username of the affected user, or operator group of the affected rule. */
+  target: string
+  details: Record<string, string>
+}
+
+/** A page of the audit log, newest first. */
+export interface AuditPage {
+  entries: AuditEntry[]
+  /** Pass as `before` to load the next page; absent on the last page. */
+  next?: number
+}
+
 /** Error returned by the backend; `fields` holds per-field validation messages. */
 export class ApiError extends Error {
   readonly status: number
@@ -151,6 +182,15 @@ export const putRule = (rule: AccessRule) =>
 
 export const deleteRule = (operatorGroup: string) =>
   request<void>('DELETE', `/api/access/rules/${encodeURIComponent(operatorGroup)}`)
+
+/** Loads a page of the audit log; only access administrators may read it. */
+export function listAudit(params: { search?: string; action?: AuditAction; before?: number }) {
+  const q = new URLSearchParams()
+  if (params.search) q.set('search', params.search)
+  if (params.action) q.set('action', params.action)
+  if (params.before) q.set('before', String(params.before))
+  return request<AuditPage>('GET', `/api/audit?${q}`)
+}
 
 /** authentik group names, for suggestions in the rule editor. */
 export const listGroups = () =>

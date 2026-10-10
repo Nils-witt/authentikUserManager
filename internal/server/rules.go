@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"authentikManager/internal/access"
+	"authentikManager/internal/audit"
 )
 
 func (s *Server) listRules(w http.ResponseWriter, r *http.Request) {
@@ -38,10 +39,8 @@ func (s *Server) putRule(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.audit(r, "access rule saved",
-		slog.String("operator_group", rule.OperatorGroup),
-		slog.String("target_groups", strings.Join(rule.TargetGroups, ",")),
-	)
+	s.record(r, audit.ActionRuleSaved, rule.OperatorGroup,
+		map[string]string{"target_groups": strings.Join(rule.TargetGroups, ",")})
 	writeJSON(w, http.StatusOK, rule)
 }
 
@@ -56,7 +55,7 @@ func (s *Server) deleteRule(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	s.audit(r, "access rule deleted", slog.String("operator_group", group))
+	s.record(r, audit.ActionRuleDeleted, group, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

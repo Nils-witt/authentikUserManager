@@ -15,7 +15,8 @@
 //	OIDC_CLIENT_SECRET   OIDC client secret (required)
 //	OIDC_REDIRECT_URL    public callback URL, ending in /auth/callback (required)
 //
-//	DATABASE_URL         PostgreSQL URL storing the access rules (required)
+//	DATABASE_URL         PostgreSQL URL storing the access rules and the audit log (required)
+//	AUDIT_RETENTION_DAYS days to keep audit log entries; they are kept forever when unset (optional)
 //	ACCESS_ADMIN_GROUPS  comma-separated authentik groups with full access that may edit
 //	                     the access rules (required)
 package main
@@ -29,10 +30,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"authentikManager/internal/access"
+	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/config"
@@ -63,12 +66,20 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("creating authentik client: %w", err)
 	}
 
-	rules, err := store.Open(ctx, cfg.DatabaseURL)
+	db, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	defer rules.Close()
-	policy, err := access.NewPolicy(cfg.AccessAdminGroups, rules)
+	defer db.Close()
+	if cfg.AuditRetention > 0 {
+		// Deferred after db.Close, so this stops pruning and waits for it before the pool closes.
+		pruneCtx, stopPruning := context.WithCancel(ctx)
+		var pruning sync.WaitGroup
+		defer pruning.Wait()
+		defer stopPruning()
+		pruning.Go(func() { audit.Retain(pruneCtx, db, cfg.AuditRetention, audit.PruneInterval, logger) })
+	}
+	policy, err := access.NewPolicy(cfg.AccessAdminGroups, db)
 	if err != nil {
 		return err
 	}
@@ -99,7 +110,8 @@ func run(logger *slog.Logger) error {
 			Users:  client,
 			Auth:   authn,
 			Policy: policy,
-			Rules:  rules,
+			Rules:  db,
+			Audit:  db,
 			Logger: logger,
 			Static: static,
 
