@@ -1,0 +1,46 @@
+#!/bin/sh
+# Pre-commit checks: golangci-lint + govulncheck for Go changes, oxlint for
+# frontend changes. Enable with `make hooks`; bypass once with `git commit --no-verify`.
+#
+# Note: checks run against the working tree, not only the staged content.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Keep in sync with GO_PKGS in the Makefile (agent/skills holds unrelated example code).
+GO_PKGS="./cmd/... ./internal/..."
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+go_changed=$(printf '%s\n' "$staged" | grep -E '\.go$|^go\.(mod|sum)$|^\.golangci\.yml$' | grep -vE '^(agent|\.agents|\.claude)/' || true)
+frontend_changed=$(printf '%s\n' "$staged" | grep -E '^frontend/' || true)
+
+require() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		echo "pre-commit: '$1' not found. Install it with: $2" >&2
+		exit 1
+	fi
+}
+
+if [ -n "$go_changed" ]; then
+	require golangci-lint "brew install golangci-lint"
+	require govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
+
+	echo "pre-commit: golangci-lint"
+	# shellcheck disable=SC2086 # GO_PKGS is intentionally split into arguments
+	golangci-lint run $GO_PKGS
+
+	echo "pre-commit: govulncheck"
+	# shellcheck disable=SC2086
+	govulncheck $GO_PKGS
+fi
+
+if [ -n "$frontend_changed" ]; then
+	if [ ! -d frontend/node_modules ]; then
+		echo "pre-commit: frontend/node_modules missing, run: (cd frontend && npm ci)" >&2
+		exit 1
+	fi
+	echo "pre-commit: oxlint"
+	(cd frontend && npm run --silent lint)
+fi

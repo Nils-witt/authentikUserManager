@@ -1,0 +1,87 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    # Correctness & safety
+    - bodyclose
+    - durationcheck
+    - errorlint
+    - exhaustive
+    - forcetypeassert
+    - nilerr
+    - noctx
+    - reassign
+    # Security
+    - bidichk
+    - gosec
+    # Style & readability
+    - errname
+    - gocritic
+    - misspell
+    - nolintlint
+    - predeclared
+    - revive
+    - unconvert
+    - usestdlibvars
+    - whitespace
+    # Complexity
+    - gocyclo
+    - nestif
+    # Logging & testing
+    - sloglint
+    - thelper
+    - usetesting
+    # Modernization
+    - copyloopvar
+    - intrange
+    - modernize
+    - perfsprint
+  settings:
+    gocyclo:
+      min-complexity: 15
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    sloglint:
+      attr-only: true
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+        - name: indent-error-flow
+        - name: error-strings
+        - name: receiver-naming
+        - name: unused-parameter
+  exclusions:
+    generated: lax
+    paths:
+      # Example code shipped with the agent skills, not part of this application.
+      - ^agent/
+      - ^\.agents/
+      - ^\.claude/
+      - ^frontend/
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - forcetypeassert
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      # The module path has no dot, so gofumpt can't tell it apart from the standard library otherwise.
+      module-path: authentikManager
+    goimports:
+      local-prefixes:
+        - authentikManager
+  exclusions:
+    paths:
+      - ^agent/
