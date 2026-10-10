@@ -27,6 +27,11 @@ if [ -n "$go_changed" ]; then
 	require golangci-lint "brew install golangci-lint"
 	require govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
 
+	if [ ! -f internal/web/dist/index.html ]; then
+		echo "pre-commit: embedded frontend missing (internal/web/dist), run: make build-frontend" >&2
+		exit 1
+	fi
+
 	echo "pre-commit: golangci-lint"
 	# shellcheck disable=SC2086 # GO_PKGS is intentionally split into arguments
 	golangci-lint run $GO_PKGS

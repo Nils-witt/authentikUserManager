@@ -1,12 +1,12 @@
-// Command authentik-manager serves a small REST API (and optionally the web
-// frontend) for managing users in an authentik instance.
+// Command authentik-manager serves a small REST API and the embedded web
+// frontend for managing users in an authentik instance.
 //
 // Configuration is read from the environment:
 //
 //	AUTHENTIK_URL    base URL of the authentik instance (required)
 //	AUTHENTIK_TOKEN  authentik API token (required)
 //	LISTEN_ADDR      listen address (default 127.0.0.1:8080)
-//	STATIC_DIR       directory with the built frontend to serve (optional)
+//	STATIC_DIR       serve the frontend from this directory instead of the embedded build (optional)
 //
 //	OIDC_ISSUER          issuer URL of the authentik OIDC provider (required)
 //	OIDC_CLIENT_ID       OIDC client ID (required)
@@ -31,6 +31,7 @@ import (
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/config"
 	"authentikManager/internal/server"
+	"authentikManager/internal/web"
 )
 
 func main() {
@@ -68,9 +69,12 @@ func run(logger *slog.Logger) error {
 
 	var static fs.FS
 	if cfg.StaticDir != "" {
-		if static, err = server.OpenStatic(cfg.StaticDir); err != nil {
-			return err
-		}
+		static, err = server.OpenStatic(cfg.StaticDir)
+	} else {
+		static, err = web.Dist()
+	}
+	if err != nil {
+		return err
 	}
 
 	srv := &http.Server{

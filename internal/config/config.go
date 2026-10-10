@@ -16,7 +16,7 @@ type Config struct {
 	AuthentikToken string
 	// ListenAddr is the address the HTTP server binds to.
 	ListenAddr string
-	// StaticDir, when set, is served as the frontend (SPA with index.html fallback).
+	// StaticDir, when set, is served as the frontend instead of the embedded build.
 	StaticDir string
 
 	// OIDCIssuer is the issuer URL of the authentik OAuth2/OIDC provider,

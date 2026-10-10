@@ -2,10 +2,11 @@
 
 A small web app for managing users in an [authentik](https://goauthentik.io) instance.
 
-- `cmd/authentik-manager`: Go API server. It proxies a narrow, validated set of user operations to the authentik API (`/api/v3/core/users/`). It can also serve the built frontend.
+- `cmd/authentik-manager`: Go API server. It proxies a narrow, validated set of user operations to the authentik API (`/api/v3/core/users/`). It serves the frontend, which is embedded into the binary.
 - `internal/auth`: OIDC login against authentik (authorization code + PKCE) with server-side sessions.
 - `internal/authentik`: a minimal typed client for authentik's user endpoints.
 - `internal/server`: HTTP handlers, input validation and error mapping.
+- `internal/web`: embeds the built frontend (`internal/web/dist`, written by Vite).
 - `frontend/`: React + TypeScript (Vite) UI.
 
 ## Features
@@ -21,7 +22,7 @@ Set these environment variables (see `.env.example`):
 | `AUTHENTIK_URL`   | yes      |                  | Base URL of authentik, e.g. `https://sso.nils-witt.de`  |
 | `AUTHENTIK_TOKEN` | yes      |                  | API token (Directory → Tokens, intent "API")            |
 | `LISTEN_ADDR`     | no       | `127.0.0.1:8080` | Address the server listens on                           |
-| `STATIC_DIR`      | no       |                  | Serve the built frontend from this directory            |
+| `STATIC_DIR`      | no       |                  | Serve the frontend from this directory instead of the embedded build |
 | `OIDC_ISSUER`     | yes      |                  | Issuer of the OIDC provider, `https://<host>/application/o/<slug>/` |
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
@@ -64,9 +65,13 @@ Skip the checks once with `git commit --no-verify`.
 ## Production build
 
 ```sh
-make build                         # frontend/dist + bin/authentik-manager
-STATIC_DIR=frontend/dist ./bin/authentik-manager
+make build                  # builds the frontend into internal/web/dist, then bin/authentik-manager
+./bin/authentik-manager     # single self-contained binary, serves UI and API
 ```
+
+The frontend is embedded with `//go:embed`, so `internal/web/dist` must exist before any
+Go build, test or lint. The Makefile targets build it on first use; after changing
+the frontend, run `make build` again.
 
 ## Security
 
