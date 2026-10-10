@@ -71,6 +71,40 @@ func TestClient_ListUsers(t *testing.T) {
 	}
 }
 
+func TestClient_ListUsers_pathFilter(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("path") != "users" || q.Get("path_startswith") != "users/staff" {
+			t.Errorf("query = %v", q)
+		}
+		_, _ = io.WriteString(w, `{"pagination":{},"results":[]}`)
+	})
+
+	params := authentik.ListUsersParams{Path: "users", PathStartsWith: "users/staff"}
+	if _, err := c.ListUsers(t.Context(), params); err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+}
+
+func TestClient_ListUserPaths(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v3/core/users/paths/" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"paths":["users","users/staff"]}`)
+	})
+
+	got, err := c.ListUserPaths(t.Context())
+	if err != nil {
+		t.Fatalf("ListUserPaths: %v", err)
+	}
+	if len(got) != 2 || got[0] != "users" || got[1] != "users/staff" {
+		t.Errorf("ListUserPaths = %v", got)
+	}
+}
+
 func TestClient_UpdateUser_sendsOnlySetFields(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

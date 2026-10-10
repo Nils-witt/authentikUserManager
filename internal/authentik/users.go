@@ -71,6 +71,10 @@ type ListUsersParams struct {
 	Page     int
 	PageSize int
 	Type     []UserType
+	// Path matches users whose path is exactly this value.
+	Path string
+	// PathStartsWith matches users whose path has this prefix, e.g. a folder and its subfolders.
+	PathStartsWith string
 }
 
 func (p ListUsersParams) values() url.Values {
@@ -89,6 +93,12 @@ func (p ListUsersParams) values() url.Values {
 	}
 	for _, t := range p.Type {
 		q.Add("type", string(t))
+	}
+	if p.Path != "" {
+		q.Set("path", p.Path)
+	}
+	if p.PathStartsWith != "" {
+		q.Set("path_startswith", p.PathStartsWith)
 	}
 	return q
 }
@@ -127,6 +137,20 @@ func (c *Client) ListUsers(ctx context.Context, p ListUsersParams) (*UserList, e
 		out.Results = []User{}
 	}
 	return &out, nil
+}
+
+// ListUserPaths returns every distinct user path, such as "users" or "users/staff".
+func (c *Client) ListUserPaths(ctx context.Context) ([]string, error) {
+	var out struct {
+		Paths []string `json:"paths"`
+	}
+	if err := c.do(ctx, http.MethodGet, "core/users/paths/", nil, nil, &out); err != nil {
+		return nil, fmt.Errorf("listing user paths: %w", err)
+	}
+	if out.Paths == nil {
+		out.Paths = []string{}
+	}
+	return out.Paths, nil
 }
 
 // GetUser returns the user with primary key id.

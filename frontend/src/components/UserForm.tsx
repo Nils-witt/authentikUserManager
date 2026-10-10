@@ -5,17 +5,19 @@ import { Modal } from './Modal'
 interface UserFormProps {
   /** The user being edited, or undefined to create a new one. */
   user?: User
+  /** Path for a new user; defaults to "users". */
+  defaultPath?: string
   onSubmit: (input: UserInput) => Promise<void>
   onClose: () => void
 }
 
-export function UserForm({ user, onSubmit, onClose }: UserFormProps) {
+export function UserForm({ user, defaultPath, onSubmit, onClose }: UserFormProps) {
   const [input, setInput] = useState<UserInput>({
     username: user?.username ?? '',
     name: user?.name ?? '',
     email: user?.email ?? '',
     is_active: user?.is_active ?? true,
-    path: user?.path ?? 'users',
+    path: user?.path ?? defaultPath ?? 'users',
     type: user?.type ?? 'internal',
   })
   const [error, setError] = useState<ApiError | null>(null)

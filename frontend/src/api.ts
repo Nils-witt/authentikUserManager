@@ -101,14 +101,25 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await res.json()) as T
 }
 
-export function listUsers(params: { search: string; page: number; pageSize: number }) {
+export function listUsers(params: {
+  search: string
+  page: number
+  pageSize: number
+  /** Only users in this folder or one of its subfolders. */
+  path?: string
+}) {
   const q = new URLSearchParams({
     page: String(params.page),
     page_size: String(params.pageSize),
   })
   if (params.search) q.set('search', params.search)
+  if (params.path) q.set('path_startswith', params.path)
   return request<UserList>('GET', `/api/users?${q}`)
 }
+
+/** Every distinct user path (folder), e.g. "users" or "users/staff". */
+export const listUserPaths = () =>
+  request<{ paths: string[] }>('GET', '/api/users/paths').then((res) => res.paths)
 
 export const createUser = (input: UserInput) => request<User>('POST', '/api/users', input)
 

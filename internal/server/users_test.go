@@ -46,6 +46,13 @@ func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*
 	return &authentik.UserList{Results: []authentik.User{{PK: 1, Username: "ann"}}}, nil
 }
 
+func (f *fakeUsers) ListUserPaths(context.Context) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []string{"users", "users/staff"}, nil
+}
+
 func (f *fakeUsers) GetUser(_ context.Context, id int) (*authentik.User, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -139,6 +146,51 @@ func TestServer_listUsers(t *testing.T) {
 			rec := do(t, newServer(&fakeUsers{}), http.MethodGet, tt.target, "")
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+		})
+	}
+}
+
+func TestServer_listUsers_pathFilter(t *testing.T) {
+	t.Parallel()
+	fake := &fakeUsers{}
+	rec := do(t, newServer(fake), http.MethodGet, "/api/users?path=users&path_startswith=users%2Fstaff", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusOK, rec.Body)
+	}
+	if fake.listParams.Path != "users" || fake.listParams.PathStartsWith != "users/staff" {
+		t.Errorf("params = %+v, want Path=users PathStartsWith=users/staff", fake.listParams)
+	}
+}
+
+func TestServer_listUserPaths(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{name: "ok", wantStatus: http.StatusOK},
+		{name: "upstream failure", err: &authentik.APIError{StatusCode: 500}, wantStatus: http.StatusBadGateway},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := do(t, newServer(&fakeUsers{err: tt.err}), http.MethodGet, "/api/users/paths", "")
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if rec.Code != http.StatusOK {
+				return
+			}
+			var body struct {
+				Paths []string `json:"paths"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			if len(body.Paths) != 2 || body.Paths[1] != "users/staff" {
+				t.Errorf("paths = %v", body.Paths)
 			}
 		})
 	}

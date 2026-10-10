@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import * as api from './api'
 import type { Me, User, UserList } from './api'
+import { FolderTree } from './components/FolderTree'
 import { PasswordForm } from './components/PasswordForm'
 import { UserForm } from './components/UserForm'
 
@@ -61,6 +62,9 @@ function UserAdmin({ me }: { me: Me }) {
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
+  // Selected user folder (path), or null for all users.
+  const [folder, setFolder] = useState<string | null>(null)
+  const [paths, setPaths] = useState<string[]>([])
   const [data, setData] = useState<UserList | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -77,14 +81,14 @@ function UserAdmin({ me }: { me: Me }) {
 
   // Bumped after every mutation to refetch the current page.
   const [version, setVersion] = useState(0)
-  const requestKey = `${query}|${page}|${version}`
+  const requestKey = `${query}|${folder}|${page}|${version}`
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const loading = loadedKey !== requestKey
 
   useEffect(() => {
     let cancelled = false
     api
-      .listUsers({ search: query, page, pageSize: PAGE_SIZE })
+      .listUsers({ search: query, page, pageSize: PAGE_SIZE, path: folder ?? undefined })
       .then((list) => {
         if (cancelled) return
         setData(list)
@@ -99,7 +103,28 @@ function UserAdmin({ me }: { me: Me }) {
     return () => {
       cancelled = true
     }
-  }, [query, page, requestKey])
+  }, [query, folder, page, requestKey])
+
+  // Reload the folders after mutations too, since a user's path may have changed.
+  useEffect(() => {
+    let cancelled = false
+    api
+      .listUserPaths()
+      .then((list) => {
+        if (!cancelled) setPaths(list)
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [version])
+
+  function selectFolder(path: string | null) {
+    setFolder(path)
+    setPage(1)
+  }
 
   const done = (message: string) => {
     setDialog(null)
@@ -161,81 +186,87 @@ function UserAdmin({ me }: { me: Me }) {
         </p>
       )}
 
-      <div className="table-wrap" aria-busy={loading}>
-        <table>
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Last login</th>
-              <th aria-label="Actions" />
-            </tr>
-          </thead>
-          <tbody>
-            {data?.results.map((user) => (
-              <tr key={user.pk} className={user.is_active ? undefined : 'inactive'}>
-                <td>
-                  <span className="user-cell">
-                    {user.avatar && <img src={user.avatar} alt="" className="avatar" />}
-                    {user.username}
-                    {user.is_superuser && <span className="badge">admin</span>}
-                  </span>
-                </td>
-                <td>{user.name}</td>
-                <td>{user.email || '—'}</td>
-                <td>{user.type.replaceAll('_', ' ')}</td>
-                <td>{user.is_active ? 'active' : 'inactive'}</td>
-                <td>{formatDate(user.last_login)}</td>
-                <td className="actions">
-                  <button type="button" onClick={() => setDialog({ kind: 'edit', user })}>
-                    Edit
-                  </button>
-                  <button type="button" onClick={() => setDialog({ kind: 'password', user })}>
-                    Password
-                  </button>
-                  <button type="button" onClick={() => void toggleActive(user)}>
-                    {user.is_active ? 'Deactivate' : 'Activate'}
-                  </button>
-                  <button type="button" className="danger" onClick={() => void remove(user)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {data && data.results.length === 0 && (
-              <tr>
-                <td colSpan={7} className="empty">
-                  No users found.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <div className="layout">
+        <FolderTree paths={paths} selected={folder} onSelect={selectFolder} />
+        <section className="content">
+          <div className="table-wrap" aria-busy={loading}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Last login</th>
+                  <th aria-label="Actions" />
+                </tr>
+              </thead>
+              <tbody>
+                {data?.results.map((user) => (
+                  <tr key={user.pk} className={user.is_active ? undefined : 'inactive'}>
+                    <td>
+                      <span className="user-cell">
+                        {user.avatar && <img src={user.avatar} alt="" className="avatar" />}
+                        {user.username}
+                        {user.is_superuser && <span className="badge">admin</span>}
+                      </span>
+                    </td>
+                    <td>{user.name}</td>
+                    <td>{user.email || '—'}</td>
+                    <td>{user.type.replaceAll('_', ' ')}</td>
+                    <td>{user.is_active ? 'active' : 'inactive'}</td>
+                    <td>{formatDate(user.last_login)}</td>
+                    <td className="actions">
+                      <button type="button" onClick={() => setDialog({ kind: 'edit', user })}>
+                        Edit
+                      </button>
+                      <button type="button" onClick={() => setDialog({ kind: 'password', user })}>
+                        Password
+                      </button>
+                      <button type="button" onClick={() => void toggleActive(user)}>
+                        {user.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button type="button" className="danger" onClick={() => void remove(user)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {data && data.results.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="empty">
+                      No users found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
 
-      {pagination && pagination.total_pages > 1 && (
-        <nav className="pager" aria-label="Pagination">
-          <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-            Previous
-          </button>
-          <span>
-            Page {pagination.current} of {pagination.total_pages} ({pagination.count} users)
-          </span>
-          <button
-            type="button"
-            disabled={page >= pagination.total_pages}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            Next
-          </button>
-        </nav>
-      )}
+          {pagination && pagination.total_pages > 1 && (
+            <nav className="pager" aria-label="Pagination">
+              <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                Previous
+              </button>
+              <span>
+                Page {pagination.current} of {pagination.total_pages} ({pagination.count} users)
+              </span>
+              <button
+                type="button"
+                disabled={page >= pagination.total_pages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </nav>
+          )}
+        </section>
+      </div>
 
       {dialog?.kind === 'create' && (
         <UserForm
+          defaultPath={folder ?? undefined}
           onClose={() => setDialog(null)}
           onSubmit={async (input) => {
             const user = await api.createUser(input)

@@ -23,6 +23,7 @@ const maxRequestBytes = 1 << 20
 // UserService is the subset of the authentik client the handlers depend on.
 type UserService interface {
 	ListUsers(ctx context.Context, p authentik.ListUsersParams) (*authentik.UserList, error)
+	ListUserPaths(ctx context.Context) ([]string, error)
 	GetUser(ctx context.Context, id int) (*authentik.User, error)
 	CreateUser(ctx context.Context, req authentik.CreateUserRequest) (*authentik.User, error)
 	UpdateUser(ctx context.Context, id int, req authentik.UpdateUserRequest) (*authentik.User, error)
@@ -59,6 +60,7 @@ func New(users UserService, authn Authenticator, logger *slog.Logger, static fs.
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/users", s.listUsers)
 	api.HandleFunc("POST /api/users", s.createUser)
+	api.HandleFunc("GET /api/users/paths", s.listUserPaths)
 	api.HandleFunc("GET /api/users/{id}", s.getUser)
 	api.HandleFunc("PATCH /api/users/{id}", s.updateUser)
 	api.HandleFunc("DELETE /api/users/{id}", s.deleteUser)

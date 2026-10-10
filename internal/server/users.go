@@ -17,10 +17,12 @@ const maxPageSize = 100
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	params := authentik.ListUsersParams{
-		Search:   q.Get("search"),
-		Ordering: q.Get("ordering"),
-		Page:     1,
-		PageSize: 20,
+		Search:         q.Get("search"),
+		Ordering:       q.Get("ordering"),
+		Page:           1,
+		PageSize:       20,
+		Path:           q.Get("path"),
+		PathStartsWith: q.Get("path_startswith"),
 	}
 	var err error
 	if v := q.Get("page"); v != "" {
@@ -50,6 +52,15 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
+	paths, err := s.users.ListUserPaths(r.Context())
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"paths": paths})
 }
 
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
