@@ -45,7 +45,10 @@ type fakeUsers struct {
 	// user is returned by GetUser; nil means a user without groups.
 	user *authentik.User
 	// groups are found by FindGroup, keyed by name.
-	groups  map[string]authentik.Group
+	groups map[string]authentik.Group
+	// added and removed record the group keys passed to AddUserToGroup and RemoveUserFromGroup.
+	added   []string
+	removed []string
 	mutated bool
 	err     error
 }
@@ -119,8 +122,15 @@ func (f *fakeUsers) DeleteUser(context.Context, int) error {
 	return f.err
 }
 
-func (f *fakeUsers) SetPassword(context.Context, int, string) error {
+func (f *fakeUsers) AddUserToGroup(_ context.Context, groupPK string, _ int) error {
 	f.mutated = true
+	f.added = append(f.added, groupPK)
+	return f.err
+}
+
+func (f *fakeUsers) RemoveUserFromGroup(_ context.Context, groupPK string, _ int) error {
+	f.mutated = true
+	f.removed = append(f.removed, groupPK)
 	return f.err
 }
 
@@ -447,8 +457,6 @@ func TestServer_userByID(t *testing.T) {
 		{name: "patch non-internal type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"external"}`, wantStatus: http.StatusBadRequest},
 		{name: "patch bad type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"root"}`, wantStatus: http.StatusBadRequest},
 		{name: "delete", method: http.MethodDelete, target: "/api/users/4", wantStatus: http.StatusNoContent},
-		{name: "password", method: http.MethodPost, target: "/api/users/4/password", body: `{"password":"s3cret!"}`, wantStatus: http.StatusNoContent},
-		{name: "empty password", method: http.MethodPost, target: "/api/users/4/password", body: `{"password":""}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown api route", method: http.MethodGet, target: "/api/nope", wantStatus: http.StatusNotFound},
 	}
 	for _, tt := range tests {
@@ -595,7 +603,6 @@ func TestServer_userByID_scoped(t *testing.T) {
 		{http.MethodGet, "/api/users/4", ""},
 		{http.MethodPatch, "/api/users/4", `{"name":"x"}`},
 		{http.MethodDelete, "/api/users/4", ""},
-		{http.MethodPost, "/api/users/4/password", `{"password":"s3cret!"}`},
 	}
 	tests := []struct {
 		name    string
@@ -711,5 +718,101 @@ func TestServer_createUser_scoped(t *testing.T) {
 				t.Errorf("created groups = %v, want %v", fake.created.Groups, tt.wantGroups)
 			}
 		})
+	}
+}
+
+func TestServer_setUserGroups(t *testing.T) {
+	t.Parallel()
+	known := map[string]authentik.Group{
+		"staff":    {PK: "pk-staff", Name: "staff"},
+		"students": {PK: "pk-students", Name: "students"},
+		"new":      {PK: "pk-new", Name: "new"},
+		"admins":   {PK: "pk-admins", Name: "admins", IsSuperuser: true},
+	}
+	tests := []struct {
+		name        string
+		operator    string
+		body        string
+		wantStatus  int
+		wantAdded   []string
+		wantRemoved []string
+	}{
+		{
+			name:        "full access adds and removes any group",
+			operator:    "admins",
+			body:        `{"groups":["staff"," new ","new"]}`,
+			wantStatus:  http.StatusOK,
+			wantAdded:   []string{"pk-new"},
+			wantRemoved: []string{"pk-other"},
+		},
+		{
+			name:       "full access may add an administrator group",
+			operator:   "admins",
+			body:       `{"groups":["staff","other","admins"]}`,
+			wantStatus: http.StatusOK,
+			wantAdded:  []string{"pk-admins"},
+		},
+		{name: "unchanged", operator: "helpdesk", body: `{"groups":["other","staff"]}`, wantStatus: http.StatusOK},
+		{
+			name:       "restricted adds a target group",
+			operator:   "helpdesk",
+			body:       `{"groups":["staff","other","students"]}`,
+			wantStatus: http.StatusOK,
+			wantAdded:  []string{"pk-students"},
+		},
+		{
+			name:        "restricted swaps target groups",
+			operator:    "helpdesk",
+			body:        `{"groups":["students","other"]}`,
+			wantStatus:  http.StatusOK,
+			wantAdded:   []string{"pk-students"},
+			wantRemoved: []string{"pk-staff"},
+		},
+		{name: "restricted adds other group", operator: "helpdesk", body: `{"groups":["staff","other","new"]}`, wantStatus: http.StatusBadRequest},
+		{name: "restricted removes other group", operator: "helpdesk", body: `{"groups":["staff"]}`, wantStatus: http.StatusBadRequest},
+		{name: "restricted removes last target group", operator: "helpdesk", body: `{"groups":["other"]}`, wantStatus: http.StatusBadRequest},
+		{name: "unknown group", operator: "admins", body: `{"groups":["staff","other","nope"]}`, wantStatus: http.StatusBadRequest},
+		{name: "malformed body", operator: "admins", body: `{"groups":"staff"}`, wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{user: member("staff", "other"), groups: known}
+			rec := do(t, newScopedServer(t, fake, tt.operator), http.MethodPut, "/api/users/4/groups", tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus != http.StatusOK && fake.mutated {
+				t.Errorf("groups changed on a rejected request: added %v, removed %v", fake.added, fake.removed)
+			}
+			if !slices.Equal(fake.added, tt.wantAdded) || !slices.Equal(fake.removed, tt.wantRemoved) {
+				t.Errorf("added %v, removed %v, want %v and %v", fake.added, fake.removed, tt.wantAdded, tt.wantRemoved)
+			}
+			if tt.wantStatus == http.StatusBadRequest && strings.Contains(tt.name, "group") &&
+				!strings.Contains(rec.Body.String(), `"groups":[`) {
+				t.Errorf("body %s, want a message for the groups field", rec.Body)
+			}
+		})
+	}
+}
+
+func TestServer_setUserGroups_restrictedSuperuserGroup(t *testing.T) {
+	t.Parallel()
+	fake := &fakeUsers{
+		user:   member("staff"),
+		groups: map[string]authentik.Group{"students": {PK: "pk-students", Name: "students", IsSuperuser: true}},
+	}
+	rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodPut, "/api/users/4/groups", `{"groups":["staff","students"]}`)
+	if rec.Code != http.StatusBadRequest || fake.mutated {
+		t.Errorf("status = %d, mutated = %v, want 400 without change", rec.Code, fake.mutated)
+	}
+}
+
+func TestServer_setUserGroups_outOfScope(t *testing.T) {
+	t.Parallel()
+	fake := &fakeUsers{user: member("other")}
+	rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodPut, "/api/users/4/groups", `{"groups":["other","staff"]}`)
+	if rec.Code != http.StatusNotFound || fake.mutated {
+		t.Errorf("status = %d, mutated = %v, want 404 without change", rec.Code, fake.mutated)
 	}
 }

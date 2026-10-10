@@ -11,7 +11,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, set password, delete. Group-based access rules limit which users each operator may manage.
+List and search users (paginated), browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete. Group-based access rules limit which users each operator may manage.
 
 ## Configuration
 
@@ -30,7 +30,7 @@ Set these environment variables (see `.env.example`):
 | `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, e.g. `postgres://am:secret@db:5432/am` |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 
-The token's user needs permission to view, add, change and delete users (and to reset passwords).
+The token's user needs permission to view, add, change and delete users, and to add users to groups and remove them.
 
 ## Access rules
 
@@ -121,13 +121,13 @@ the frontend, run `make build` again.
 | PUT    | `/api/access/rules/{group}` | admins only: `{target_groups}` (creates or replaces)    |
 | DELETE | `/api/access/rules/{group}` | admins only                                             |
 | GET    | `/api/groups`              | admins only: authentik group names (max. 100), query `search` |
-| GET    | `/api/users`               | query: `search`, `page`, `page_size` (≤100), `ordering`, `type`, `path`, `path_startswith` |
+| GET    | `/api/users`               | internal users only; query: `search`, `page`, `page_size` (≤100), `ordering`, `path`, `path_startswith` |
 | GET    | `/api/users/paths`         | all user folders: `{paths}`                              |
-| POST   | `/api/users`               | `{username, name, email?, is_active?, path?, type?, group?}` |
+| POST   | `/api/users`               | `{username, name, email?, is_active?, path?, type?, group?}`; `type` must be `internal` |
 | GET    | `/api/users/{id}`          |                                                          |
 | PATCH  | `/api/users/{id}`          | any subset of the create fields                          |
 | DELETE | `/api/users/{id}`          |                                                          |
-| POST   | `/api/users/{id}/password` | `{password}`                                             |
+| PUT    | `/api/users/{id}/groups`   | `{groups}`: the group names the user should be in. Restricted operators may only add or remove their target groups, and the user must keep one of them |
 | GET    | `/healthz`                 | no login required                                        |
 | GET    | `/auth/login`              | starts the OIDC login                                     |
 | GET    | `/auth/callback`           | OIDC redirect target                                      |

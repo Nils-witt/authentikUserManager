@@ -1,6 +1,7 @@
 package authentik_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -268,16 +269,42 @@ func TestClient_errors(t *testing.T) {
 	}
 }
 
-func TestClient_SetPassword(t *testing.T) {
+func TestClient_groupMembership(t *testing.T) {
 	t.Parallel()
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v3/core/users/3/set_password/" {
-			t.Errorf("request = %s %s", r.Method, r.URL.Path)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	if err := c.SetPassword(t.Context(), 3, "hunter22"); err != nil {
-		t.Fatalf("SetPassword: %v", err)
+	tests := []struct {
+		name     string
+		call     func(ctx context.Context, c *authentik.Client) error
+		wantPath string
+	}{
+		{
+			name:     "add",
+			call:     func(ctx context.Context, c *authentik.Client) error { return c.AddUserToGroup(ctx, "g-1", 3) },
+			wantPath: "/api/v3/core/groups/g-1/add_user/",
+		},
+		{
+			name:     "remove",
+			call:     func(ctx context.Context, c *authentik.Client) error { return c.RemoveUserFromGroup(ctx, "g-1", 3) },
+			wantPath: "/api/v3/core/groups/g-1/remove_user/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != tt.wantPath {
+					t.Errorf("request = %s %s, want POST %s", r.Method, r.URL.Path, tt.wantPath)
+				}
+				var body struct {
+					PK int `json:"pk"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PK != 3 {
+					t.Errorf("body pk = %d (err %v), want 3", body.PK, err)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
+			if err := tt.call(t.Context(), c); err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+		})
 	}
 }

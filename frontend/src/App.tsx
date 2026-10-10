@@ -2,7 +2,6 @@ import BlockIcon from '@mui/icons-material/Block'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import DeleteIcon from '@mui/icons-material/Delete'
 import EditIcon from '@mui/icons-material/Edit'
-import KeyIcon from '@mui/icons-material/Key'
 import LogoutIcon from '@mui/icons-material/Logout'
 import SearchIcon from '@mui/icons-material/Search'
 import Alert from '@mui/material/Alert'
@@ -36,7 +35,6 @@ import type { Access, Me, User, UserList } from './api'
 import { AccessRules } from './components/AccessRules'
 import { useConfirm } from './components/ConfirmDialog'
 import { FolderTree } from './components/FolderTree'
-import { PasswordForm } from './components/PasswordForm'
 import { UserForm } from './components/UserForm'
 
 const PAGE_SIZE = 20
@@ -44,7 +42,6 @@ const PAGE_SIZE = 20
 type Dialog =
   | { kind: 'create' }
   | { kind: 'edit'; user: User }
-  | { kind: 'password'; user: User }
   | { kind: 'rules' }
   | null
 
@@ -169,6 +166,17 @@ function UserAdmin({ me }: { me: Me }) {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
   }, [version])
   const noAccess = access !== null && !access.all && access.groups.length === 0
+
+  // Suggestions for a user's groups; only access administrators may list every group.
+  const isAdmin = access?.admin ?? false
+  const [groupNames, setGroupNames] = useState<string[]>([])
+  useEffect(() => {
+    if (!isAdmin) return
+    api
+      .listGroups()
+      .then(setGroupNames)
+      .catch(() => setGroupNames([]))
+  }, [isAdmin])
 
   function selectFolder(path: string | null) {
     setFolder(path)
@@ -298,7 +306,6 @@ function UserAdmin({ me }: { me: Me }) {
                     <TableCell>Name</TableCell>
                     <TableCell>Email</TableCell>
                     <TableCell>Groups</TableCell>
-                    <TableCell>Type</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell>Last login</TableCell>
                     <TableCell aria-label="Actions" />
@@ -331,7 +338,6 @@ function UserAdmin({ me }: { me: Me }) {
                       >
                         {(user.groups_obj ?? []).map((g) => g.name).join(', ') || '—'}
                       </TableCell>
-                      <TableCell>{user.type.replaceAll('_', ' ')}</TableCell>
                       <TableCell>
                         <Chip
                           size="small"
@@ -348,14 +354,6 @@ function UserAdmin({ me }: { me: Me }) {
                             onClick={() => setDialog({ kind: 'edit', user })}
                           >
                             <EditIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Set password">
-                          <IconButton
-                            size="small"
-                            onClick={() => setDialog({ kind: 'password', user })}
-                          >
-                            <KeyIcon fontSize="small" />
                           </IconButton>
                         </Tooltip>
                         <Tooltip title={user.is_active ? 'Deactivate' : 'Activate'}>
@@ -377,7 +375,7 @@ function UserAdmin({ me }: { me: Me }) {
                   ))}
                   {data && data.results.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} align="center" sx={{ color: 'text.secondary', py: 4 }}>
+                      <TableCell colSpan={7} align="center" sx={{ color: 'text.secondary', py: 4 }}>
                         No users found.
                       </TableCell>
                     </TableRow>
@@ -424,15 +422,22 @@ function UserAdmin({ me }: { me: Me }) {
           onClose={() => setDialog(null)}
           onSubmit={async (input) => {
             const user = await api.createUser(input)
-            done(`${user.username} created. Set a password so they can log in.`)
+            done(`${user.username} created.`)
           }}
         />
       )}
       {dialog?.kind === 'edit' && (
         <UserForm
           user={dialog.user}
+          groups={access && !access.all ? access.groups : undefined}
+          groupSuggestions={groupNames}
           onClose={() => setDialog(null)}
-          onSubmit={async (input) => {
+          onSubmit={async (input, groups) => {
+            // Groups first: they are the likelier to be rejected, and then nothing has changed yet.
+            const before = (dialog.user.groups_obj ?? []).map((g) => g.name)
+            if (before.length !== groups.length || before.some((g) => !groups.includes(g))) {
+              await api.setUserGroups(dialog.user.pk, groups)
+            }
             await api.updateUser(dialog.user.pk, input)
             done(`${input.username} saved.`)
           }}
@@ -443,16 +448,6 @@ function UserAdmin({ me }: { me: Me }) {
           onClose={() => {
             setDialog(null)
             setVersion((v) => v + 1)
-          }}
-        />
-      )}
-      {dialog?.kind === 'password' && (
-        <PasswordForm
-          user={dialog.user}
-          onClose={() => setDialog(null)}
-          onSubmit={async (password) => {
-            await api.setPassword(dialog.user.pk, password)
-            done(`Password for ${dialog.user.username} updated.`)
           }}
         />
       )}

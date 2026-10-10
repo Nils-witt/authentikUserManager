@@ -29,8 +29,9 @@ type UserService interface {
 	CreateUser(ctx context.Context, req authentik.CreateUserRequest) (*authentik.User, error)
 	UpdateUser(ctx context.Context, id int, req authentik.UpdateUserRequest) (*authentik.User, error)
 	DeleteUser(ctx context.Context, id int) error
-	SetPassword(ctx context.Context, id int, password string) error
 	FindGroup(ctx context.Context, name string) (*authentik.Group, error)
+	AddUserToGroup(ctx context.Context, groupPK string, userID int) error
+	RemoveUserFromGroup(ctx context.Context, groupPK string, userID int) error
 	ListGroups(ctx context.Context, search string) ([]authentik.Group, error)
 }
 
@@ -104,7 +105,7 @@ func New(d Deps) *Server {
 	api.HandleFunc("GET /api/users/{id}", s.getUser)
 	api.HandleFunc("PATCH /api/users/{id}", s.updateUser)
 	api.HandleFunc("DELETE /api/users/{id}", s.deleteUser)
-	api.HandleFunc("POST /api/users/{id}/password", s.setPassword)
+	api.HandleFunc("PUT /api/users/{id}/groups", s.setUserGroups)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
 	})

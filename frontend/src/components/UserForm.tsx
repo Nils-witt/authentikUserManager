@@ -1,5 +1,7 @@
 import Alert from '@mui/material/Alert'
+import Autocomplete from '@mui/material/Autocomplete'
 import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
 import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
 import FormControlLabel from '@mui/material/FormControlLabel'
@@ -16,13 +18,26 @@ interface UserFormProps {
   user?: User
   /** Path for a new user; defaults to "users". */
   defaultPath?: string
-  /** Groups a new user may join; when set, choosing one is required. */
+  /**
+   * Groups the operator may add users to or remove them from; undefined means any group.
+   * When set, a new user must join one of them.
+   */
   groups?: string[]
-  onSubmit: (input: CreateUserInput) => Promise<void>
+  /** Group names suggested when any group may be chosen. */
+  groupSuggestions?: string[]
+  /** Receives the user's groups too; they are only edited for an existing user. */
+  onSubmit: (input: CreateUserInput, groups: string[]) => Promise<void>
   onClose: () => void
 }
 
-export function UserForm({ user, defaultPath, groups, onSubmit, onClose }: UserFormProps) {
+export function UserForm({
+  user,
+  defaultPath,
+  groups,
+  groupSuggestions,
+  onSubmit,
+  onClose,
+}: UserFormProps) {
   const [input, setInput] = useState<UserInput>({
     username: user?.username ?? '',
     name: user?.name ?? '',
@@ -31,6 +46,10 @@ export function UserForm({ user, defaultPath, groups, onSubmit, onClose }: UserF
     path: user?.path ?? defaultPath ?? 'users',
   })
   const [group, setGroup] = useState(groups?.length === 1 ? groups[0] : '')
+  const [memberOf, setMemberOf] = useState(() => (user?.groups_obj ?? []).map((g) => g.name))
+  // Groups outside the operator's scope stay as they are.
+  const editable = (g: string) => !groups || groups.includes(g)
+  const fixed = memberOf.filter((g) => !editable(g))
   const [error, setError] = useState<ApiError | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -42,7 +61,7 @@ export function UserForm({ user, defaultPath, groups, onSubmit, onClose }: UserF
     setSaving(true)
     setError(null)
     try {
-      await onSubmit(!user && group ? { ...input, group } : input)
+      await onSubmit(!user && group ? { ...input, group } : input, memberOf)
     } catch (err) {
       setError(err instanceof ApiError ? err : new ApiError(0, String(err)))
     } finally {
@@ -114,6 +133,42 @@ export function UserForm({ user, defaultPath, groups, onSubmit, onClose }: UserF
                   </MenuItem>
                 ))}
               </TextField>
+            )}
+            {user && (
+              <Autocomplete
+                multiple
+                freeSolo={!groups}
+                disableClearable
+                options={(groups ?? groupSuggestions ?? []).filter((g) => !memberOf.includes(g))}
+                value={memberOf}
+                onChange={(_, value) =>
+                  setMemberOf([
+                    ...new Set([...fixed, ...value.map((v) => v.trim()).filter(Boolean)]),
+                  ])
+                }
+                renderValue={(value, getItemProps) =>
+                  value.map((g, index) => {
+                    const { key, onDelete, ...itemProps } = getItemProps({ index })
+                    return (
+                      <Chip
+                        key={key}
+                        size="small"
+                        label={g}
+                        {...itemProps}
+                        onDelete={editable(g) ? onDelete : undefined}
+                      />
+                    )
+                  })
+                }
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Groups"
+                    placeholder={groups ? 'Add a group' : 'Group name, then Enter'}
+                    {...fieldError('groups')}
+                  />
+                )}
+              />
             )}
             <FormControlLabel
               label="Active"

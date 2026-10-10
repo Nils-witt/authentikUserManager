@@ -160,10 +160,11 @@ export const createUser = (input: CreateUserInput) => request<User>('POST', '/ap
 export const updateUser = (id: number, input: Partial<UserInput>) =>
   request<User>('PATCH', `/api/users/${id}`, input)
 
-export const deleteUser = (id: number) => request<void>('DELETE', `/api/users/${id}`)
+/** Replaces the user's groups with the named ones. */
+export const setUserGroups = (id: number, groups: string[]) =>
+  request<User>('PUT', `/api/users/${id}/groups`, { groups })
 
-export const setPassword = (id: number, password: string) =>
-  request<void>('POST', `/api/users/${id}/password`, { password })
+export const deleteUser = (id: number) => request<void>('DELETE', `/api/users/${id}`)
 
 export const me = () => request<Me>('GET', '/auth/me')
 

@@ -163,6 +163,10 @@ func userPath(id int) string {
 	return "core/users/" + strconv.Itoa(id) + "/"
 }
 
+func groupPath(pk string) string {
+	return "core/groups/" + url.PathEscape(pk) + "/"
+}
+
 // ListUsers returns one page of users matching p.
 func (c *Client) ListUsers(ctx context.Context, p ListUsersParams) (*UserList, error) {
 	var out UserList
@@ -241,7 +245,7 @@ func (c *Client) GetUser(ctx context.Context, id int) (*User, error) {
 	return &out, nil
 }
 
-// CreateUser creates a user. The user has no password until SetPassword is called.
+// CreateUser creates a user.
 func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, error) {
 	var out User
 	if err := c.do(ctx, http.MethodPost, "core/users/", nil, req, &out); err != nil {
@@ -267,13 +271,24 @@ func (c *Client) DeleteUser(ctx context.Context, id int) error {
 	return nil
 }
 
-// SetPassword sets the password of the user with primary key id.
-func (c *Client) SetPassword(ctx context.Context, id int, password string) error {
+// AddUserToGroup makes the user with primary key userID a member of the group with primary key groupPK.
+func (c *Client) AddUserToGroup(ctx context.Context, groupPK string, userID int) error {
 	body := struct {
-		Password string `json:"password"`
-	}{Password: password}
-	if err := c.do(ctx, http.MethodPost, userPath(id)+"set_password/", nil, body, nil); err != nil {
-		return fmt.Errorf("setting password for user %d: %w", id, err)
+		PK int `json:"pk"`
+	}{PK: userID}
+	if err := c.do(ctx, http.MethodPost, groupPath(groupPK)+"add_user/", nil, body, nil); err != nil {
+		return fmt.Errorf("adding user %d to group %s: %w", userID, groupPK, err)
+	}
+	return nil
+}
+
+// RemoveUserFromGroup removes the user with primary key userID from the group with primary key groupPK.
+func (c *Client) RemoveUserFromGroup(ctx context.Context, groupPK string, userID int) error {
+	body := struct {
+		PK int `json:"pk"`
+	}{PK: userID}
+	if err := c.do(ctx, http.MethodPost, groupPath(groupPK)+"remove_user/", nil, body, nil); err != nil {
+		return fmt.Errorf("removing user %d from group %s: %w", userID, groupPK, err)
 	}
 	return nil
 }
