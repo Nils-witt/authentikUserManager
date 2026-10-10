@@ -1,30 +1,40 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import CloseIcon from '@mui/icons-material/Close'
+import Dialog from '@mui/material/Dialog'
+import DialogTitle from '@mui/material/DialogTitle'
+import IconButton from '@mui/material/IconButton'
+import { useId, type ReactNode } from 'react'
 
 interface ModalProps {
   title: string
   onClose: () => void
+  /** DialogContent and DialogActions, optionally wrapped in a form. */
   children: ReactNode
+  /** Use a wider dialog, e.g. for tables. */
+  wide?: boolean
 }
 
-/** Modal built on the native <dialog> element (focus trap and Esc handling for free). */
-export function Modal({ title, onClose, children }: ModalProps) {
-  const ref = useRef<HTMLDialogElement>(null)
-
-  useEffect(() => {
-    const dialog = ref.current
-    dialog?.showModal()
-    return () => dialog?.close()
-  }, [])
-
+/** Dialog with a title bar and close button. */
+export function Modal({ title, onClose, children, wide }: ModalProps) {
+  const titleId = useId()
   return (
-    <dialog ref={ref} className="modal" onClose={onClose} aria-labelledby="modal-title">
-      <header className="modal-header">
-        <h2 id="modal-title">{title}</h2>
-        <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
-          ×
-        </button>
-      </header>
+    <Dialog
+      open
+      onClose={onClose}
+      fullWidth
+      maxWidth={wide ? 'md' : 'xs'}
+      aria-labelledby={titleId}
+    >
+      <DialogTitle id={titleId} sx={{ pr: 6 }}>
+        {title}
+      </DialogTitle>
+      <IconButton
+        onClick={onClose}
+        aria-label="Close"
+        sx={{ position: 'absolute', right: 8, top: 8 }}
+      >
+        <CloseIcon />
+      </IconButton>
       {children}
-    </dialog>
+    </Dialog>
   )
 }

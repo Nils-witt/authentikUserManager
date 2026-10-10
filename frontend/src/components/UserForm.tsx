@@ -1,5 +1,21 @@
+import Alert from '@mui/material/Alert'
+import Button from '@mui/material/Button'
+import DialogActions from '@mui/material/DialogActions'
+import DialogContent from '@mui/material/DialogContent'
+import FormControlLabel from '@mui/material/FormControlLabel'
+import MenuItem from '@mui/material/MenuItem'
+import Stack from '@mui/material/Stack'
+import Switch from '@mui/material/Switch'
+import TextField from '@mui/material/TextField'
 import { useState, type FormEvent } from 'react'
-import { ApiError, USER_TYPES, type User, type UserInput, type UserType } from '../api'
+import {
+  ApiError,
+  USER_TYPES,
+  type CreateUserInput,
+  type User,
+  type UserInput,
+  type UserType,
+} from '../api'
 import { Modal } from './Modal'
 
 interface UserFormProps {
@@ -7,11 +23,13 @@ interface UserFormProps {
   user?: User
   /** Path for a new user; defaults to "users". */
   defaultPath?: string
-  onSubmit: (input: UserInput) => Promise<void>
+  /** Groups a new user may join; when set, choosing one is required. */
+  groups?: string[]
+  onSubmit: (input: CreateUserInput) => Promise<void>
   onClose: () => void
 }
 
-export function UserForm({ user, defaultPath, onSubmit, onClose }: UserFormProps) {
+export function UserForm({ user, defaultPath, groups, onSubmit, onClose }: UserFormProps) {
   const [input, setInput] = useState<UserInput>({
     username: user?.username ?? '',
     name: user?.name ?? '',
@@ -20,6 +38,7 @@ export function UserForm({ user, defaultPath, onSubmit, onClose }: UserFormProps
     path: user?.path ?? defaultPath ?? 'users',
     type: user?.type ?? 'internal',
   })
+  const [group, setGroup] = useState(groups?.length === 1 ? groups[0] : '')
   const [error, setError] = useState<ApiError | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -31,7 +50,7 @@ export function UserForm({ user, defaultPath, onSubmit, onClose }: UserFormProps
     setSaving(true)
     setError(null)
     try {
-      await onSubmit(input)
+      await onSubmit(!user && group ? { ...input, group } : input)
     } catch (err) {
       setError(err instanceof ApiError ? err : new ApiError(0, String(err)))
     } finally {
@@ -39,79 +58,101 @@ export function UserForm({ user, defaultPath, onSubmit, onClose }: UserFormProps
     }
   }
 
-  const fieldError = (name: string) =>
-    error?.fields[name]?.map((msg) => (
-      <span key={msg} className="field-error">
-        {msg}
-      </span>
-    ))
+  /** Props showing the server's validation errors for a field. */
+  const fieldError = (name: string) => {
+    const msgs = error?.fields[name]
+    return msgs?.length ? { error: true, helperText: msgs.join(' ') } : {}
+  }
 
   return (
     <Modal title={user ? `Edit ${user.username}` : 'Create user'} onClose={onClose}>
-      <form onSubmit={handleSubmit} className="form">
-        {error && (
-          <p className="alert" role="alert">
-            {error.message}
-            {error.fields.non_field_errors?.map((msg) => <span key={msg}> {msg}</span>)}
-          </p>
-        )}
-        <label>
-          Username
-          <input
-            required
-            maxLength={150}
-            value={input.username}
-            onChange={(e) => set('username', e.target.value)}
-          />
-          {fieldError('username')}
-        </label>
-        <label>
-          Display name
-          <input required value={input.name} onChange={(e) => set('name', e.target.value)} />
-          {fieldError('name')}
-        </label>
-        <label>
-          Email
-          <input
-            type="email"
-            maxLength={254}
-            value={input.email}
-            onChange={(e) => set('email', e.target.value)}
-          />
-          {fieldError('email')}
-        </label>
-        <label>
-          Path
-          <input value={input.path} onChange={(e) => set('path', e.target.value)} />
-          {fieldError('path')}
-        </label>
-        <label>
-          Type
-          <select value={input.type} onChange={(e) => set('type', e.target.value as UserType)}>
-            {USER_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {t.replaceAll('_', ' ')}
-              </option>
-            ))}
-          </select>
-          {fieldError('type')}
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={input.is_active}
-            onChange={(e) => set('is_active', e.target.checked)}
-          />
-          Active
-        </label>
-        <footer className="form-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={saving}>
-            {saving ? 'Saving…' : user ? 'Save' : 'Create'}
-          </button>
-        </footer>
+      <form onSubmit={handleSubmit}>
+        <DialogContent sx={{ pt: 0 }}>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            {error && (
+              <Alert severity="error">
+                {error.message}
+                {error.fields.non_field_errors?.map((msg) => (
+                  <span key={msg}> {msg}</span>
+                ))}
+              </Alert>
+            )}
+            <TextField
+              label="Username"
+              required
+              autoFocus
+              value={input.username}
+              onChange={(e) => set('username', e.target.value)}
+              slotProps={{ htmlInput: { maxLength: 150 } }}
+              {...fieldError('username')}
+            />
+            <TextField
+              label="Display name"
+              required
+              value={input.name}
+              onChange={(e) => set('name', e.target.value)}
+              {...fieldError('name')}
+            />
+            <TextField
+              label="Email"
+              type="email"
+              value={input.email}
+              onChange={(e) => set('email', e.target.value)}
+              slotProps={{ htmlInput: { maxLength: 254 } }}
+              {...fieldError('email')}
+            />
+            <TextField
+              label="Path"
+              value={input.path}
+              onChange={(e) => set('path', e.target.value)}
+              {...fieldError('path')}
+            />
+            {!user && groups && (
+              <TextField
+                select
+                label="Group"
+                required
+                value={group}
+                onChange={(e) => setGroup(e.target.value)}
+                {...fieldError('group')}
+              >
+                {groups.map((g) => (
+                  <MenuItem key={g} value={g}>
+                    {g}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
+            <TextField
+              select
+              label="Type"
+              value={input.type}
+              onChange={(e) => set('type', e.target.value as UserType)}
+              {...fieldError('type')}
+            >
+              {USER_TYPES.map((t) => (
+                <MenuItem key={t} value={t}>
+                  {t.replaceAll('_', ' ')}
+                </MenuItem>
+              ))}
+            </TextField>
+            <FormControlLabel
+              label="Active"
+              control={
+                <Switch
+                  checked={input.is_active}
+                  onChange={(e) => set('is_active', e.target.checked)}
+                />
+              }
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="contained" loading={saving}>
+            {user ? 'Save' : 'Create'}
+          </Button>
+        </DialogActions>
       </form>
     </Modal>
   )

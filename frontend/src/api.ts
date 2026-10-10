@@ -24,6 +24,8 @@ export interface User {
   avatar: string
   last_login: string | null
   date_joined: string
+  /** Groups the user is a direct member of. */
+  groups_obj?: { pk: string; name: string }[] | null
 }
 
 export interface Pagination {
@@ -45,6 +47,29 @@ export interface UserInput {
   path: string
   type: UserType
 }
+
+export interface CreateUserInput extends UserInput {
+  /** Group the new user joins; required for operators with restricted access. */
+  group?: string
+}
+
+/** The users the signed-in operator may manage. */
+export interface Access {
+  /** Every user, including superusers. */
+  all: boolean
+  /** Target groups whose members may be managed, when `all` is false. */
+  groups: string[]
+  /** The operator may edit the access rules. */
+  admin: boolean
+}
+
+/** Members of operator_group may manage members of target_groups ('*': all users). */
+export interface AccessRule {
+  operator_group: string
+  target_groups: string[]
+}
+
+export const WILDCARD = '*'
 
 /** Error returned by the backend; `fields` holds per-field validation messages. */
 export class ApiError extends Error {
@@ -121,7 +146,24 @@ export function listUsers(params: {
 export const listUserPaths = () =>
   request<{ paths: string[] }>('GET', '/api/users/paths').then((res) => res.paths)
 
-export const createUser = (input: UserInput) => request<User>('POST', '/api/users', input)
+export const access = () => request<Access>('GET', '/api/access')
+
+export const listRules = () =>
+  request<{ rules: AccessRule[] }>('GET', '/api/access/rules').then((res) => res.rules)
+
+export const putRule = (rule: AccessRule) =>
+  request<AccessRule>('PUT', `/api/access/rules/${encodeURIComponent(rule.operator_group)}`, {
+    target_groups: rule.target_groups,
+  })
+
+export const deleteRule = (operatorGroup: string) =>
+  request<void>('DELETE', `/api/access/rules/${encodeURIComponent(operatorGroup)}`)
+
+/** authentik group names, for suggestions in the rule editor. */
+export const listGroups = () =>
+  request<{ groups: string[] }>('GET', '/api/groups').then((res) => res.groups)
+
+export const createUser = (input: CreateUserInput) => request<User>('POST', '/api/users', input)
 
 export const updateUser = (id: number, input: Partial<UserInput>) =>
   request<User>('PATCH', `/api/users/${id}`, input)

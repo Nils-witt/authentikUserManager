@@ -1,3 +1,9 @@
+import Alert from '@mui/material/Alert'
+import Button from '@mui/material/Button'
+import DialogActions from '@mui/material/DialogActions'
+import DialogContent from '@mui/material/DialogContent'
+import Stack from '@mui/material/Stack'
+import TextField from '@mui/material/TextField'
 import { useState, type FormEvent } from 'react'
 import { ApiError, type User } from '../api'
 import { Modal } from './Modal'
@@ -34,40 +40,35 @@ export function PasswordForm({ user, onSubmit, onClose }: PasswordFormProps) {
 
   return (
     <Modal title={`Set password for ${user.username}`} onClose={onClose}>
-      <form onSubmit={handleSubmit} className="form">
-        {error && (
-          <p className="alert" role="alert">
-            {error}
-          </p>
-        )}
-        <label>
-          New password
-          <input
-            type="password"
-            required
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
-        <label>
-          Confirm password
-          <input
-            type="password"
-            required
-            autoComplete="new-password"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-          />
-        </label>
-        <footer className="form-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={saving}>
-            {saving ? 'Saving…' : 'Set password'}
-          </button>
-        </footer>
+      <form onSubmit={handleSubmit}>
+        <DialogContent sx={{ pt: 0 }}>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            {error && <Alert severity="error">{error}</Alert>}
+            <TextField
+              label="New password"
+              type="password"
+              required
+              autoFocus
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <TextField
+              label="Confirm password"
+              type="password"
+              required
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="contained" loading={saving}>
+            Set password
+          </Button>
+        </DialogActions>
       </form>
     </Modal>
   )

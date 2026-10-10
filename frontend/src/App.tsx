@@ -1,6 +1,40 @@
+import BlockIcon from '@mui/icons-material/Block'
+import CheckCircleIcon from '@mui/icons-material/CheckCircle'
+import DeleteIcon from '@mui/icons-material/Delete'
+import EditIcon from '@mui/icons-material/Edit'
+import KeyIcon from '@mui/icons-material/Key'
+import LogoutIcon from '@mui/icons-material/Logout'
+import SearchIcon from '@mui/icons-material/Search'
+import Alert from '@mui/material/Alert'
+import AppBar from '@mui/material/AppBar'
+import Avatar from '@mui/material/Avatar'
+import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
+import CircularProgress from '@mui/material/CircularProgress'
+import Container from '@mui/material/Container'
+import IconButton from '@mui/material/IconButton'
+import InputAdornment from '@mui/material/InputAdornment'
+import LinearProgress from '@mui/material/LinearProgress'
+import Pagination from '@mui/material/Pagination'
+import Paper from '@mui/material/Paper'
+import Snackbar from '@mui/material/Snackbar'
+import Stack from '@mui/material/Stack'
+import Table from '@mui/material/Table'
+import TableBody from '@mui/material/TableBody'
+import TableCell from '@mui/material/TableCell'
+import TableContainer from '@mui/material/TableContainer'
+import TableHead from '@mui/material/TableHead'
+import TableRow from '@mui/material/TableRow'
+import TextField from '@mui/material/TextField'
+import Toolbar from '@mui/material/Toolbar'
+import Tooltip from '@mui/material/Tooltip'
+import Typography from '@mui/material/Typography'
 import { useEffect, useState } from 'react'
 import * as api from './api'
-import type { Me, User, UserList } from './api'
+import type { Access, Me, User, UserList } from './api'
+import { AccessRules } from './components/AccessRules'
+import { useConfirm } from './components/ConfirmDialog'
 import { FolderTree } from './components/FolderTree'
 import { PasswordForm } from './components/PasswordForm'
 import { UserForm } from './components/UserForm'
@@ -11,6 +45,7 @@ type Dialog =
   | { kind: 'create' }
   | { kind: 'edit'; user: User }
   | { kind: 'password'; user: User }
+  | { kind: 'rules' }
   | null
 
 function formatDate(value: string | null) {
@@ -35,15 +70,18 @@ export default function App() {
 
   if (error) {
     return (
-      <main className="app">
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      </main>
+      <Container component="main" sx={{ py: 3 }}>
+        <Alert severity="error">{error}</Alert>
+      </Container>
     )
   }
   if (!me) {
-    return <main className="app loading">Signing in…</main>
+    return (
+      <Stack component="main" spacing={2} sx={{ alignItems: 'center', py: 8 }}>
+        <CircularProgress />
+        <Typography color="text.secondary">Signing in…</Typography>
+      </Stack>
+    )
   }
   return <UserAdmin me={me} />
 }
@@ -59,12 +97,14 @@ async function signOut() {
 }
 
 function UserAdmin({ me }: { me: Me }) {
+  const [confirm, confirmDialog] = useConfirm()
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
   // Selected user folder (path), or null for all users.
   const [folder, setFolder] = useState<string | null>(null)
   const [paths, setPaths] = useState<string[]>([])
+  const [access, setAccess] = useState<Access | null>(null)
   const [data, setData] = useState<UserList | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -121,6 +161,15 @@ function UserAdmin({ me }: { me: Me }) {
     }
   }, [version])
 
+  // Reloaded after every change, since an edited rule may change the operator's own scope.
+  useEffect(() => {
+    api
+      .access()
+      .then(setAccess)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+  }, [version])
+  const noAccess = access !== null && !access.all && access.groups.length === 0
+
   function selectFolder(path: string | null) {
     setFolder(path)
     setPage(1)
@@ -142,7 +191,12 @@ function UserAdmin({ me }: { me: Me }) {
   }
 
   async function remove(user: User) {
-    if (!window.confirm(`Delete user "${user.username}"? This cannot be undone.`)) return
+    const ok = await confirm({
+      title: `Delete ${user.username}?`,
+      message: 'The user is removed from authentik. This cannot be undone.',
+      confirmLabel: 'Delete',
+    })
+    if (!ok) return
     try {
       await api.deleteUser(user.pk)
       done(`${user.username} deleted.`)
@@ -154,119 +208,219 @@ function UserAdmin({ me }: { me: Me }) {
   const pagination = data?.pagination
 
   return (
-    <main className="app">
-      <header className="toolbar">
-        <h1>Authentik users</h1>
-        <input
-          type="search"
-          placeholder="Search users…"
-          aria-label="Search users"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <button type="button" className="primary" onClick={() => setDialog({ kind: 'create' })}>
-          New user
-        </button>
-        <span className="me" title={me.email}>
-          {me.name || me.username}
-        </span>
-        <button type="button" onClick={() => void signOut()}>
-          Sign out
-        </button>
-      </header>
+    <>
+      <AppBar
+        position="static"
+        color="default"
+        elevation={0}
+        sx={{ borderBottom: 1, borderColor: 'divider' }}
+      >
+        <Toolbar sx={{ gap: 2, flexWrap: 'wrap' }}>
+          <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
+            Authentik users
+          </Typography>
+          <Typography variant="body2" color="text.secondary" title={me.email}>
+            {me.name || me.username}
+          </Typography>
+          <Button color="inherit" startIcon={<LogoutIcon />} onClick={() => void signOut()}>
+            Sign out
+          </Button>
+        </Toolbar>
+      </AppBar>
 
-      {error && (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p className="notice" role="status" onClick={() => setNotice(null)}>
-          {notice}
-        </p>
-      )}
-
-      <div className="layout">
-        <FolderTree paths={paths} selected={folder} onSelect={selectFolder} />
-        <section className="content">
-          <div className="table-wrap" aria-busy={loading}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Username</th>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Last login</th>
-                  <th aria-label="Actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {data?.results.map((user) => (
-                  <tr key={user.pk} className={user.is_active ? undefined : 'inactive'}>
-                    <td>
-                      <span className="user-cell">
-                        {user.avatar && <img src={user.avatar} alt="" className="avatar" />}
-                        {user.username}
-                        {user.is_superuser && <span className="badge">admin</span>}
-                      </span>
-                    </td>
-                    <td>{user.name}</td>
-                    <td>{user.email || '—'}</td>
-                    <td>{user.type.replaceAll('_', ' ')}</td>
-                    <td>{user.is_active ? 'active' : 'inactive'}</td>
-                    <td>{formatDate(user.last_login)}</td>
-                    <td className="actions">
-                      <button type="button" onClick={() => setDialog({ kind: 'edit', user })}>
-                        Edit
-                      </button>
-                      <button type="button" onClick={() => setDialog({ kind: 'password', user })}>
-                        Password
-                      </button>
-                      <button type="button" onClick={() => void toggleActive(user)}>
-                        {user.is_active ? 'Deactivate' : 'Activate'}
-                      </button>
-                      <button type="button" className="danger" onClick={() => void remove(user)}>
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {data && data.results.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="empty">
-                      No users found.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {pagination && pagination.total_pages > 1 && (
-            <nav className="pager" aria-label="Pagination">
-              <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-                Previous
-              </button>
-              <span>
-                Page {pagination.current} of {pagination.total_pages} ({pagination.count} users)
-              </span>
-              <button
-                type="button"
-                disabled={page >= pagination.total_pages}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next
-              </button>
-            </nav>
+      <Container component="main" maxWidth="xl" sx={{ py: 3 }}>
+        <Stack
+          direction="row"
+          spacing={1.5}
+          useFlexGap
+          sx={{ mb: 2, flexWrap: 'wrap', alignItems: 'center' }}
+        >
+          <TextField
+            type="search"
+            size="small"
+            placeholder="Search users…"
+            aria-label="Search users"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            sx={{ flex: '1 1 280px', maxWidth: 400 }}
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              },
+            }}
+          />
+          <Box sx={{ flexGrow: 1 }} />
+          {access?.admin && (
+            <Button variant="outlined" onClick={() => setDialog({ kind: 'rules' })}>
+              Access rules
+            </Button>
           )}
-        </section>
-      </div>
+          {access && !noAccess && (
+            <Button variant="contained" onClick={() => setDialog({ kind: 'create' })}>
+              New user
+            </Button>
+          )}
+        </Stack>
+
+        <Stack spacing={1.5} sx={{ mb: 2, '&:empty': { display: 'none' } }}>
+          {error && <Alert severity="error">{error}</Alert>}
+          {noAccess && (
+            <Alert severity="warning">
+              Your groups do not grant access to any users. Ask an administrator to add an access
+              rule.
+            </Alert>
+          )}
+          {access && !access.all && !noAccess && (
+            <Alert severity="info">You can manage members of: {access.groups.join(', ')}</Alert>
+          )}
+        </Stack>
+
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: '240px minmax(0, 1fr)' },
+            gap: 2,
+            alignItems: 'start',
+          }}
+        >
+          <FolderTree paths={paths} selected={folder} onSelect={selectFolder} />
+          <Box component="section">
+            <TableContainer component={Paper} variant="outlined" aria-busy={loading}>
+              <Box sx={{ height: 4 }}>{loading && <LinearProgress />}</Box>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Username</TableCell>
+                    <TableCell>Name</TableCell>
+                    <TableCell>Email</TableCell>
+                    <TableCell>Groups</TableCell>
+                    <TableCell>Type</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Last login</TableCell>
+                    <TableCell aria-label="Actions" />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {data?.results.map((user) => (
+                    <TableRow
+                      key={user.pk}
+                      hover
+                      sx={user.is_active ? undefined : { '& td': { color: 'text.disabled' } }}
+                    >
+                      <TableCell>
+                        <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                          <Avatar
+                            src={user.avatar || undefined}
+                            alt=""
+                            sx={{ width: 24, height: 24 }}
+                          />
+                          <span>{user.username}</span>
+                          {user.is_superuser && (
+                            <Chip size="small" variant="outlined" label="admin" />
+                          )}
+                        </Stack>
+                      </TableCell>
+                      <TableCell>{user.name}</TableCell>
+                      <TableCell>{user.email || '—'}</TableCell>
+                      <TableCell
+                        sx={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                      >
+                        {(user.groups_obj ?? []).map((g) => g.name).join(', ') || '—'}
+                      </TableCell>
+                      <TableCell>{user.type.replaceAll('_', ' ')}</TableCell>
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          color={user.is_active ? 'success' : 'default'}
+                          variant="outlined"
+                          label={user.is_active ? 'active' : 'inactive'}
+                        />
+                      </TableCell>
+                      <TableCell>{formatDate(user.last_login)}</TableCell>
+                      <TableCell align="right">
+                        <Tooltip title="Edit">
+                          <IconButton
+                            size="small"
+                            onClick={() => setDialog({ kind: 'edit', user })}
+                          >
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Set password">
+                          <IconButton
+                            size="small"
+                            onClick={() => setDialog({ kind: 'password', user })}
+                          >
+                            <KeyIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title={user.is_active ? 'Deactivate' : 'Activate'}>
+                          <IconButton size="small" onClick={() => void toggleActive(user)}>
+                            {user.is_active ? (
+                              <BlockIcon fontSize="small" />
+                            ) : (
+                              <CheckCircleIcon fontSize="small" />
+                            )}
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Delete">
+                          <IconButton size="small" color="error" onClick={() => void remove(user)}>
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {data && data.results.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={8} align="center" sx={{ color: 'text.secondary', py: 4 }}>
+                        No users found.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            {pagination && pagination.total_pages > 1 && (
+              <Stack spacing={1} sx={{ alignItems: 'center', mt: 2 }}>
+                <Pagination
+                  color="primary"
+                  count={pagination.total_pages}
+                  page={page}
+                  onChange={(_, p) => setPage(p)}
+                />
+                <Typography variant="body2" color="text.secondary">
+                  {pagination.count} users
+                </Typography>
+              </Stack>
+            )}
+          </Box>
+        </Box>
+      </Container>
+
+      <Snackbar
+        open={notice !== null}
+        autoHideDuration={6000}
+        onClose={(_, reason) => {
+          if (reason !== 'clickaway') setNotice(null)
+        }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity="success" variant="filled" onClose={() => setNotice(null)}>
+          {notice}
+        </Alert>
+      </Snackbar>
+      {confirmDialog}
 
       {dialog?.kind === 'create' && (
         <UserForm
           defaultPath={folder ?? undefined}
+          groups={access && !access.all ? access.groups : undefined}
           onClose={() => setDialog(null)}
           onSubmit={async (input) => {
             const user = await api.createUser(input)
@@ -284,6 +438,14 @@ function UserAdmin({ me }: { me: Me }) {
           }}
         />
       )}
+      {dialog?.kind === 'rules' && (
+        <AccessRules
+          onClose={() => {
+            setDialog(null)
+            setVersion((v) => v + 1)
+          }}
+        />
+      )}
       {dialog?.kind === 'password' && (
         <PasswordForm
           user={dialog.user}
@@ -294,6 +456,6 @@ function UserAdmin({ me }: { me: Me }) {
           }}
         />
       )}
-    </main>
+    </>
   )
 }
