@@ -1,0 +1,10 @@
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!frontend/
+frontend/node_modules/
+frontend/dist/
+internal/web/dist/
+**/*_test.go
