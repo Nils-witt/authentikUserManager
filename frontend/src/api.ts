@@ -28,6 +28,21 @@ export interface UserList {
   results: User[]
 }
 
+/** An authentik group. */
+export interface Group {
+  pk: string
+  name: string
+  /** Members are authentik superusers. */
+  is_superuser: boolean
+  /** Name of the parent group; empty or null for a top-level group. */
+  parent_name: string | null
+}
+
+export interface GroupList {
+  pagination: Pagination
+  results: Group[]
+}
+
 export interface UserInput {
   username: string
   name: string
@@ -72,6 +87,7 @@ export type AuditAction =
   | 'user.access_denied'
   | 'access_rule.saved'
   | 'access_rule.deleted'
+  | 'group.renamed'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -80,7 +96,7 @@ export interface AuditEntry {
   /** Username of the operator. */
   actor: string
   action: AuditAction
-  /** Username of the affected user, or operator group of the affected rule. */
+  /** Username of the affected user, operator group of the affected rule, or name of the affected group. */
   target: string
   details: Record<string, string>
 }
@@ -192,9 +208,38 @@ export function listAudit(params: { search?: string; action?: AuditAction; befor
   return request<AuditPage>('GET', `/api/audit?${q}`)
 }
 
-/** authentik group names, for suggestions in the rule editor. */
-export const listGroups = () =>
-  request<{ groups: string[] }>('GET', '/api/groups').then((res) => res.groups)
+/** Up to 100 authentik group names, for suggestions; only access administrators may list them. */
+export const listGroupNames = () =>
+  request<GroupList>('GET', '/api/groups?page_size=100').then((res) =>
+    res.results.map((g) => g.name),
+  )
+
+/** Loads a page of authentik groups, ordered by name; only access administrators may list them. */
+export function listGroups(params: { search: string; page: number; pageSize: number }) {
+  const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
+  if (params.search) q.set('search', params.search)
+  return request<GroupList>('GET', `/api/groups?${q}`)
+}
+
+/** Renames a group; the access rules naming it are renamed too. */
+export const renameGroup = (pk: string, name: string) =>
+  request<Group>('PATCH', `/api/groups/${encodeURIComponent(pk)}`, { name })
+
+/** Loads a page of the direct members of a group, ordered by username. */
+export function listGroupMembers(
+  pk: string,
+  params: { search: string; page: number; pageSize: number },
+) {
+  const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
+  if (params.search) q.set('search', params.search)
+  return request<UserList>('GET', `/api/groups/${encodeURIComponent(pk)}/members?${q}`)
+}
+
+export const addGroupMember = (pk: string, userId: number) =>
+  request<void>('PUT', `/api/groups/${encodeURIComponent(pk)}/members/${userId}`)
+
+export const removeGroupMember = (pk: string, userId: number) =>
+  request<void>('DELETE', `/api/groups/${encodeURIComponent(pk)}/members/${userId}`)
 
 export const createUser = (input: CreateUserInput) => request<User>('POST', '/api/users', input)
 

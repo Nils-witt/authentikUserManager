@@ -50,7 +50,9 @@ type UserService interface {
 	AddUserToGroup(ctx context.Context, groupPK string, userID int) error
 	RemoveUserFromGroup(ctx context.Context, groupPK string, userID int) error
 	SendRecoveryEmail(ctx context.Context, id int, emailStage string) error
-	ListGroups(ctx context.Context, search string) ([]authentik.Group, error)
+	ListGroups(ctx context.Context, p authentik.ListGroupsParams) (*authentik.GroupList, error)
+	GetGroup(ctx context.Context, pk string) (*authentik.Group, error)
+	UpdateGroup(ctx context.Context, pk string, req authentik.UpdateGroupRequest) (*authentik.Group, error)
 }
 
 var _ UserService = (*authentik.Client)(nil)
@@ -81,6 +83,8 @@ type RuleStore interface {
 	PutRule(ctx context.Context, rule access.Rule, actor string) error
 	// DeleteRule returns access.ErrRuleNotFound when there is no rule.
 	DeleteRule(ctx context.Context, operatorGroup string) error
+	// RenameGroup replaces a group name in every rule and returns how many entries changed.
+	RenameGroup(ctx context.Context, oldName, newName, actor string) (int64, error)
 }
 
 // AuditLog records the changes operators make and lists them.
@@ -139,6 +143,11 @@ func New(d Deps) *Server {
 	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
 	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
+	api.Handle("GET /api/groups/{pk}", s.requireAdmin(s.getGroup))
+	api.Handle("PATCH /api/groups/{pk}", s.requireAdmin(s.renameGroup))
+	api.Handle("GET /api/groups/{pk}/members", s.requireAdmin(s.listGroupMembers))
+	api.Handle("PUT /api/groups/{pk}/members/{id}", s.requireAdmin(s.addGroupMember))
+	api.Handle("DELETE /api/groups/{pk}/members/{id}", s.requireAdmin(s.removeGroupMember))
 	api.Handle("GET /api/audit", s.requireAdmin(s.listAudit))
 	api.HandleFunc("GET /api/users", s.listUsers)
 	api.HandleFunc("POST /api/users", s.createUser)
@@ -243,7 +252,7 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireAdmin restricts h to access administrators, who may edit the access
-// rules, delete users and read the audit log.
+// rules and the groups, delete users and read the audit log.
 func (s *Server) requireAdmin(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.policy.IsAdmin(operatorGroups(r)) {

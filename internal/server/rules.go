@@ -59,20 +59,6 @@ func (s *Server) deleteRule(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// listGroups suggests authentik group names for the rule editor.
-func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
-	groups, err := s.users.ListGroups(r.Context(), r.URL.Query().Get("search"))
-	if err != nil {
-		s.writeUpstreamError(w, r, err)
-		return
-	}
-	names := make([]string, len(groups))
-	for i, g := range groups {
-		names[i] = g.Name
-	}
-	writeJSON(w, http.StatusOK, map[string][]string{"groups": names})
-}
-
 // writeStoreError logs a database error and reports it generically.
 func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err error) {
 	s.logger.ErrorContext(r.Context(), "access rule store failed",

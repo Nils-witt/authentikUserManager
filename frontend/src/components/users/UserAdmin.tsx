@@ -10,12 +10,12 @@ import { useGroupNames } from '../../hooks/useGroupNames'
 import { useUserFilters } from '../../hooks/useUserFilters'
 import { useUserList } from '../../hooks/useUserList'
 import { useUserPaths } from '../../hooks/useUserPaths'
+import { ListPagination } from '../common/ListPagination'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
 import { FolderTree } from '../folders/FolderTree'
 import { AppHeader } from '../layout/AppHeader'
 import { StatusAlerts } from './StatusAlerts'
 import { UserDialog, type UserDialogState } from './UserDialog'
-import { UserPagination } from './UserPagination'
 import { UserTable } from './UserTable'
 import { UserToolbar } from './UserToolbar'
 
@@ -97,6 +97,7 @@ export function UserAdmin({ me }: { me: Me }) {
           status={filters.status}
           onStatusChange={filters.selectStatus}
           onOpenRules={isAdmin ? () => setDialog({ kind: 'rules' }) : undefined}
+          onOpenGroups={isAdmin ? () => setDialog({ kind: 'groups' }) : undefined}
           onOpenAudit={isAdmin ? () => setDialog({ kind: 'audit' }) : undefined}
           onCreate={access && !noAccess ? () => setDialog({ kind: 'create' }) : undefined}
         />
@@ -127,10 +128,11 @@ export function UserAdmin({ me }: { me: Me }) {
               onSendRecovery={(user) => void sendRecovery(user)}
               onDelete={(user) => void remove(user)}
             />
-            <UserPagination
+            <ListPagination
               pagination={data?.pagination}
               page={filters.page}
               onChange={filters.setPage}
+              noun="users"
             />
           </Box>
         </Box>
@@ -146,7 +148,7 @@ export function UserAdmin({ me }: { me: Me }) {
         groupSuggestions={groupNames}
         onClose={() => setDialog(null)}
         onDone={done}
-        onRulesClose={() => {
+        onAdminClose={() => {
           setDialog(null)
           refresh()
         }}

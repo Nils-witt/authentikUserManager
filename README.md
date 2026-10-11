@@ -12,7 +12,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -33,7 +33,7 @@ Set these environment variables (see `.env.example`):
 | `AUDIT_RETENTION_DAYS` | no |                | Days to keep [audit log](#audit-log) entries; kept forever when unset |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 
-The token's user needs permission to view, add, change and delete users, and to add users to groups and remove them.
+The token's user needs permission to view, add, change and delete users, to view and change groups, and to add users to groups and remove them.
 
 ## Password recovery emails
 
@@ -56,7 +56,8 @@ they are stored in PostgreSQL.
 
 - **Access administrators** are the members of `ACCESS_ADMIN_GROUPS`. They always have full
   access and are the only ones who may edit the rules, so nobody can lock themselves out.
-  They are also the only ones who may delete users; other operators can deactivate them.
+  They are also the only ones who may delete users (other operators can deactivate them)
+  and manage the [groups](#groups).
 - A **rule** names an operator group (from the `groups` claim at login) and the target groups
   its members may manage. An operator gets the union of the target groups of all their groups.
 - An operator may manage a user only if the user is a direct member of one of the target groups.
@@ -74,12 +75,30 @@ they are stored in PostgreSQL.
 The schema is created and migrated automatically at startup
 (`internal/store/migrations`, applied with golang-migrate).
 
+## Groups
+
+Access administrators manage the authentik groups in the UI (**Groups** in the toolbar):
+search and page through them, rename a group, and add or remove its direct members.
+Other operators change the groups of the users they manage in the user dialog instead.
+
+- Access rules match groups by name, so renaming a group renames it in every rule too, in one
+  transaction. If the rules cannot be updated, the group gets its previous name back.
+- An operator's groups are read at login, so members of a renamed operator group must sign in
+  again before the renamed rule applies to them.
+- Groups named in `ACCESS_ADMIN_GROUPS` cannot be renamed, and no group can be renamed to one of
+  those names, to `*`, or to the name of another group.
+- Adding a user to a group that grants superuser rights asks for confirmation first.
+
+The API is `GET /api/groups` (`search`, `page`, `page_size`), `GET` and `PATCH /api/groups/{pk}`
+(body `{"name": "..."}`), `GET /api/groups/{pk}/members` (`search`, `page`, `page_size`), and
+`PUT` and `DELETE /api/groups/{pk}/members/{user id}`.
+
 ## Audit log
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
 creating, updating and deleting users, changing their groups, sending recovery emails,
-saving and deleting access rules, and requests for users outside the operator's scope.
+saving and deleting access rules, renaming groups, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
 

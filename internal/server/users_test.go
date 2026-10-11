@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -44,8 +45,12 @@ type fakeUsers struct {
 	listed []authentik.User
 	// user is returned by GetUser; nil means a user without groups.
 	user *authentik.User
-	// groups are found by FindGroup, keyed by name.
+	// groups are found by FindGroup and GetGroup, keyed by name.
 	groups map[string]authentik.Group
+	// groupParams records the parameters passed to ListGroups.
+	groupParams authentik.ListGroupsParams
+	// groupRenames records the names passed to UpdateGroup, in order.
+	groupRenames []string
 	// added and removed record the group keys passed to AddUserToGroup and RemoveUserFromGroup.
 	added   []string
 	removed []string
@@ -96,11 +101,33 @@ func (f *fakeUsers) FindGroup(_ context.Context, name string) (*authentik.Group,
 	return &g, nil
 }
 
-func (f *fakeUsers) ListGroups(context.Context, string) ([]authentik.Group, error) {
+func (f *fakeUsers) ListGroups(_ context.Context, p authentik.ListGroupsParams) (*authentik.GroupList, error) {
+	f.groupParams = p
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []authentik.Group{{PK: "g1", Name: "staff"}, {PK: "g2", Name: "students"}}, nil
+	return &authentik.GroupList{Results: []authentik.Group{{PK: "g1", Name: "staff"}, {PK: "g2", Name: "students"}}}, nil
+}
+
+func (f *fakeUsers) GetGroup(_ context.Context, pk string) (*authentik.Group, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	for _, g := range f.groups {
+		if g.PK == pk {
+			return &g, nil
+		}
+	}
+	return nil, authentik.ErrNotFound
+}
+
+func (f *fakeUsers) UpdateGroup(_ context.Context, pk string, req authentik.UpdateGroupRequest) (*authentik.Group, error) {
+	f.mutated = true
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.groupRenames = append(f.groupRenames, *req.Name)
+	return &authentik.Group{PK: pk, Name: *req.Name}, nil
 }
 
 func (f *fakeUsers) CreateUser(_ context.Context, req authentik.CreateUserRequest) (*authentik.User, error) {
@@ -154,6 +181,8 @@ func do(t *testing.T, h http.Handler, method, target, body string) *httptest.Res
 type fakeRules struct {
 	rules map[string][]string
 	err   error
+	// renameErr, when set, fails RenameGroup only.
+	renameErr error
 }
 
 // newFakeRules returns the test rules: "helpdesk" manages staff and students,
@@ -198,6 +227,27 @@ func (f *fakeRules) DeleteRule(_ context.Context, group string) error {
 	}
 	delete(f.rules, group)
 	return nil
+}
+
+func (f *fakeRules) RenameGroup(_ context.Context, oldName, newName, _ string) (int64, error) {
+	if err := cmp.Or(f.renameErr, f.err); err != nil {
+		return 0, err
+	}
+	var changed int64
+	for _, targets := range f.rules {
+		for i, t := range targets {
+			if t == oldName {
+				targets[i] = newName
+				changed++
+			}
+		}
+	}
+	if targets, ok := f.rules[oldName]; ok {
+		delete(f.rules, oldName)
+		f.rules[newName] = targets
+		changed += int64(len(targets))
+	}
+	return changed, nil
 }
 
 // newTestServer returns a server for an operator in groups, with the test rules.

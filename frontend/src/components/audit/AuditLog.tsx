@@ -31,6 +31,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'user.access_denied': 'Access denied',
   'access_rule.saved': 'Access rule saved',
   'access_rule.deleted': 'Access rule deleted',
+  'group.renamed': 'Group renamed',
 }
 
 const ACTIONS = Object.keys(ACTION_LABELS) as AuditAction[]

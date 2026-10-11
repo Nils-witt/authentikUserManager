@@ -98,6 +98,54 @@ func TestStore_replaceAndDelete(t *testing.T) {
 	}
 }
 
+func TestStore_renameGroup(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+	for _, r := range []access.Rule{
+		{OperatorGroup: "helpdesk", TargetGroups: []string{"staff", "students"}},
+		{OperatorGroup: "teachers", TargetGroups: []string{"staff"}},
+		// Already names the new name, so its entry is merged.
+		{OperatorGroup: "office", TargetGroups: []string{"staff", "employees"}},
+	} {
+		if err := s.PutRule(ctx, r, "tester"); err != nil {
+			t.Fatalf("PutRule(%v): %v", r, err)
+		}
+	}
+	n, err := s.RenameGroup(ctx, "staff", "employees", "tester")
+	if err != nil {
+		t.Fatalf("RenameGroup: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("RenameGroup changed %d entries, want 3", n)
+	}
+	rules, err := s.ListRules(ctx)
+	if err != nil {
+		t.Fatalf("ListRules: %v", err)
+	}
+	want := []access.Rule{
+		{OperatorGroup: "helpdesk", TargetGroups: []string{"employees", "students"}},
+		{OperatorGroup: "office", TargetGroups: []string{"employees"}},
+		{OperatorGroup: "teachers", TargetGroups: []string{"employees"}},
+	}
+	if !slices.EqualFunc(rules, want, func(a, b access.Rule) bool {
+		return a.OperatorGroup == b.OperatorGroup && slices.Equal(a.TargetGroups, b.TargetGroups)
+	}) {
+		t.Errorf("rules = %+v, want %+v", rules, want)
+	}
+
+	if _, err := s.RenameGroup(ctx, "helpdesk", "support", "tester"); err != nil {
+		t.Fatalf("RenameGroup operator group: %v", err)
+	}
+	got, err := s.TargetGroups(ctx, []string{"support"})
+	if err != nil {
+		t.Fatalf("TargetGroups: %v", err)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"employees", "students"}) {
+		t.Errorf("TargetGroups(support) = %v, want the renamed rule's targets", got)
+	}
+}
+
 func TestOpen_invalidURLHidesPassword(t *testing.T) {
 	t.Parallel()
 	_, err := store.Open(t.Context(), "postgres://user:hunter2@[bad")

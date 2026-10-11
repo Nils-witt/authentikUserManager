@@ -146,11 +146,3 @@ func TestServer_getAccess_admin(t *testing.T) {
 		}
 	}
 }
-
-func TestServer_listGroups(t *testing.T) {
-	t.Parallel()
-	rec := do(t, newServer(t, &fakeUsers{}), http.MethodGet, "/api/groups?search=st", "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"groups":["staff","students"]`) {
-		t.Errorf("GET /api/groups = %d %s", rec.Code, rec.Body)
-	}
-}

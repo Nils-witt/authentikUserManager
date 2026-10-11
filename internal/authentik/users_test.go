@@ -123,13 +123,16 @@ func TestClient_ListUsers_groupFilter(t *testing.T) {
 		if got := q["groups_by_name"]; len(got) != 2 || got[0] != "staff" || got[1] != "students" {
 			t.Errorf("groups_by_name = %v", got)
 		}
+		if got := q["groups_by_pk"]; len(got) != 1 || got[0] != "g1" {
+			t.Errorf("groups_by_pk = %v", got)
+		}
 		if q.Get("is_superuser") != "false" {
 			t.Errorf("is_superuser = %q", q.Get("is_superuser"))
 		}
 		_, _ = io.WriteString(w, `{"pagination":{},"results":[{"pk":1,"groups_obj":[{"pk":"g1","name":"staff"}]}]}`)
 	})
 
-	params := authentik.ListUsersParams{GroupsByName: []string{"staff", "students"}, IsSuperuser: new(false)}
+	params := authentik.ListUsersParams{GroupsByName: []string{"staff", "students"}, GroupsByPK: []string{"g1"}, IsSuperuser: new(false)}
 	got, err := c.ListUsers(t.Context(), params)
 	if err != nil {
 		t.Fatalf("ListUsers: %v", err)
@@ -176,17 +179,18 @@ func TestClient_ListGroups(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if r.URL.Path != "/api/v3/core/groups/" || q.Get("search") != "sta" || q.Get("include_users") != "false" {
+		if r.URL.Path != "/api/v3/core/groups/" || q.Get("search") != "sta" || q.Get("include_users") != "false" ||
+			q.Get("ordering") != "name" || q.Get("page") != "2" || q.Get("page_size") != "10" {
 			t.Errorf("request = %s", r.URL)
 		}
-		_, _ = io.WriteString(w, `{"pagination":{},"results":[{"pk":"g1","name":"staff"}]}`)
+		_, _ = io.WriteString(w, `{"pagination":{"count":11},"results":[{"pk":"g1","name":"staff","parent_name":"all"}]}`)
 	})
 
-	got, err := c.ListGroups(t.Context(), "sta")
+	got, err := c.ListGroups(t.Context(), authentik.ListGroupsParams{Search: "sta", Page: 2, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ListGroups: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "staff" {
+	if got.Pagination.Count != 11 || len(got.Results) != 1 || got.Results[0].Name != "staff" || got.Results[0].ParentName != "all" {
 		t.Errorf("ListGroups = %+v", got)
 	}
 }

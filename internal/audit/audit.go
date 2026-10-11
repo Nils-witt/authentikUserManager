@@ -24,6 +24,8 @@ const (
 	ActionAccessDenied Action = "user.access_denied"
 	ActionRuleSaved    Action = "access_rule.saved"
 	ActionRuleDeleted  Action = "access_rule.deleted"
+	// ActionGroupRenamed is recorded when a group is renamed, together with the access rules naming it.
+	ActionGroupRenamed Action = "group.renamed"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -31,7 +33,7 @@ func (a Action) Valid() bool {
 	switch a {
 	case ActionUserCreated, ActionUserUpdated, ActionUserDeleted,
 		ActionUserGroupAdded, ActionUserGroupRemoved, ActionRecoveryEmailSent,
-		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted:
+		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted, ActionGroupRenamed:
 		return true
 	}
 	return false
@@ -46,7 +48,8 @@ type Entry struct {
 	// Actor is the username of the operator.
 	Actor  string `json:"actor"`
 	Action Action `json:"action"`
-	// Target is the username of the affected user or the operator group of the affected rule.
+	// Target is the username of the affected user, the operator group of the
+	// affected rule, or the (new) name of the affected group.
 	Target string `json:"target"`
 	// Details holds action-specific values, such as the user ID or the changed fields.
 	Details map[string]string `json:"details"`

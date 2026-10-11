@@ -177,3 +177,40 @@ func (s *Store) DeleteRule(ctx context.Context, operatorGroup string) error {
 	}
 	return nil
 }
+
+// RenameGroup replaces the group name oldName with newName in every rule, as
+// operator group and as target group, and returns how many rule entries it
+// changed. Entries that already exist under the new name are merged.
+// actor is recorded as the editor.
+func (s *Store) RenameGroup(ctx context.Context, oldName, newName, actor string) (int64, error) {
+	var changed int64
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		// Copy then delete, since updating in place could collide with an existing entry.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO access_rules (operator_group, target_group, updated_by)
+			SELECT
+				CASE WHEN operator_group = $1 THEN $2 ELSE operator_group END,
+				CASE WHEN target_group = $1 THEN $2 ELSE target_group END,
+				$3
+			FROM access_rules
+			WHERE operator_group = $1 OR target_group = $1
+			ON CONFLICT (operator_group, target_group) DO NOTHING`,
+			oldName, newName, actor,
+		); err != nil {
+			return fmt.Errorf("copying entries: %w", err)
+		}
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM access_rules WHERE operator_group = $1 OR target_group = $1`,
+			oldName,
+		)
+		if err != nil {
+			return fmt.Errorf("deleting old entries: %w", err)
+		}
+		changed = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("store: renaming group %q in rules: %w", oldName, err)
+	}
+	return changed, nil
+}

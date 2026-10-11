@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,26 +15,45 @@ import (
 	"authentikManager/internal/authentik"
 )
 
-const maxPageSize = 100
+// Page sizes of the paginated lists.
+const (
+	defaultPageSize = 20
+	maxPageSize     = 100
+)
+
+// parsePaging parses the page and page_size query parameters, which default to
+// the first page of defaultPageSize entries. It writes a 400 response when they are invalid.
+func parsePaging(w http.ResponseWriter, q url.Values) (page, size int, ok bool) {
+	page, size = 1, defaultPageSize
+	var err error
+	if v := q.Get("page"); v != "" {
+		if page, err = strconv.Atoi(v); err != nil || page < 1 {
+			writeError(w, http.StatusBadRequest, "page must be a positive integer", nil)
+			return 0, 0, false
+		}
+	}
+	if v := q.Get("page_size"); v != "" {
+		if size, err = strconv.Atoi(v); err != nil || size < 1 || size > maxPageSize {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("page_size must be between 1 and %d", maxPageSize), nil)
+			return 0, 0, false
+		}
+	}
+	return page, size, true
+}
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	params := authentik.ListUsersParams{
 		Search:         q.Get("search"),
 		Ordering:       q.Get("ordering"),
-		Page:           1,
-		PageSize:       20,
 		Path:           q.Get("path"),
 		PathStartsWith: q.Get("path_startswith"),
 		// Only internal users are managed here; service accounts and external users are hidden.
 		Type: []authentik.UserType{authentik.UserTypeInternal},
 	}
-	var err error
-	if v := q.Get("page"); v != "" {
-		if params.Page, err = strconv.Atoi(v); err != nil || params.Page < 1 {
-			writeError(w, http.StatusBadRequest, "page must be a positive integer", nil)
-			return
-		}
+	var ok bool
+	if params.Page, params.PageSize, ok = parsePaging(w, q); !ok {
+		return
 	}
 	if v := q.Get("is_active"); v != "" {
 		active, err := strconv.ParseBool(v)
@@ -42,12 +62,6 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.IsActive = &active
-	}
-	if v := q.Get("page_size"); v != "" {
-		if params.PageSize, err = strconv.Atoi(v); err != nil || params.PageSize < 1 || params.PageSize > maxPageSize {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("page_size must be between 1 and %d", maxPageSize), nil)
-			return
-		}
 	}
 
 	scope, ok := s.scope(w, r)

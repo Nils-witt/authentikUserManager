@@ -64,13 +64,6 @@ func (u *User) GroupNames() []string {
 	return names
 }
 
-// Group is the subset of authentik's Group serializer this application uses.
-type Group struct {
-	PK          string `json:"pk"`
-	Name        string `json:"name"`
-	IsSuperuser bool   `json:"is_superuser"`
-}
-
 // Pagination is authentik's pagination envelope.
 type Pagination struct {
 	Count      int `json:"count"`
@@ -101,6 +94,8 @@ type ListUsersParams struct {
 	PathStartsWith string
 	// GroupsByName matches users who are a member of any of these groups.
 	GroupsByName []string
+	// GroupsByPK matches users who are a member of any of the groups with these primary keys.
+	GroupsByPK []string
 	// IsSuperuser, when non-nil, matches only superusers (true) or only other users (false).
 	IsSuperuser *bool
 	// IsActive, when non-nil, matches only active (true) or only inactive (false) users.
@@ -132,6 +127,9 @@ func (p ListUsersParams) values() url.Values {
 	}
 	for _, g := range p.GroupsByName {
 		q.Add("groups_by_name", g)
+	}
+	for _, g := range p.GroupsByPK {
+		q.Add("groups_by_pk", g)
 	}
 	if p.IsSuperuser != nil {
 		q.Set("is_superuser", strconv.FormatBool(*p.IsSuperuser))
@@ -168,10 +166,6 @@ func userPath(id int) string {
 	return "core/users/" + strconv.Itoa(id) + "/"
 }
 
-func groupPath(pk string) string {
-	return "core/groups/" + url.PathEscape(pk) + "/"
-}
-
 // ListUsers returns one page of users matching p.
 func (c *Client) ListUsers(ctx context.Context, p ListUsersParams) (*UserList, error) {
 	var out UserList
@@ -196,49 +190,6 @@ func (c *Client) ListUserPaths(ctx context.Context) ([]string, error) {
 		out.Paths = []string{}
 	}
 	return out.Paths, nil
-}
-
-// FindGroup returns the group named name, or an error matching ErrNotFound.
-func (c *Client) FindGroup(ctx context.Context, name string) (*Group, error) {
-	q := url.Values{"name": {name}, "include_users": {"false"}}
-	var out struct {
-		Results []Group `json:"results"`
-	}
-	if err := c.do(ctx, http.MethodGet, "core/groups/", q, nil, &out); err != nil {
-		return nil, fmt.Errorf("finding group %q: %w", name, err)
-	}
-	// The name filter is exact, but guard against an older authentik ignoring it.
-	for _, g := range out.Results {
-		if g.Name == name {
-			return &g, nil
-		}
-	}
-	return nil, fmt.Errorf("finding group %q: %w", name, ErrNotFound)
-}
-
-// maxGroupResults bounds ListGroups; it serves suggestions, not a full listing.
-const maxGroupResults = 100
-
-// ListGroups returns up to 100 groups whose name matches search (all when empty), ordered by name.
-func (c *Client) ListGroups(ctx context.Context, search string) ([]Group, error) {
-	q := url.Values{
-		"ordering":      {"name"},
-		"page_size":     {strconv.Itoa(maxGroupResults)},
-		"include_users": {"false"},
-	}
-	if search != "" {
-		q.Set("search", search)
-	}
-	var out struct {
-		Results []Group `json:"results"`
-	}
-	if err := c.do(ctx, http.MethodGet, "core/groups/", q, nil, &out); err != nil {
-		return nil, fmt.Errorf("listing groups: %w", err)
-	}
-	if out.Results == nil {
-		out.Results = []Group{}
-	}
-	return out.Results, nil
 }
 
 // GetUser returns the user with primary key id.
@@ -272,28 +223,6 @@ func (c *Client) UpdateUser(ctx context.Context, id int, req UpdateUserRequest) 
 func (c *Client) DeleteUser(ctx context.Context, id int) error {
 	if err := c.do(ctx, http.MethodDelete, userPath(id), nil, nil, nil); err != nil {
 		return fmt.Errorf("deleting user %d: %w", id, err)
-	}
-	return nil
-}
-
-// AddUserToGroup makes the user with primary key userID a member of the group with primary key groupPK.
-func (c *Client) AddUserToGroup(ctx context.Context, groupPK string, userID int) error {
-	body := struct {
-		PK int `json:"pk"`
-	}{PK: userID}
-	if err := c.do(ctx, http.MethodPost, groupPath(groupPK)+"add_user/", nil, body, nil); err != nil {
-		return fmt.Errorf("adding user %d to group %s: %w", userID, groupPK, err)
-	}
-	return nil
-}
-
-// RemoveUserFromGroup removes the user with primary key userID from the group with primary key groupPK.
-func (c *Client) RemoveUserFromGroup(ctx context.Context, groupPK string, userID int) error {
-	body := struct {
-		PK int `json:"pk"`
-	}{PK: userID}
-	if err := c.do(ctx, http.MethodPost, groupPath(groupPK)+"remove_user/", nil, body, nil); err != nil {
-		return fmt.Errorf("removing user %d from group %s: %w", userID, groupPK, err)
 	}
 	return nil
 }
