@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/authentik-manager ./cmd/authentik-manager
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=backend /out/authentik-manager /authentik-manager
 # The binary defaults to 127.0.0.1, which is unreachable from outside the container.
 ENV LISTEN_ADDR=:8080
