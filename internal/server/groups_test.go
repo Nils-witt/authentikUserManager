@@ -26,6 +26,9 @@ func testGroups() map[string]authentik.Group {
 // visibleAttribute is the group attribute marking groups visible to every signed-in user.
 const visibleAttribute = "authentik_manager_visible"
 
+// pathAttribute is the group attribute holding the group's path.
+const pathAttribute = "authentik_manager_path"
+
 func TestServer_groups_requireAdmin(t *testing.T) {
 	t.Parallel()
 	requests := []struct{ method, target, body string }{
@@ -77,7 +80,7 @@ func TestServer_listGroups(t *testing.T) {
 func TestServer_listGroups_views(t *testing.T) {
 	t.Parallel()
 	users := &fakeUsers{groupList: []authentik.Group{
-		{PK: "g1", Name: "staff", Attributes: map[string]any{visibleAttribute: true, "secret": "x"}},
+		{PK: "g1", Name: "staff", Attributes: map[string]any{visibleAttribute: true, pathAttribute: "school", "secret": "x"}},
 		{PK: "g2", Name: "students", Attributes: map[string]any{visibleAttribute: "true"}},
 	}}
 	rec := do(t, newServer(t, users), http.MethodGet, "/api/groups", "")
@@ -86,8 +89,8 @@ func TestServer_listGroups_views(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// Only a JSON true counts; other attributes are not passed on.
-	if !strings.Contains(body, `"name":"staff","is_superuser":false,"parent_name":"","visible":true`) ||
-		!strings.Contains(body, `"name":"students","is_superuser":false,"parent_name":"","visible":false`) ||
+	if !strings.Contains(body, `"name":"staff","is_superuser":false,"parent_name":"","path":"school","visible":true`) ||
+		!strings.Contains(body, `"name":"students","is_superuser":false,"parent_name":"","path":"","visible":false`) ||
 		strings.Contains(body, "secret") {
 		t.Errorf("body = %s, want the visibility and no attributes", body)
 	}
@@ -113,9 +116,102 @@ func TestServer_listVisibleGroups(t *testing.T) {
 		t.Errorf("params = %+v, want the search, paging and visibility filter", p)
 	}
 	expected := `{"pagination":{"count":0,"current":0,"total_pages":0,"next":0,"previous":0,"start_index":0,"end_index":0},` +
-		`"results":[{"pk":"g1","name":"staff","parent_name":"","member":true}]}`
+		`"results":[{"pk":"g1","name":"staff","parent_name":"","path":"","member":true}]}`
 	if got := strings.TrimSpace(rec.Body.String()); got != expected {
 		t.Errorf("body = %s, want %s", got, expected)
+	}
+}
+
+func TestServer_listGroups_pathFilter(t *testing.T) {
+	t.Parallel()
+	groups := []authentik.Group{
+		{PK: "g1", Name: "staff", Attributes: map[string]any{visibleAttribute: true, pathAttribute: "school"}},
+		// Returned as if authentik ignored the filter; they must be dropped.
+		{PK: "g2", Name: "classes", Attributes: map[string]any{visibleAttribute: true, pathAttribute: "school/classes"}},
+		{PK: "g3", Name: "top", Attributes: map[string]any{visibleAttribute: true}},
+	}
+	tests := []struct {
+		name        string
+		authn       fakeAuth
+		target      string
+		expectAttrs map[string]any
+	}{
+		{
+			name:        "all groups",
+			authn:       adminAuth,
+			target:      "/api/groups?path=school",
+			expectAttrs: map[string]any{pathAttribute: "school"},
+		},
+		{
+			name:        "visible groups",
+			authn:       fakeAuth{groups: []string{"guests"}},
+			target:      "/api/groups/visible?path=school",
+			expectAttrs: map[string]any{pathAttribute: "school", visibleAttribute: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			users := &fakeUsers{groupList: groups, listed: requester()}
+			rec := do(t, newTestServer(t, users, newFakeRules(), tt.authn), http.MethodGet, tt.target, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d %s", rec.Code, rec.Body)
+			}
+			if !maps.Equal(users.groupParams.Attributes, tt.expectAttrs) {
+				t.Errorf("attributes filter = %v, want %v", users.groupParams.Attributes, tt.expectAttrs)
+			}
+			var body struct {
+				Results []struct {
+					Name string `json:"name"`
+				} `json:"results"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			if len(body.Results) != 1 || body.Results[0].Name != "staff" {
+				t.Errorf("results = %+v, want staff only", body.Results)
+			}
+		})
+	}
+}
+
+func TestServer_listGroupPaths(t *testing.T) {
+	t.Parallel()
+	groups := []authentik.Group{
+		{PK: "g1", Name: "staff", Attributes: map[string]any{visibleAttribute: true, pathAttribute: "school"}},
+		{PK: "g2", Name: "teachers", Attributes: map[string]any{visibleAttribute: true, pathAttribute: "school"}},
+		{PK: "g3", Name: "classes", Attributes: map[string]any{pathAttribute: "school/classes"}},
+		{PK: "g4", Name: "top", Attributes: map[string]any{visibleAttribute: true}},
+	}
+	tests := []struct {
+		name        string
+		authn       fakeAuth
+		expected    string
+		expectAttrs map[string]any
+	}{
+		{name: "access administrator sees all", authn: adminAuth, expected: `{"paths":["school","school/classes"]}`},
+		{
+			name:        "others see the visible groups",
+			authn:       fakeAuth{groups: []string{"guests"}},
+			expected:    `{"paths":["school"]}`,
+			expectAttrs: map[string]any{visibleAttribute: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			users := &fakeUsers{groupList: groups}
+			rec := do(t, newTestServer(t, users, newFakeRules(), tt.authn), http.MethodGet, "/api/groups/paths", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d %s", rec.Code, rec.Body)
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != tt.expected {
+				t.Errorf("body = %s, want %s", got, tt.expected)
+			}
+			if !maps.Equal(users.groupParams.Attributes, tt.expectAttrs) {
+				t.Errorf("attributes filter = %v, want %v", users.groupParams.Attributes, tt.expectAttrs)
+			}
+		})
 	}
 }
 
@@ -323,6 +419,72 @@ func TestServer_updateGroup_visibility(t *testing.T) {
 			if len(log.recorded) != 1 || log.recorded[0].Action != audit.ActionGroupVisibilityChanged ||
 				log.recorded[0].Details["visible"] != tt.expectAudit {
 				t.Errorf("audit = %+v, want the visibility change", log.recorded)
+			}
+		})
+	}
+}
+
+func TestServer_updateGroup_path(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		target      string
+		body        string
+		expectAttrs map[string]any
+		wantStatus  int
+	}{
+		{
+			name:        "set keeps other attributes",
+			target:      "/api/groups/g3",
+			body:        `{"path":" /school/teachers/ "}`,
+			expectAttrs: map[string]any{visibleAttribute: true, "other": "kept", pathAttribute: "school/teachers"},
+			wantStatus:  http.StatusOK,
+		},
+		{
+			name:        "set with visibility",
+			target:      "/api/groups/g1",
+			body:        `{"path":"school","visible":true}`,
+			expectAttrs: map[string]any{visibleAttribute: true, pathAttribute: "school"},
+			wantStatus:  http.StatusOK,
+		},
+		{
+			name:        "clear",
+			target:      "/api/groups/g4",
+			body:        `{"path":""}`,
+			expectAttrs: map[string]any{},
+			wantStatus:  http.StatusOK,
+		},
+		{name: "unchanged", target: "/api/groups/g4", body: `{"path":"school/"}`, wantStatus: http.StatusOK},
+		{name: "empty folder", target: "/api/groups/g1", body: `{"path":"school//classes"}`, wantStatus: http.StatusBadRequest},
+		{name: "too long", target: "/api/groups/g1", body: `{"path":"` + strings.Repeat("a", 256) + `"}`, wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			groups := testGroups()
+			groups["school"] = authentik.Group{PK: "g4", Name: "school", Attributes: map[string]any{pathAttribute: "school"}}
+			users := &fakeUsers{groups: groups}
+			log := &fakeAudit{}
+			rec := do(t, newAuditedServer(t, users, newFakeRules(), log, adminAuth), http.MethodPatch, tt.target, tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.expectAttrs == nil {
+				if users.mutated || len(log.recorded) != 0 {
+					t.Errorf("updated %v, audit %+v; want nothing changed", users.groupAttrs, log.recorded)
+				}
+				return
+			}
+			if len(users.groupAttrs) != 1 || !maps.Equal(users.groupAttrs[0], tt.expectAttrs) {
+				t.Errorf("attributes = %v, want %v", users.groupAttrs, tt.expectAttrs)
+			}
+			want, _ := tt.expectAttrs[pathAttribute].(string)
+			if !strings.Contains(rec.Body.String(), `"path":"`+want+`"`) {
+				t.Errorf("body = %s, want path %q", rec.Body, want)
+			}
+			i := slices.IndexFunc(log.recorded, func(e audit.Entry) bool { return e.Action == audit.ActionGroupPathChanged })
+			if i < 0 || log.recorded[i].Details["path"] != want {
+				t.Errorf("audit = %+v, want the path change to %q", log.recorded, want)
 			}
 		})
 	}

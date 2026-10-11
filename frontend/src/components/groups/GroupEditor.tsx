@@ -14,14 +14,16 @@ import { GroupMembers } from './GroupMembers'
 
 interface GroupEditorProps {
   group: Group
-  /** Receives the group after it was renamed or its visibility changed. */
+  /** Receives the group after it was renamed, moved or its visibility changed. */
   onUpdated: (group: Group) => void
   onBack: () => void
 }
 
-/** Renames one group, sets its visibility and edits its direct members. */
+/** Renames one group, moves it to a folder, sets its visibility and edits its direct members. */
 export function GroupEditor({ group, onUpdated, onBack }: GroupEditorProps) {
   const [name, setName] = useState(group.name)
+  const [path, setPath] = useState(group.path)
+  const [savingPath, setSavingPath] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -45,6 +47,23 @@ export function GroupEditor({ group, onUpdated, onBack }: GroupEditorProps) {
     }
   }
 
+  async function move(e: FormEvent) {
+    e.preventDefault()
+    setSavingPath(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const moved = await api.updateGroup(group.pk, { path: path.trim() })
+      setPath(moved.path)
+      setNotice(moved.path ? `Moved to ${moved.path}.` : 'Moved to the top level.')
+      onUpdated(moved)
+    } catch (err) {
+      setError(err instanceof ApiError ? err : new ApiError(0, String(err)))
+    } finally {
+      setSavingPath(false)
+    }
+  }
+
   async function setVisible(visible: boolean) {
     setSavingVisibility(true)
     setError(null)
@@ -59,12 +78,15 @@ export function GroupEditor({ group, onUpdated, onBack }: GroupEditorProps) {
   }
 
   const nameErrors = error?.fields.name
+  const pathErrors = error?.fields.path
   return (
     <>
       <DialogContent sx={{ pt: 0 }}>
         <Stack spacing={3} sx={{ pt: 1 }}>
           <Stack component="form" spacing={1} onSubmit={rename}>
-            {error && !nameErrors?.length && <Alert severity="error">{error.message}</Alert>}
+            {error && !nameErrors?.length && !pathErrors?.length && (
+              <Alert severity="error">{error.message}</Alert>
+            )}
             {notice && <Alert severity="success">{notice}</Alert>}
             <Stack direction="row" spacing={1} sx={{ alignItems: 'flex-start' }}>
               <TextField
@@ -84,6 +106,32 @@ export function GroupEditor({ group, onUpdated, onBack }: GroupEditorProps) {
             <Typography variant="body2" color="text.secondary">
               Access rules naming this group are renamed with it. Operators who are members of it
               must sign in again before the renamed rules apply to them.
+            </Typography>
+          </Stack>
+          <Stack component="form" spacing={1} onSubmit={move}>
+            <Stack direction="row" spacing={1} sx={{ alignItems: 'flex-start' }}>
+              <TextField
+                label="Path"
+                size="small"
+                placeholder="e.g. school/classes"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                error={Boolean(pathErrors?.length)}
+                helperText={pathErrors?.join(' ')}
+                sx={{ flexGrow: 1 }}
+              />
+              <Button
+                type="submit"
+                variant="contained"
+                loading={savingPath}
+                disabled={path.trim() === group.path}
+              >
+                Move
+              </Button>
+            </Stack>
+            <Typography variant="body2" color="text.secondary">
+              Sorts the group into folders, like the paths of users. Leave it empty for the top
+              level.
             </Typography>
           </Stack>
           <Stack spacing={0.5}>

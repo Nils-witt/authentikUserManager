@@ -167,6 +167,9 @@ func New(d Deps) *Server {
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
 	// Every signed-in user may list the visible groups, without their members.
 	api.HandleFunc("GET /api/groups/visible", s.listVisibleGroups)
+	// Every signed-in user may list the group folders: all of them for access
+	// administrators, those of the visible groups for everyone else.
+	api.HandleFunc("GET /api/groups/paths", s.listGroupPaths)
 	// Every signed-in user may request to join a visible group.
 	api.HandleFunc("POST /api/groups/{pk}/join-requests", s.requestJoin)
 	api.Handle("GET /api/groups/{pk}", s.requireAdmin(s.getGroup))

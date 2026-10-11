@@ -33,7 +33,7 @@ const isAdminView = (g: PublicGroup | Group): g is Group => 'visible' in g
 
 /** Lists authentik groups, with an edit button each for access administrators or join controls for everyone else. */
 export function GroupsTable({ groups, loading, onEdit, renderJoin }: GroupsTableProps) {
-  const columns = 2 + (onEdit ? 2 : 0) + (renderJoin ? 1 : 0)
+  const columns = 3 + (onEdit ? 2 : 0) + (renderJoin ? 1 : 0)
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={loading}>
       <Box sx={{ height: 4 }}>{loading && <LinearProgress />}</Box>
@@ -42,6 +42,7 @@ export function GroupsTable({ groups, loading, onEdit, renderJoin }: GroupsTable
           <TableRow>
             <TableCell>Name</TableCell>
             <TableCell>Parent</TableCell>
+            <TableCell>Path</TableCell>
             {onEdit && <TableCell>Visible to all</TableCell>}
             {onEdit && <TableCell aria-label="Actions" />}
             {renderJoin && <TableCell aria-label="Membership" />}
@@ -59,6 +60,7 @@ export function GroupsTable({ groups, loading, onEdit, renderJoin }: GroupsTable
                 </Stack>
               </TableCell>
               <TableCell>{group.parent_name || '—'}</TableCell>
+              <TableCell>{group.path || '—'}</TableCell>
               {onEdit && isAdminView(group) && (
                 <>
                   <TableCell>{group.visible ? 'yes' : 'no'}</TableCell>

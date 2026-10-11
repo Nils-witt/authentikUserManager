@@ -5,24 +5,26 @@ import { TreeItem } from '@mui/x-tree-view/TreeItem'
 import { FolderItem } from './FolderItem'
 import { ancestors, buildTree } from './folderPaths'
 
-/** Item id of the "All users" entry; no real path starts with a NUL byte. */
-const ALL_USERS = '\0all'
+/** Item id of the "All …" entry; no real path starts with a NUL byte. */
+const ALL = '\0all'
 
 interface FolderTreeProps {
   paths: string[]
-  /** The selected folder, or null for all users. */
+  /** The selected folder, or null for everything. */
   selected: string | null
   onSelect: (path: string | null) => void
+  /** What the folders hold, in the plural; defaults to "users". */
+  noun?: string
 }
 
-/** Sidebar listing the user folders (paths) as a collapsible tree. */
-export function FolderTree({ paths, selected, onSelect }: FolderTreeProps) {
+/** Sidebar listing folders (paths) as a collapsible tree. */
+export function FolderTree({ paths, selected, onSelect, noun = 'users' }: FolderTreeProps) {
   const tree = buildTree(paths)
   return (
     <Paper
       component="nav"
       variant="outlined"
-      aria-label="User folders"
+      aria-label={`Folders of ${noun}`}
       sx={{
         position: { md: 'sticky' },
         top: 16,
@@ -35,13 +37,13 @@ export function FolderTree({ paths, selected, onSelect }: FolderTreeProps) {
         Folders
       </Typography>
       <SimpleTreeView
-        selectedItems={selected ?? ALL_USERS}
+        selectedItems={selected ?? ALL}
         onSelectedItemsChange={(_, id) => {
-          if (id !== null) onSelect(id === ALL_USERS ? null : id)
+          if (id !== null) onSelect(id === ALL ? null : id)
         }}
         defaultExpandedItems={ancestors(selected)}
       >
-        <TreeItem itemId={ALL_USERS} label="All users" />
+        <TreeItem itemId={ALL} label={`All ${noun}`} />
         {tree.map((folder) => (
           <FolderItem key={folder.path} folder={folder} />
         ))}

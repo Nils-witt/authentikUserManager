@@ -34,6 +34,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'access_rule.deleted': 'Access rule deleted',
   'group.renamed': 'Group renamed',
   'group.visibility_changed': 'Group visibility changed',
+  'group.path_changed': 'Group moved',
   'group.join_requested': 'Join requested',
   'group.join_withdrawn': 'Join request withdrawn',
   'group.join_approved': 'Join request approved',

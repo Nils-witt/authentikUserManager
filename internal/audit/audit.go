@@ -30,6 +30,8 @@ const (
 	ActionGroupRenamed Action = "group.renamed"
 	// ActionGroupVisibilityChanged is recorded when a group is made visible to every signed-in user or hidden again.
 	ActionGroupVisibilityChanged Action = "group.visibility_changed"
+	// ActionGroupPathChanged is recorded when a group is moved to another folder.
+	ActionGroupPathChanged Action = "group.path_changed"
 	// ActionJoinRequested is recorded when a user requests to join a visible group.
 	ActionJoinRequested Action = "group.join_requested"
 	// ActionJoinWithdrawn is recorded when a user withdraws their pending request.
@@ -46,7 +48,7 @@ func (a Action) Valid() bool {
 	case ActionUserCreated, ActionUserUpdated, ActionUserDeleted,
 		ActionUserGroupAdded, ActionUserGroupRemoved, ActionUserPrimaryGroupChanged, ActionRecoveryEmailSent,
 		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted,
-		ActionGroupRenamed, ActionGroupVisibilityChanged,
+		ActionGroupRenamed, ActionGroupVisibilityChanged, ActionGroupPathChanged,
 		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected:
 		return true
 	}

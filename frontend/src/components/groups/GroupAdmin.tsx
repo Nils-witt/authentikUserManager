@@ -1,5 +1,6 @@
 import SearchIcon from '@mui/icons-material/Search'
 import Alert from '@mui/material/Alert'
+import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import Container from '@mui/material/Container'
@@ -12,8 +13,10 @@ import * as api from '../../api'
 import type { Group, JoinRequest, Page, PublicGroup } from '../../api'
 import { errorMessage } from '../../errors'
 import { useDebounced } from '../../hooks/useDebounced'
+import { useGroupPaths } from '../../hooks/useGroupPaths'
 import { ListPagination } from '../common/ListPagination'
 import { Modal } from '../common/Modal'
+import { FolderTree } from '../folders/FolderTree'
 import { GroupEditor } from './GroupEditor'
 import { GroupsTable } from './GroupsTable'
 import { JoinGroupForm } from './JoinGroupForm'
@@ -39,6 +42,8 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
   const [search, setSearch] = useState('')
   const query = useDebounced(search)
   const [page, setPage] = useState(1)
+  // Selected group folder (path), or null for all groups.
+  const [folder, setFolder] = useState<string | null>(null)
   // The groups loaded for the request in `key`.
   const [list, setList] = useState<{ key: string; data: Page<PublicGroup | Group> } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -49,12 +54,13 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
   const [pending, setPending] = useState<JoinRequest[]>([])
   // Bumped after a group was edited or a join request changed, to reload the list.
   const [version, setVersion] = useState(0)
-  const requestKey = `${admin}|${query}|${page}|${version}`
+  const requestKey = `${admin}|${query}|${folder}|${page}|${version}`
+  const { paths, error: pathsError } = useGroupPaths(version)
 
   useEffect(() => {
     let cancelled = false
     const load = admin ? api.listGroups : api.listVisibleGroups
-    load({ search: query, page, pageSize: PAGE_SIZE })
+    load({ search: query, path: folder, page, pageSize: PAGE_SIZE })
       .then((data) => {
         if (cancelled) return
         setList({ key: requestKey, data })
@@ -66,7 +72,7 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
     return () => {
       cancelled = true
     }
-  }, [admin, query, page, requestKey])
+  }, [admin, query, folder, page, requestKey])
 
   useEffect(() => {
     if (admin) return
@@ -138,7 +144,7 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
         <Typography variant="h5" component="h2">
           Groups
         </Typography>
-        {error && <Alert severity="error">{error}</Alert>}
+        {(error ?? pathsError) && <Alert severity="error">{error ?? pathsError}</Alert>}
         {notice && <Alert severity="success">{notice}</Alert>}
         <Typography variant="body2" color="text.secondary">
           {admin
@@ -165,18 +171,38 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
             },
           }}
         />
-        <GroupsTable
-          groups={list?.data.results}
-          loading={list?.key !== requestKey && !error}
-          onEdit={admin ? setEditing : undefined}
-          renderJoin={admin ? undefined : renderJoin}
-        />
-        <ListPagination
-          pagination={list?.data.pagination}
-          page={page}
-          onChange={setPage}
-          noun="groups"
-        />
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: '240px minmax(0, 1fr)' },
+            gap: 2,
+            alignItems: 'start',
+          }}
+        >
+          <FolderTree
+            paths={paths}
+            selected={folder}
+            onSelect={(path) => {
+              setFolder(path)
+              setPage(1)
+            }}
+            noun="groups"
+          />
+          <Box component="section">
+            <GroupsTable
+              groups={list?.data.results}
+              loading={list?.key !== requestKey && !error}
+              onEdit={admin ? setEditing : undefined}
+              renderJoin={admin ? undefined : renderJoin}
+            />
+            <ListPagination
+              pagination={list?.data.pagination}
+              page={page}
+              onChange={setPage}
+              noun="groups"
+            />
+          </Box>
+        </Box>
       </Stack>
 
       {editing && (

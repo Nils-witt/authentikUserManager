@@ -38,6 +38,8 @@ export interface PublicGroup {
   name: string
   /** Name of the parent group; empty or null for a top-level group. */
   parent_name: string | null
+  /** Folder of the group, e.g. "school/classes"; empty at the top level. */
+  path: string
   /** The signed-in user was a member at login; set in the list of visible groups only. */
   member?: boolean
 }
@@ -103,6 +105,7 @@ export type AuditAction =
   | 'access_rule.deleted'
   | 'group.renamed'
   | 'group.visibility_changed'
+  | 'group.path_changed'
   | 'group.join_requested'
   | 'group.join_withdrawn'
   | 'group.join_approved'
@@ -263,26 +266,41 @@ export const listGroupNames = () =>
     res.results.map((g) => g.name),
   )
 
-/** Loads a page of authentik groups, ordered by name; only access administrators may list them. */
-export function listGroups(params: { search: string; page: number; pageSize: number }) {
+interface GroupListParams {
+  search: string
+  /** Only the groups in exactly this folder; all groups when null. */
+  path: string | null
+  page: number
+  pageSize: number
+}
+
+function groupListQuery(params: GroupListParams) {
   const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
   if (params.search) q.set('search', params.search)
-  return request<Page<Group>>('GET', `/api/groups?${q}`)
+  if (params.path) q.set('path', params.path)
+  return q
 }
+
+/** Loads a page of authentik groups, ordered by name; only access administrators may list them. */
+export const listGroups = (params: GroupListParams) =>
+  request<Page<Group>>('GET', `/api/groups?${groupListQuery(params)}`)
 
 /** Loads a page of the groups visible to every signed-in user, ordered by name. */
-export function listVisibleGroups(params: { search: string; page: number; pageSize: number }) {
-  const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
-  if (params.search) q.set('search', params.search)
-  return request<Page<PublicGroup>>('GET', `/api/groups/visible?${q}`)
-}
+export const listVisibleGroups = (params: GroupListParams) =>
+  request<Page<PublicGroup>>('GET', `/api/groups/visible?${groupListQuery(params)}`)
+
+/** Loads the group folders: of all groups for access administrators, of the visible ones for everyone else. */
+export const listGroupPaths = () =>
+  request<{ paths: string[] }>('GET', '/api/groups/paths').then((res) => res.paths)
 
 /**
- * Renames a group or sets its visibility; omitted fields stay unchanged.
- * A rename renames the group in the access rules too.
+ * Renames a group, sets its visibility or moves it to another folder (path);
+ * omitted fields stay unchanged. A rename renames the group in the access rules too.
  */
-export const updateGroup = (pk: string, changes: { name?: string; visible?: boolean }) =>
-  request<Group>('PATCH', `/api/groups/${encodeURIComponent(pk)}`, changes)
+export const updateGroup = (
+  pk: string,
+  changes: { name?: string; visible?: boolean; path?: string },
+) => request<Group>('PATCH', `/api/groups/${encodeURIComponent(pk)}`, changes)
 
 /** Loads a page of the direct members of a group, ordered by username. */
 export function listGroupMembers(

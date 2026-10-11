@@ -46,6 +46,63 @@ func withVisibility(attrs map[string]any, visible bool) map[string]any {
 	return out
 }
 
+// pathAttribute is the authentik group attribute holding the group's path, such
+// as "school/classes", which sorts the groups into folders like the user paths
+// do. Groups without it are at the top level.
+const pathAttribute = "authentik_manager_path"
+
+// maxGroupPathLen bounds group paths.
+const maxGroupPathLen = 255
+
+// maxGroupPathPages bounds the pages of groups read to collect their paths.
+const maxGroupPathPages = 50
+
+// groupFolder returns the path of g, or "" when it is at the top level.
+func groupFolder(g *authentik.Group) string {
+	path, _ := g.Attributes[pathAttribute].(string)
+	return path
+}
+
+// withGroupPath returns a copy of attrs with the path set, or removed when path
+// is empty, leaving the other attributes as they are. It never returns nil, so
+// an update clearing the last attribute is still sent.
+func withGroupPath(attrs map[string]any, path string) map[string]any {
+	out := maps.Clone(attrs)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if path != "" {
+		out[pathAttribute] = path
+	} else {
+		delete(out, pathAttribute)
+	}
+	return out
+}
+
+// normalizeGroupPath trims the spaces around path and the slashes at its ends.
+// When path is invalid it returns a message that is safe to show users.
+func normalizeGroupPath(path string) (string, string) {
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	if path == "" {
+		return "", ""
+	}
+	if len(path) > maxGroupPathLen {
+		return "", fmt.Sprintf("Path must be at most %d characters.", maxGroupPathLen)
+	}
+	for folder := range strings.SplitSeq(path, "/") {
+		if strings.TrimSpace(folder) == "" {
+			return "", "Folder names in the path must not be empty."
+		}
+	}
+	return path, ""
+}
+
+// inFolder reports whether g has the path params filters for, if any.
+func inFolder(g *authentik.Group, params authentik.ListGroupsParams) bool {
+	want, ok := params.Attributes[pathAttribute]
+	return !ok || groupFolder(g) == want
+}
+
 // groupView is a group as access administrators see it. It leaves out the
 // other attributes, which authentik and other applications use.
 type groupView struct {
@@ -53,12 +110,21 @@ type groupView struct {
 	Name        string `json:"name"`
 	IsSuperuser bool   `json:"is_superuser"`
 	ParentName  string `json:"parent_name"`
+	// Path sorts the group into folders; empty at the top level.
+	Path string `json:"path"`
 	// Visible is set when every signed-in user may see the group's name.
 	Visible bool `json:"visible"`
 }
 
 func newGroupView(g *authentik.Group) groupView {
-	return groupView{PK: g.PK, Name: g.Name, IsSuperuser: g.IsSuperuser, ParentName: g.ParentName, Visible: isVisible(g)}
+	return groupView{
+		PK:          g.PK,
+		Name:        g.Name,
+		IsSuperuser: g.IsSuperuser,
+		ParentName:  g.ParentName,
+		Path:        groupFolder(g),
+		Visible:     isVisible(g),
+	}
 }
 
 // publicGroup is a visible group as every signed-in user sees it.
@@ -66,6 +132,8 @@ type publicGroup struct {
 	PK         string `json:"pk"`
 	Name       string `json:"name"`
 	ParentName string `json:"parent_name"`
+	// Path sorts the group into folders; empty at the top level.
+	Path string `json:"path"`
 	// Member is set when the signed-in user is a direct member of the group.
 	Member bool `json:"member"`
 }
@@ -76,18 +144,22 @@ type page[T any] struct {
 	Results    []T                  `json:"results"`
 }
 
-// groupListParams parses the query parameters search, page and page_size of a
-// group list, writing a 400 response when they are invalid.
+// groupListParams parses the query parameters search, path, page and
+// page_size of a group list, writing a 400 response when they are invalid.
+// path matches the groups with exactly this path.
 func groupListParams(w http.ResponseWriter, r *http.Request) (authentik.ListGroupsParams, bool) {
 	q := r.URL.Query()
 	params := authentik.ListGroupsParams{Search: q.Get("search")}
+	if path := q.Get("path"); path != "" {
+		params.Attributes = map[string]any{pathAttribute: path}
+	}
 	var ok bool
 	params.Page, params.PageSize, ok = parsePaging(w, q)
 	return params, ok
 }
 
 // listGroups returns a page of authentik groups, ordered by name. The query
-// parameters search, page and page_size filter and page it.
+// parameters search, path, page and page_size filter and page it.
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	params, ok := groupListParams(w, r)
 	if !ok {
@@ -98,9 +170,13 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	out := page[groupView]{Pagination: list.Pagination, Results: make([]groupView, len(list.Results))}
+	out := page[groupView]{Pagination: list.Pagination, Results: make([]groupView, 0, len(list.Results))}
 	for i := range list.Results {
-		out.Results[i] = newGroupView(&list.Results[i])
+		// authentik silently ignores filters it does not know, so drop groups
+		// in other folders in case the filter was not applied.
+		if g := &list.Results[i]; inFolder(g, params) {
+			out.Results = append(out.Results, newGroupView(g))
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -108,14 +184,17 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 // listVisibleGroups returns a page of the groups visible to every signed-in
 // user, ordered by name, with their names only. It is open to every operator,
 // including those who may not manage any users. The query parameters search,
-// page and page_size filter and page it. Users may request to join them; see
+// path, page and page_size filter and page it. Users may request to join them; see
 // requestJoin.
 func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
 	params, ok := groupListParams(w, r)
 	if !ok {
 		return
 	}
-	params.Attributes = map[string]any{visibleAttribute: true}
+	if params.Attributes == nil {
+		params.Attributes = map[string]any{}
+	}
+	params.Attributes[visibleAttribute] = true
 	list, err := s.users.ListGroups(r.Context(), params)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
@@ -137,17 +216,53 @@ func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
 	for i := range list.Results {
 		g := &list.Results[i]
 		// authentik silently ignores filters it does not know, so drop hidden
-		// groups in case the filter was not applied.
-		if isVisible(g) {
+		// groups and those in other folders in case the filters were not applied.
+		if isVisible(g) && inFolder(g, params) {
 			out.Results = append(out.Results, publicGroup{
 				PK:         g.PK,
 				Name:       g.Name,
 				ParentName: g.ParentName,
+				Path:       groupFolder(g),
 				Member:     isMember(g),
 			})
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// listGroupPaths returns every distinct group path. Access administrators get
+// the paths of all groups, everyone else those of the visible groups.
+func (s *Server) listGroupPaths(w http.ResponseWriter, r *http.Request) {
+	admin := s.policy.IsAdmin(operatorGroups(r))
+	params := authentik.ListGroupsParams{PageSize: maxPageSize}
+	if !admin {
+		params.Attributes = map[string]any{visibleAttribute: true}
+	}
+	paths := []string{}
+	for params.Page = 1; ; params.Page++ {
+		list, err := s.users.ListGroups(r.Context(), params)
+		if err != nil {
+			s.writeUpstreamError(w, r, err)
+			return
+		}
+		for i := range list.Results {
+			g := &list.Results[i]
+			// authentik silently ignores filters it does not know, so check visibility too.
+			if path := groupFolder(g); path != "" && (admin || isVisible(g)) {
+				paths = append(paths, path)
+			}
+		}
+		if list.Pagination.Next == 0 {
+			break
+		}
+		if params.Page == maxGroupPathPages {
+			s.logger.WarnContext(r.Context(), "too many groups; listing only the paths of the first ones",
+				slog.Int("groups", params.Page*params.PageSize))
+			break
+		}
+	}
+	slices.Sort(paths)
+	writeJSON(w, http.StatusOK, map[string][]string{"paths": slices.Compact(paths)})
 }
 
 // loadGroup loads the group with the {pk} path value, writing the error
@@ -178,11 +293,13 @@ func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {
 type groupInput struct {
 	Name    *string `json:"name"`
 	Visible *bool   `json:"visible"`
+	// Path sorts the group into folders; empty moves it to the top level.
+	Path *string `json:"path"`
 }
 
-// updateGroup renames a group and sets whether it is visible to every
-// signed-in user. A rename applies to every access rule naming the group too,
-// since the rules match groups by name.
+// updateGroup renames a group, sets whether it is visible to every signed-in
+// user and sets its path. A rename applies to every access rule naming the
+// group too, since the rules match groups by name.
 func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request) {
 	var in groupInput
 	if !decodeJSON(w, r, &in) {
@@ -195,6 +312,14 @@ func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.Name = &name
+	}
+	if in.Path != nil {
+		path, msg := normalizeGroupPath(*in.Path)
+		if msg != "" {
+			writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"path": {msg}})
+			return
+		}
+		in.Path = &path
 	}
 	group, ok := s.loadGroup(w, r)
 	if !ok {
@@ -214,10 +339,17 @@ func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request) {
 		s.writeGroupError(w, r, err)
 		return
 	}
-	if req.Attributes != nil {
+	if isVisible(updated) != isVisible(group) {
 		s.record(r, audit.ActionGroupVisibilityChanged, updated.Name, map[string]string{
 			"group_id": updated.PK,
 			"visible":  strconv.FormatBool(isVisible(updated)),
+		})
+	}
+	if previous := groupFolder(group); groupFolder(updated) != previous {
+		s.record(r, audit.ActionGroupPathChanged, updated.Name, map[string]string{
+			"group_id":      updated.PK,
+			"path":          groupFolder(updated),
+			"previous_path": previous,
 		})
 	}
 	if req.Name != nil && !s.renameInRules(w, r, group, updated) {
@@ -245,6 +377,13 @@ func (s *Server) groupUpdate(w http.ResponseWriter, r *http.Request, group *auth
 		// authentik replaces all attributes, so keep the others. A concurrent
 		// change to them elsewhere between loading and saving is lost.
 		req.Attributes = withVisibility(group.Attributes, *in.Visible)
+	}
+	if in.Path != nil && *in.Path != groupFolder(group) {
+		attrs := group.Attributes
+		if req.Attributes != nil {
+			attrs = req.Attributes
+		}
+		req.Attributes = withGroupPath(attrs, *in.Path)
 	}
 	return req, true
 }
@@ -297,8 +436,8 @@ func (s *Server) checkGroupName(w http.ResponseWriter, r *http.Request, group *a
 }
 
 // undoRename restores the previous name of group after its access rules could
-// not be renamed, so the rules keep matching it. A visibility change made in
-// the same update stays.
+// not be renamed, so the rules keep matching it. A visibility or path change
+// made in the same update stays.
 func (s *Server) undoRename(r *http.Request, group *authentik.Group) {
 	// Restore the name even when the client has gone away meanwhile.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditTimeout)
