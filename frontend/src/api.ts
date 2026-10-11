@@ -167,6 +167,17 @@ export interface Me {
   groups: string[]
 }
 
+/** The source the server was built from. */
+export interface BuildInfo {
+  repository: string
+  /** Full git commit hash; empty when unknown. */
+  commit: string
+  /** Release tag, e.g. "v1.2.3"; empty for untagged builds. */
+  tag: string
+  /** Built from a checkout with uncommitted changes. */
+  modified: boolean
+}
+
 /** Starts the OIDC login; the backend redirects to authentik and back. */
 export function redirectToLogin(): never {
   window.location.assign('/auth/login')
@@ -332,6 +343,8 @@ export const sendRecoveryEmail = (id: number) =>
   request<void>('POST', `/api/users/${id}/recovery-email`)
 
 export const deleteUser = (id: number) => request<void>('DELETE', `/api/users/${id}`)
+
+export const version = () => request<BuildInfo>('GET', '/api/version')
 
 export const me = () => request<Me>('GET', '/auth/me')
 

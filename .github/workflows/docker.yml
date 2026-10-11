@@ -68,6 +68,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            COMMIT=${{ github.sha }}
+            TAG=${{ github.ref_type == 'tag' && github.ref_name || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

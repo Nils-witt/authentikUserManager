@@ -14,6 +14,7 @@ import { useUserPaths } from '../../hooks/useUserPaths'
 import { ListPagination } from '../common/ListPagination'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
 import { FolderTree } from '../folders/FolderTree'
+import { AppFooter } from '../layout/AppFooter'
 import { AppHeader } from '../layout/AppHeader'
 import { StatusAlerts } from './StatusAlerts'
 import { UserDialog, type UserDialogState } from './UserDialog'
@@ -145,6 +146,8 @@ export function UserAdmin({ me }: { me: Me }) {
           </Box>
         </Box>
       </Container>
+
+      <AppFooter />
 
       <NoticeSnackbar notice={notice} onClose={() => setNotice(null)} />
       {confirmDialog}

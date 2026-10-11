@@ -4,6 +4,9 @@ GO_PKGS := ./cmd/... ./internal/...
 BIN     := bin/authentik-manager
 # Vite build output, embedded into the binary by internal/web.
 DIST    := internal/web/dist
+# Shown in the UI footer (internal/buildinfo); go build stamps the commit itself.
+TAG     := $(shell git describe --tags --exact-match 2>/dev/null)
+LDFLAGS := -X authentikManager/internal/buildinfo.tag=$(TAG)
 
 .PHONY: all build build-backend build-frontend dev-backend dev-frontend dev-db run test test-integration lint fmt vuln hooks clean
 
@@ -15,7 +18,7 @@ all: build
 build: build-frontend build-backend
 
 build-backend: $(DIST)/index.html
-	go build -o $(BIN) ./cmd/authentik-manager
+	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/authentik-manager
 
 build-frontend:
 	cd frontend && npm ci && npm run build

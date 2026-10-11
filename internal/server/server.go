@@ -19,6 +19,7 @@ import (
 	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
+	"authentikManager/internal/buildinfo"
 	"authentikManager/internal/joinrequest"
 )
 
@@ -188,6 +189,7 @@ func New(d Deps) *Server {
 	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteUser))
 	api.HandleFunc("PUT /api/users/{id}/groups", s.setUserGroups)
 	api.HandleFunc("POST /api/users/{id}/recovery-email", s.sendRecoveryEmail)
+	api.HandleFunc("GET /api/version", getVersion)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
 	})
@@ -280,6 +282,11 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 		Admin:         s.policy.IsAdmin(operatorGroups(r)),
 		RecoveryEmail: s.recoveryEmailStage != "",
 	})
+}
+
+// getVersion reports the repository, commit and tag the server was built from.
+func getVersion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, buildinfo.Get())
 }
 
 // requireAdmin restricts h to access administrators, who may edit the access

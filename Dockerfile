@@ -12,6 +12,8 @@ RUN npm run build
 # Cross-compile on the build host instead of emulating the target platform.
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS backend
 ARG TARGETOS TARGETARCH
+# Shown in the UI footer; .git is not in the build context, so pass them in.
+ARG COMMIT="" TAG=""
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -21,7 +23,9 @@ COPY --from=frontend /src/internal/web/dist internal/web/dist
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/authentik-manager ./cmd/authentik-manager
+    go build -trimpath \
+      -ldflags="-s -w -X authentikManager/internal/buildinfo.commit=${COMMIT} -X authentikManager/internal/buildinfo.tag=${TAG}" \
+      -o /out/authentik-manager ./cmd/authentik-manager
 
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=backend /out/authentik-manager /authentik-manager
