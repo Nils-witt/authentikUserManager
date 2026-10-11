@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -20,6 +21,69 @@ const (
 	defaultPageSize = 20
 	maxPageSize     = 100
 )
+
+// primaryGroupAttribute is the authentik user attribute holding the primary key
+// of the user's primary group. It holds the key rather than the name, so
+// renaming the group keeps it.
+const primaryGroupAttribute = "authentik_manager_primary_group"
+
+// primaryGroup returns the primary group of u, or nil when none is set or u is
+// no longer a direct member of it.
+func primaryGroup(u *authentik.User) *authentik.UserGroup {
+	pk, ok := u.Attributes[primaryGroupAttribute].(string)
+	if !ok || pk == "" {
+		return nil
+	}
+	i := slices.IndexFunc(u.Groups, func(g authentik.UserGroup) bool { return g.PK == pk })
+	if i < 0 {
+		return nil
+	}
+	return &u.Groups[i]
+}
+
+// primaryGroupName returns the name of the primary group of u, or "" when it has none.
+func primaryGroupName(u *authentik.User) string {
+	if g := primaryGroup(u); g != nil {
+		return g.Name
+	}
+	return ""
+}
+
+// withPrimaryGroup returns a copy of attrs with the primary group set to the
+// group with primary key pk, or removed when pk is empty, leaving the other
+// attributes as they are. It never returns nil, so an update clearing the last
+// attribute is still sent.
+func withPrimaryGroup(attrs map[string]any, pk string) map[string]any {
+	out := maps.Clone(attrs)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if pk != "" {
+		out[primaryGroupAttribute] = pk
+	} else {
+		delete(out, primaryGroupAttribute)
+	}
+	return out
+}
+
+// userView is a user as operators see it.
+type userView struct {
+	authentik.User
+	// PrimaryGroup is the name of the user's primary group; empty when none is set.
+	PrimaryGroup string `json:"primary_group"`
+}
+
+func newUserView(u *authentik.User) userView {
+	return userView{User: *u, PrimaryGroup: primaryGroupName(u)}
+}
+
+func newUserPage(list *authentik.UserList) page[userView] {
+	out := page[userView]{Pagination: list.Pagination, Results: make([]userView, len(list.Results))}
+	for i := range list.Results {
+		out.Results[i] = newUserView(&list.Results[i])
+	}
+	return out
+}
 
 // parsePaging parses the page and page_size query parameters, which default to
 // the first page of defaultPageSize entries. It writes a 400 response when they are invalid.
@@ -87,7 +151,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
 		return u.Type != authentik.UserTypeInternal || !scope.Allows(&u)
 	})
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(w, http.StatusOK, newUserPage(list))
 }
 
 // allowedUser loads the user with the {id} path value and checks that the
@@ -139,7 +203,7 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, newUserView(user))
 }
 
 // createUserInput is the body of POST /api/users. It is decoded separately from
@@ -151,8 +215,9 @@ type createUserInput struct {
 	IsActive *bool              `json:"is_active"`
 	Path     string             `json:"path"`
 	Type     authentik.UserType `json:"type"`
-	// Group is the name of a group the new user joins. Operators with
-	// restricted access must name one of their target groups.
+	// Group is the name of a group the new user joins, which becomes their
+	// primary group. Operators with restricted access must name one of their
+	// target groups.
 	Group string `json:"group"`
 }
 
@@ -212,6 +277,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Groups = []string{group.PK}
+		req.Attributes = withPrimaryGroup(nil, group.PK)
 	}
 
 	user, err := s.users.CreateUser(r.Context(), req)
@@ -224,7 +290,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		details["group"] = in.Group
 	}
 	s.recordUser(r, audit.ActionUserCreated, user, details)
-	writeJSON(w, http.StatusCreated, user)
+	writeJSON(w, http.StatusCreated, newUserView(user))
 }
 
 // findGroup resolves a group a user joins, writing the error response for the
@@ -248,22 +314,46 @@ func (s *Server) findGroup(w http.ResponseWriter, r *http.Request, field, name s
 	return group, true
 }
 
+// updateUserInput is the body of PATCH /api/users/{id}; nil fields are left
+// unchanged. It is decoded separately from authentik.UpdateUserRequest so
+// clients cannot replace the user's attributes.
+type updateUserInput struct {
+	Username *string             `json:"username"`
+	Name     *string             `json:"name"`
+	Email    *string             `json:"email"`
+	IsActive *bool               `json:"is_active"`
+	Path     *string             `json:"path"`
+	Type     *authentik.UserType `json:"type"`
+}
+
+func (in updateUserInput) request() authentik.UpdateUserRequest {
+	return authentik.UpdateUserRequest{
+		Username: in.Username,
+		Name:     in.Name,
+		Email:    in.Email,
+		IsActive: in.IsActive,
+		Path:     in.Path,
+		Type:     in.Type,
+	}
+}
+
 func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	target, _, ok := s.allowedUser(w, r)
 	if !ok {
 		return
 	}
 	id := target.PK
-	var req authentik.UpdateUserRequest
-	if !decodeJSON(w, r, &req) {
+	var in updateUserInput
+	if !decodeJSON(w, r, &in) {
 		return
 	}
 	// Changing the type would turn the user into one this application no longer manages.
-	if req.Type != nil && *req.Type != authentik.UserTypeInternal {
+	if in.Type != nil && *in.Type != authentik.UserTypeInternal {
 		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"type": {"Only internal users can be managed."}})
 		return
 	}
 
+	req := in.request()
 	user, err := s.users.UpdateUser(r.Context(), id, req)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
@@ -277,26 +367,40 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		details["is_active"] = strconv.FormatBool(*req.IsActive)
 	}
 	s.recordUser(r, audit.ActionUserUpdated, user, details)
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, newUserView(user))
 }
 
-// setUserGroups replaces the groups of a user with the names in the body.
-// Restricted operators may only add or remove their target groups, and the user
-// must stay in one of them so the operator does not lose access to it.
+// userGroupsInput is the body of PUT /api/users/{id}/groups.
+type userGroupsInput struct {
+	// Groups are the names of the groups the user should be in.
+	Groups []string `json:"groups"`
+	// PrimaryGroup, when non-nil, is the name of the user's new primary group,
+	// which must be one of Groups; empty removes it. When nil it stays.
+	PrimaryGroup *string `json:"primary_group"`
+}
+
+// setUserGroups replaces the groups of a user with the names in the body and
+// sets their primary group. Restricted operators may only add or remove their
+// target groups, and the user must stay in one of them so the operator does
+// not lose access to it. The user's primary group cannot be removed unless the
+// same request chooses another one.
 func (s *Server) setUserGroups(w http.ResponseWriter, r *http.Request) {
 	user, scope, ok := s.allowedUser(w, r)
 	if !ok {
 		return
 	}
-	var in struct {
-		Groups []string `json:"groups"`
-	}
+	var in userGroupsInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
 	change, msg := diffGroups(user, in.Groups, scope)
 	if msg != "" {
 		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"groups": {msg}})
+		return
+	}
+	primary, fields := nextPrimaryGroup(user, change.groups, in.PrimaryGroup, scope)
+	if fields != nil {
+		writeError(w, http.StatusBadRequest, "validation failed", fields)
 		return
 	}
 
@@ -316,6 +420,11 @@ func (s *Server) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		}
 		s.recordUser(r, audit.ActionUserGroupAdded, user, map[string]string{"group": g.Name})
 	}
+	// Set the primary group between adding and removing, so it is always one of the user's groups.
+	next := authentik.UserGroup{Name: primary, PK: groupPK(primary, user.Groups, toAdd)}
+	if !s.setPrimaryGroup(w, r, user, next) {
+		return
+	}
 	for _, g := range change.removed {
 		if err := s.users.RemoveUserFromGroup(r.Context(), g.PK, user.PK); err != nil {
 			s.writeUpstreamError(w, r, err)
@@ -329,11 +438,13 @@ func (s *Server) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, newUserView(updated))
 }
 
 // groupChange is the difference between a user's groups and the requested ones.
 type groupChange struct {
+	// groups are the names of the groups the user is in after the change.
+	groups []string
 	// added are the names of the groups the user joins.
 	added []string
 	// removed are the groups the user leaves.
@@ -355,6 +466,7 @@ func diffGroups(user *authentik.User, names []string, scope access.Scope) (group
 
 	have := user.GroupNames()
 	change := groupChange{
+		groups:  want,
 		added:   slices.DeleteFunc(slices.Clone(want), func(g string) bool { return slices.Contains(have, g) }),
 		removed: slices.DeleteFunc(slices.Clone(user.Groups), func(g authentik.UserGroup) bool { return slices.Contains(want, g.Name) }),
 	}
@@ -372,6 +484,70 @@ func diffGroups(user *authentik.User, names []string, scope access.Scope) (group
 		return groupChange{}, "The user must stay in at least one of your groups."
 	}
 	return change, ""
+}
+
+// nextPrimaryGroup returns the name of the primary group user has once they
+// are in exactly groups, or "" for none. requested is the name of the new
+// primary group, "" to remove it, or nil to keep the current one. When the
+// change is not allowed it returns the messages per field, which are safe to
+// show users.
+func nextPrimaryGroup(user *authentik.User, groups []string, requested *string, scope access.Scope) (string, map[string][]string) {
+	current := primaryGroupName(user)
+	next := current
+	if requested != nil {
+		next = strings.TrimSpace(*requested)
+	}
+	isMember := next == "" || slices.Contains(groups, next)
+	switch {
+	case !isMember && next == current:
+		return "", map[string][]string{"groups": {
+			fmt.Sprintf("%q is the user's primary group. Choose another primary group before removing it.", current),
+		}}
+	case !isMember:
+		return "", map[string][]string{"primary_group": {"The primary group must be one of the user's groups."}}
+	case next == current:
+		return next, nil
+	case next != "" && !scope.HasGroup(next):
+		return "", map[string][]string{"primary_group": {fmt.Sprintf("You may not make %q the primary group.", next)}}
+	case current != "" && !scope.HasGroup(current):
+		return "", map[string][]string{"primary_group": {fmt.Sprintf("You may not change the primary group %q.", current)}}
+	}
+	return next, nil
+}
+
+// groupPK returns the primary key of the group named name among the groups a
+// user has and the ones they joined, or "" when it is in neither.
+func groupPK(name string, have []authentik.UserGroup, joined []*authentik.Group) string {
+	if i := slices.IndexFunc(have, func(g authentik.UserGroup) bool { return g.Name == name }); i >= 0 {
+		return have[i].PK
+	}
+	if i := slices.IndexFunc(joined, func(g *authentik.Group) bool { return g.Name == name }); i >= 0 {
+		return joined[i].PK
+	}
+	return ""
+}
+
+// setPrimaryGroup makes next the primary group of user, or removes it when
+// next.PK is empty. It does nothing when the primary group stays the same, and
+// writes the error response when it returns false.
+func (s *Server) setPrimaryGroup(w http.ResponseWriter, r *http.Request, user *authentik.User, next authentik.UserGroup) bool {
+	previous := primaryGroupName(user)
+	if next.Name == previous {
+		return true
+	}
+	// authentik replaces all attributes, so keep the others. A concurrent
+	// change to them elsewhere between loading and saving is lost.
+	req := authentik.UpdateUserRequest{Attributes: withPrimaryGroup(user.Attributes, next.PK)}
+	if _, err := s.users.UpdateUser(r.Context(), user.PK, req); err != nil {
+		s.writeUpstreamError(w, r, err)
+		return false
+	}
+	details := map[string]string{"primary_group": next.Name}
+	if previous != "" {
+		details["previous_primary_group"] = previous
+	}
+	s.recordUser(r, audit.ActionUserPrimaryGroupChanged, user, details)
+	return true
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {

@@ -14,12 +14,14 @@ type Action string
 
 // The recorded actions.
 const (
-	ActionUserCreated       Action = "user.created"
-	ActionUserUpdated       Action = "user.updated"
-	ActionUserDeleted       Action = "user.deleted"
-	ActionUserGroupAdded    Action = "user.group_added"
-	ActionUserGroupRemoved  Action = "user.group_removed"
-	ActionRecoveryEmailSent Action = "user.recovery_email_sent"
+	ActionUserCreated      Action = "user.created"
+	ActionUserUpdated      Action = "user.updated"
+	ActionUserDeleted      Action = "user.deleted"
+	ActionUserGroupAdded   Action = "user.group_added"
+	ActionUserGroupRemoved Action = "user.group_removed"
+	// ActionUserPrimaryGroupChanged is recorded when a user's primary group is set, changed or removed.
+	ActionUserPrimaryGroupChanged Action = "user.primary_group_changed"
+	ActionRecoveryEmailSent       Action = "user.recovery_email_sent"
 	// ActionAccessDenied is recorded when an operator requests a user outside their scope.
 	ActionAccessDenied Action = "user.access_denied"
 	ActionRuleSaved    Action = "access_rule.saved"
@@ -42,7 +44,7 @@ const (
 func (a Action) Valid() bool {
 	switch a {
 	case ActionUserCreated, ActionUserUpdated, ActionUserDeleted,
-		ActionUserGroupAdded, ActionUserGroupRemoved, ActionRecoveryEmailSent,
+		ActionUserGroupAdded, ActionUserGroupRemoved, ActionUserPrimaryGroupChanged, ActionRecoveryEmailSent,
 		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted,
 		ActionGroupRenamed, ActionGroupVisibilityChanged,
 		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected:

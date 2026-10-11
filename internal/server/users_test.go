@@ -14,6 +14,7 @@ import (
 	"testing/fstest"
 
 	"authentikManager/internal/access"
+	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/server"
@@ -55,6 +56,8 @@ type fakeUsers struct {
 	groupAttrs []map[string]any
 	// groupList, when set, is returned by ListGroups.
 	groupList []authentik.Group
+	// userAttrs records the attributes passed to UpdateUser, in order, when set.
+	userAttrs []map[string]any
 	// added and removed record the group keys passed to AddUserToGroup and RemoveUserFromGroup.
 	added   []string
 	removed []string
@@ -156,8 +159,11 @@ func (f *fakeUsers) CreateUser(_ context.Context, req authentik.CreateUserReques
 	return &authentik.User{PK: 9, Username: req.Username, Name: req.Name}, nil
 }
 
-func (f *fakeUsers) UpdateUser(_ context.Context, id int, _ authentik.UpdateUserRequest) (*authentik.User, error) {
+func (f *fakeUsers) UpdateUser(_ context.Context, id int, req authentik.UpdateUserRequest) (*authentik.User, error) {
 	f.mutated = true
+	if req.Attributes != nil {
+		f.userAttrs = append(f.userAttrs, req.Attributes)
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -306,6 +312,16 @@ func newServer(t *testing.T, users server.UserService) *server.Server {
 func newScopedServer(t *testing.T, users server.UserService, groups ...string) *server.Server {
 	t.Helper()
 	return newTestServer(t, users, newFakeRules(), fakeAuth{groups: groups})
+}
+
+// primaryGroupAttribute is the user attribute holding the primary key of the user's primary group.
+const primaryGroupAttribute = "authentik_manager_primary_group"
+
+// withPrimary sets the primary group of u, created by member, to the group
+// named name, next to an attribute of another application.
+func withPrimary(u *authentik.User, name string) *authentik.User {
+	u.Attributes = map[string]any{"other_app": "kept", primaryGroupAttribute: "pk-" + name}
+	return u
 }
 
 // member returns a user who belongs to the named groups.
@@ -571,6 +587,13 @@ func TestServer_userByID(t *testing.T) {
 		{name: "patch internal type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"internal"}`, wantStatus: http.StatusOK},
 		{name: "patch non-internal type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"external"}`, wantStatus: http.StatusBadRequest},
 		{name: "patch bad type", method: http.MethodPatch, target: "/api/users/4", body: `{"type":"root"}`, wantStatus: http.StatusBadRequest},
+		{
+			name:       "patch attributes refused",
+			method:     http.MethodPatch,
+			target:     "/api/users/4",
+			body:       `{"attributes":{"authentik_manager_primary_group":"pk-admins"}}`,
+			wantStatus: http.StatusBadRequest,
+		},
 		{name: "delete", method: http.MethodDelete, target: "/api/users/4", wantStatus: http.StatusNoContent},
 		{name: "unknown api route", method: http.MethodGet, target: "/api/nope", wantStatus: http.StatusNotFound},
 	}
@@ -749,6 +772,67 @@ func TestServer_listUsers_scoped(t *testing.T) {
 			t.Errorf("GET /api/users = %d %s, want empty results", rec.Code, rec.Body)
 		}
 	})
+}
+
+func TestServer_getUser_primaryGroup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		user     *authentik.User
+		expected string
+	}{
+		{name: "set", user: withPrimary(member("staff", "other"), "other"), expected: "other"},
+		{name: "unset", user: member("staff"), expected: ""},
+		{name: "no longer a member", user: withPrimary(member("staff"), "other"), expected: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := do(t, newServer(t, &fakeUsers{user: tt.user}), http.MethodGet, "/api/users/4", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+			}
+			var body struct {
+				Username     string `json:"username"`
+				PrimaryGroup string `json:"primary_group"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			if body.PrimaryGroup != tt.expected || body.Username != "target" {
+				t.Errorf("username %q, primary_group %q, want %q and %q", body.Username, body.PrimaryGroup, "target", tt.expected)
+			}
+		})
+	}
+}
+
+func TestServer_createUser_primaryGroup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		body     string
+		expected map[string]any
+	}{
+		{
+			name:     "group becomes the primary group",
+			body:     `{"username":"ann","name":"Ann","group":"staff"}`,
+			expected: map[string]any{primaryGroupAttribute: "pk-staff"},
+		},
+		{name: "no group", body: `{"username":"ann","name":"Ann"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{groups: map[string]authentik.Group{"staff": {PK: "pk-staff", Name: "staff"}}}
+			rec := do(t, newServer(t, fake), http.MethodPost, "/api/users", tt.body)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
+			}
+			if !maps.Equal(fake.created.Attributes, tt.expected) {
+				t.Errorf("attributes = %v, want %v", fake.created.Attributes, tt.expected)
+			}
+		})
+	}
 }
 
 func TestServer_userByID_scoped(t *testing.T) {
@@ -1004,6 +1088,174 @@ func TestServer_setUserGroups_outOfScope(t *testing.T) {
 	rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodPut, "/api/users/4/groups", `{"groups":["other","staff"]}`)
 	if rec.Code != http.StatusNotFound || fake.mutated {
 		t.Errorf("status = %d, mutated = %v, want 404 without change", rec.Code, fake.mutated)
+	}
+}
+
+func TestServer_setUserGroups_primaryGroup(t *testing.T) {
+	t.Parallel()
+	known := map[string]authentik.Group{
+		"staff":    {PK: "pk-staff", Name: "staff"},
+		"students": {PK: "pk-students", Name: "students"},
+		"other":    {PK: "pk-other", Name: "other"},
+	}
+	tests := []struct {
+		name     string
+		operator string
+		// primary is the name of the user's current primary group; empty for none.
+		primary        string
+		body           string
+		expectedStatus int
+		// expectedField is the field of the validation message, if any.
+		expectedField string
+		// expectedPrimary is the primary key stored, "" when removed, or nil when unchanged.
+		expectedPrimary *string
+		expectedRemoved []string
+	}{
+		{
+			name:            "set to a current group",
+			operator:        "admins",
+			body:            `{"groups":["staff","other"],"primary_group":"other"}`,
+			expectedStatus:  http.StatusOK,
+			expectedPrimary: new("pk-other"),
+		},
+		{
+			name:            "set to a joined group",
+			operator:        "admins",
+			body:            `{"groups":["staff","other","students"],"primary_group":" students "}`,
+			expectedStatus:  http.StatusOK,
+			expectedPrimary: new("pk-students"),
+		},
+		{
+			name:            "changed while leaving the previous one",
+			operator:        "admins",
+			primary:         "staff",
+			body:            `{"groups":["other"],"primary_group":"other"}`,
+			expectedStatus:  http.StatusOK,
+			expectedPrimary: new("pk-other"),
+			expectedRemoved: []string{"pk-staff"},
+		},
+		{
+			name:            "removed",
+			operator:        "admins",
+			primary:         "staff",
+			body:            `{"groups":["staff","other"],"primary_group":""}`,
+			expectedStatus:  http.StatusOK,
+			expectedPrimary: new(""),
+		},
+		{
+			name:           "kept when omitted",
+			operator:       "admins",
+			primary:        "staff",
+			body:           `{"groups":["staff","other","students"]}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "unchanged",
+			operator:       "admins",
+			primary:        "staff",
+			body:           `{"groups":["staff","other"],"primary_group":"staff"}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "leaving the primary group refused",
+			operator:       "admins",
+			primary:        "staff",
+			body:           `{"groups":["other"]}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedField:  "groups",
+		},
+		{
+			name:           "leaving the primary group refused when named again",
+			operator:       "admins",
+			primary:        "staff",
+			body:           `{"groups":["other"],"primary_group":"staff"}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedField:  "groups",
+		},
+		{
+			name:           "not one of the groups",
+			operator:       "admins",
+			body:           `{"groups":["staff","other"],"primary_group":"students"}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedField:  "primary_group",
+		},
+		{
+			name:            "restricted sets a target group",
+			operator:        "helpdesk",
+			body:            `{"groups":["staff","other"],"primary_group":"staff"}`,
+			expectedStatus:  http.StatusOK,
+			expectedPrimary: new("pk-staff"),
+		},
+		{
+			name:           "restricted sets another group",
+			operator:       "helpdesk",
+			body:           `{"groups":["staff","other"],"primary_group":"other"}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedField:  "primary_group",
+		},
+		{
+			name:           "restricted changes another group",
+			operator:       "helpdesk",
+			primary:        "other",
+			body:           `{"groups":["staff","other"],"primary_group":"staff"}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedField:  "primary_group",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			user := member("staff", "other")
+			if tt.primary != "" {
+				withPrimary(user, tt.primary)
+			}
+			fake := &fakeUsers{user: user, groups: known}
+			log := &fakeAudit{}
+			h := newAuditedServer(t, fake, newFakeRules(), log, fakeAuth{groups: []string{tt.operator}})
+			rec := do(t, h, http.MethodPut, "/api/users/4/groups", tt.body)
+			if rec.Code != tt.expectedStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.expectedStatus, rec.Body)
+			}
+			if tt.expectedField != "" {
+				if !strings.Contains(rec.Body.String(), `"`+tt.expectedField+`":[`) {
+					t.Errorf("body %s, want a message for the %s field", rec.Body, tt.expectedField)
+				}
+				if fake.mutated {
+					t.Errorf("user changed on a rejected request")
+				}
+			}
+			if !slices.Equal(fake.removed, tt.expectedRemoved) {
+				t.Errorf("removed %v, want %v", fake.removed, tt.expectedRemoved)
+			}
+			checkPrimaryUpdate(t, fake, log, tt.expectedPrimary)
+		})
+	}
+}
+
+// checkPrimaryUpdate checks that the primary group attribute was set to the
+// primary key expected, removed when it is empty, or left alone when it is
+// nil, and that the user's other attributes were kept.
+func checkPrimaryUpdate(t *testing.T, fake *fakeUsers, log *fakeAudit, expected *string) {
+	t.Helper()
+	recordedChange := slices.ContainsFunc(log.recorded, func(e audit.Entry) bool {
+		return e.Action == audit.ActionUserPrimaryGroupChanged
+	})
+	if expected == nil {
+		if len(fake.userAttrs) != 0 || recordedChange {
+			t.Errorf("attributes updated to %v (audit %v), want no update", fake.userAttrs, recordedChange)
+		}
+		return
+	}
+	if len(fake.userAttrs) != 1 || !recordedChange {
+		t.Fatalf("attributes updated %v (audit %v), want one update", fake.userAttrs, recordedChange)
+	}
+	attrs := fake.userAttrs[0]
+	got, ok := attrs[primaryGroupAttribute]
+	if *expected == "" && ok || *expected != "" && got != *expected {
+		t.Errorf("primary group attribute = %v, want %q", got, *expected)
+	}
+	if other, ok := fake.user.Attributes["other_app"]; ok && attrs["other_app"] != other {
+		t.Errorf("attributes = %v, want the other attributes kept", attrs)
 	}
 }
 

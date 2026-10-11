@@ -337,41 +337,59 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
 		return !slices.ContainsFunc(u.Groups, func(g authentik.UserGroup) bool { return g.PK == group.PK })
 	})
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(w, http.StatusOK, newUserPage(list))
 }
 
 func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request) {
-	s.changeGroupMember(w, r, s.users.AddUserToGroup, audit.ActionUserGroupAdded)
-}
-
-func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) {
-	s.changeGroupMember(w, r, s.users.RemoveUserFromGroup, audit.ActionUserGroupRemoved)
-}
-
-// changeGroupMember adds the user with the {id} path value to the group with
-// the {pk} path value, or removes them, using change.
-func (s *Server) changeGroupMember(w http.ResponseWriter, r *http.Request,
-	change func(ctx context.Context, groupPK string, userID int) error, action audit.Action,
-) {
-	id, ok := pathID(w, r)
+	group, user, ok := s.loadGroupMember(w, r)
 	if !ok {
 		return
 	}
-	group, ok := s.loadGroup(w, r)
+	if err := s.users.AddUserToGroup(r.Context(), group.PK, user.PK); err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	s.recordUser(r, audit.ActionUserGroupAdded, user, map[string]string{"group": group.Name})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeGroupMember removes a user from a group. It refuses to remove a user
+// from their primary group; another one has to be chosen first.
+func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) {
+	group, user, ok := s.loadGroupMember(w, r)
 	if !ok {
 		return
+	}
+	if pg := primaryGroup(user); pg != nil && pg.PK == group.PK {
+		writeError(w, http.StatusConflict,
+			fmt.Sprintf("%q is the primary group of %s. Choose another primary group for the user first.", group.Name, user.Username), nil)
+		return
+	}
+	if err := s.users.RemoveUserFromGroup(r.Context(), group.PK, user.PK); err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	s.recordUser(r, audit.ActionUserGroupRemoved, user, map[string]string{"group": group.Name})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// loadGroupMember loads the group with the {pk} path value and the user with
+// the {id} path value, writing the error response when it returns false.
+func (s *Server) loadGroupMember(w http.ResponseWriter, r *http.Request) (*authentik.Group, *authentik.User, bool) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return nil, nil, false
+	}
+	group, ok := s.loadGroup(w, r)
+	if !ok {
+		return nil, nil, false
 	}
 	user, err := s.users.GetUser(r.Context(), id)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
-		return
+		return nil, nil, false
 	}
-	if err := change(r.Context(), group.PK, user.PK); err != nil {
-		s.writeUpstreamError(w, r, err)
-		return
-	}
-	s.recordUser(r, action, user, map[string]string{"group": group.Name})
-	w.WriteHeader(http.StatusNoContent)
+	return group, user, true
 }
 
 // writeGroupError is writeUpstreamError for requests about a group.

@@ -67,11 +67,14 @@ export function UserDialog({
           groups={groups}
           groupSuggestions={groupSuggestions}
           onClose={onClose}
-          onSubmit={async (input, memberOf) => {
+          onSubmit={async (input, memberOf, primaryGroup) => {
             // Groups first: they are the likelier to be rejected, and then nothing has changed yet.
             const before = (user.groups_obj ?? []).map((g) => g.name)
-            if (before.length !== memberOf.length || before.some((g) => !memberOf.includes(g))) {
-              await api.setUserGroups(user.pk, memberOf)
+            const groupsChanged =
+              before.length !== memberOf.length || before.some((g) => !memberOf.includes(g))
+            const primaryChanged = primaryGroup !== user.primary_group
+            if (groupsChanged || primaryChanged) {
+              await api.setUserGroups(user.pk, memberOf, primaryChanged ? primaryGroup : undefined)
             }
             await api.updateUser(user.pk, input)
             onDone(`${input.username} saved.`)

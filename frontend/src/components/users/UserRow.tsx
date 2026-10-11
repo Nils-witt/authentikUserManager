@@ -9,6 +9,15 @@ function formatDate(value: string | null) {
   return value ? new Date(value).toLocaleString() : '—'
 }
 
+/** The user's group names, primary group first. */
+function groupList(user: UserRowActionsProps['user']) {
+  const names = (user.groups_obj ?? []).map((g) => g.name)
+  const others = names.filter((g) => g !== user.primary_group)
+  return (
+    others.length < names.length ? [`${user.primary_group} (primary)`, ...others] : names
+  ).join(', ')
+}
+
 /** One user in the user table; inactive users are greyed out. */
 export function UserRow(props: UserRowActionsProps) {
   const { user } = props
@@ -24,7 +33,7 @@ export function UserRow(props: UserRowActionsProps) {
       <TableCell>{user.name}</TableCell>
       <TableCell>{user.email || '—'}</TableCell>
       <TableCell sx={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {(user.groups_obj ?? []).map((g) => g.name).join(', ') || '—'}
+        {groupList(user) || '—'}
       </TableCell>
       <TableCell>
         <Chip

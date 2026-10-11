@@ -15,6 +15,8 @@ export interface User {
   date_joined: string
   /** Groups the user is a direct member of. */
   groups_obj?: { pk: string; name: string }[] | null
+  /** Name of the user's primary group, one of their groups; empty when none is set. */
+  primary_group: string
 }
 
 export interface Pagination {
@@ -61,7 +63,7 @@ export interface UserInput {
 }
 
 export interface CreateUserInput extends UserInput {
-  /** Group the new user joins; required for operators with restricted access. */
+  /** Group the new user joins and their primary group; required for operators with restricted access. */
   group?: string
 }
 
@@ -92,6 +94,7 @@ export type AuditAction =
   | 'user.deleted'
   | 'user.group_added'
   | 'user.group_removed'
+  | 'user.primary_group_changed'
   | 'user.recovery_email_sent'
   | 'user.access_denied'
   | 'access_rule.saved'
@@ -314,9 +317,13 @@ export const createUser = (input: CreateUserInput) => request<User>('POST', '/ap
 export const updateUser = (id: number, input: Partial<UserInput>) =>
   request<User>('PATCH', `/api/users/${id}`, input)
 
-/** Replaces the user's groups with the named ones. */
-export const setUserGroups = (id: number, groups: string[]) =>
-  request<User>('PUT', `/api/users/${id}/groups`, { groups })
+/**
+ * Replaces the user's groups with the named ones and sets their primary group, one of `groups`
+ * ('' removes it). The primary group stays when `primaryGroup` is omitted; it cannot be left
+ * without choosing another one.
+ */
+export const setUserGroups = (id: number, groups: string[], primaryGroup?: string) =>
+  request<User>('PUT', `/api/users/${id}/groups`, { groups, primary_group: primaryGroup })
 
 /** Emails the user a link to recover their account and set a new password. */
 export const sendRecoveryEmail = (id: number) =>

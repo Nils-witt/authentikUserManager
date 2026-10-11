@@ -1,3 +1,4 @@
+import StarIcon from '@mui/icons-material/Star'
 import Autocomplete from '@mui/material/Autocomplete'
 import Chip from '@mui/material/Chip'
 import TextField, { type TextFieldProps } from '@mui/material/TextField'
@@ -10,20 +11,26 @@ interface UserGroupsFieldProps {
   groups?: string[]
   /** Group names suggested when any group may be chosen. */
   suggestions?: string[]
+  /** Name of the user's primary group; it is marked and cannot be removed. */
+  primary?: string
   /** Validation error shown on the field. */
   errorProps?: Pick<TextFieldProps, 'error' | 'helperText'>
 }
 
-/** Edits a user's group memberships; groups outside the operator's scope stay as they are. */
+/**
+ * Edits a user's group memberships; groups outside the operator's scope and the primary group stay
+ * as they are.
+ */
 export function UserGroupsField({
   value,
   onChange,
   groups,
   suggestions,
+  primary,
   errorProps,
 }: UserGroupsFieldProps) {
-  const editable = (g: string) => !groups || groups.includes(g)
-  const fixed = value.filter((g) => !editable(g))
+  const removable = (g: string) => g !== primary && (!groups || groups.includes(g))
+  const fixed = value.filter((g) => !removable(g))
 
   return (
     <Autocomplete
@@ -43,8 +50,10 @@ export function UserGroupsField({
               key={key}
               size="small"
               label={g}
+              title={g === primary ? 'Primary group' : undefined}
+              icon={g === primary ? <StarIcon /> : undefined}
               {...itemProps}
-              onDelete={editable(g) ? onDelete : undefined}
+              onDelete={removable(g) ? onDelete : undefined}
             />
           )
         })

@@ -442,3 +442,34 @@ func TestServer_changeGroupMember(t *testing.T) {
 		})
 	}
 }
+
+func TestServer_removeGroupMember_primaryGroup(t *testing.T) {
+	t.Parallel()
+	user := &authentik.User{
+		Username:   "dan",
+		Groups:     []authentik.UserGroup{{PK: "g1", Name: "staff"}, {PK: "g2", Name: "students"}},
+		Attributes: map[string]any{primaryGroupAttribute: "g1"},
+	}
+	tests := []struct {
+		name           string
+		target         string
+		expectedStatus int
+		expectedRemove []string
+	}{
+		{name: "primary group refused", target: "/api/groups/g1/members/4", expectedStatus: http.StatusConflict},
+		{name: "other group", target: "/api/groups/g2/members/4", expectedStatus: http.StatusNoContent, expectedRemove: []string{"g2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			users := &fakeUsers{groups: testGroups(), user: user}
+			rec := do(t, newTestServer(t, users, newFakeRules(), adminAuth), http.MethodDelete, tt.target, "")
+			if rec.Code != tt.expectedStatus {
+				t.Fatalf("status = %d %s, want %d", rec.Code, rec.Body, tt.expectedStatus)
+			}
+			if !slices.Equal(users.removed, tt.expectedRemove) {
+				t.Errorf("removed %v, want %v", users.removed, tt.expectedRemove)
+			}
+		})
+	}
+}

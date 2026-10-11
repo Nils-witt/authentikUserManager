@@ -27,6 +27,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'user.deleted': 'User deleted',
   'user.group_added': 'Added to group',
   'user.group_removed': 'Removed from group',
+  'user.primary_group_changed': 'Primary group changed',
   'user.recovery_email_sent': 'Recovery email sent',
   'user.access_denied': 'Access denied',
   'access_rule.saved': 'Access rule saved',

@@ -24,8 +24,11 @@ interface UserFormProps {
   groups?: string[]
   /** Group names suggested when any group may be chosen. */
   groupSuggestions?: string[]
-  /** Receives the user's groups too; they are only edited for an existing user. */
-  onSubmit: (input: CreateUserInput, groups: string[]) => Promise<void>
+  /**
+   * Receives the user's groups and the name of their primary group ('' for none) too; they are only
+   * edited for an existing user.
+   */
+  onSubmit: (input: CreateUserInput, groups: string[], primaryGroup: string) => Promise<void>
   onClose: () => void
 }
 
@@ -47,6 +50,7 @@ export function UserForm({
   })
   const [group, setGroup] = useState(groups?.length === 1 ? groups[0] : '')
   const [memberOf, setMemberOf] = useState(() => (user?.groups_obj ?? []).map((g) => g.name))
+  const [primary, setPrimary] = useState(user?.primary_group ?? '')
   const [error, setError] = useState<ApiError | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -58,13 +62,18 @@ export function UserForm({
     setSaving(true)
     setError(null)
     try {
-      await onSubmit(!user && group ? { ...input, group } : input, memberOf)
+      await onSubmit(!user && group ? { ...input, group } : input, memberOf, primary)
     } catch (err) {
       setError(err instanceof ApiError ? err : new ApiError(0, String(err)))
     } finally {
       setSaving(false)
     }
   }
+
+  const editable = (g: string) => !groups || groups.includes(g)
+  // Restricted operators may only choose, change or remove primary groups they manage.
+  const primaryEditable = primary === '' || editable(primary)
+  const primaryOptions = memberOf.filter((g) => g === primary || editable(g))
 
   /** Props showing the server's validation errors for a field. */
   const fieldError = (name: string) => {
@@ -122,6 +131,7 @@ export function UserForm({
                 required
                 value={group}
                 onChange={(e) => setGroup(e.target.value)}
+                helperText="Also becomes the user's primary group."
                 {...fieldError('group')}
               >
                 {groups.map((g) => (
@@ -137,8 +147,29 @@ export function UserForm({
                 onChange={setMemberOf}
                 groups={groups}
                 suggestions={groupSuggestions}
+                primary={primary}
                 errorProps={fieldError('groups')}
               />
+            )}
+            {user && (
+              <TextField
+                select
+                label="Primary group"
+                value={primary}
+                onChange={(e) => setPrimary(e.target.value)}
+                disabled={!primaryEditable}
+                helperText="Choose another primary group before removing this one from the groups."
+                {...fieldError('primary_group')}
+              >
+                <MenuItem value="">
+                  <em>None</em>
+                </MenuItem>
+                {primaryOptions.map((g) => (
+                  <MenuItem key={g} value={g}>
+                    {g}
+                  </MenuItem>
+                ))}
+              </TextField>
             )}
             <FormControlLabel
               label="Active"

@@ -12,7 +12,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -102,9 +102,25 @@ attributes or whether it grants superuser rights.
 The API for access administrators is `GET /api/groups` (`search`, `page`, `page_size`),
 `GET` and `PATCH /api/groups/{pk}` (body `{"name": "...", "visible": true}`, both optional),
 `GET /api/groups/{pk}/members` (`search`, `page`, `page_size`), and `PUT` and
-`DELETE /api/groups/{pk}/members/{user id}`. Every signed-in user may call
+`DELETE /api/groups/{pk}/members/{user id}`. Removing a user from their primary group returns 409. Every signed-in user may call
 `GET /api/groups/visible` (`search`, `page`, `page_size`); each group carries `member`, set when
 the caller is a direct member.
+
+## Primary groups
+
+Every user can have one primary group, chosen in the user dialog from the groups they are a
+direct member of. The user list shows it first, marked "(primary)".
+
+- It is stored in authentik as the user attribute `authentik_manager_primary_group`, holding the
+  group's primary key, so renaming the group keeps it. As with group visibility, the app reads the
+  user's attributes, changes only this key and writes them back.
+- A new user's group (the group restricted operators must choose) becomes their primary group.
+- A user cannot be removed from their primary group, neither in the user dialog nor under
+  **Groups**. Choose another primary group first, or in the same save in the user dialog.
+- Restricted operators may only choose, change or remove a primary group that is one of their
+  target groups.
+- If the user leaves the group in authentik directly, they have no primary group until another
+  one is chosen.
 
 ## Join requests
 
@@ -134,7 +150,7 @@ The API is `POST /api/groups/{pk}/join-requests` (body `{"message": "..."}`) and
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
-creating, updating and deleting users, changing their groups, sending recovery emails,
+creating, updating and deleting users, changing their groups and primary groups, sending recovery emails,
 saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
@@ -213,10 +229,10 @@ the frontend, run `make build` again.
 | GET    | `/api/users`               | internal users only; query: `search`, `page`, `page_size` (≤100), `ordering`, `path`, `path_startswith`, `is_active` |
 | GET    | `/api/users/paths`         | all user folders: `{paths}`                              |
 | POST   | `/api/users`               | `{username, name, email?, is_active?, path?, type?, group?}`; `type` must be `internal` |
-| GET    | `/api/users/{id}`          |                                                          |
+| GET    | `/api/users/{id}`          | users carry `primary_group`: the name of their primary group, or empty |
 | PATCH  | `/api/users/{id}`          | any subset of the create fields                          |
 | DELETE | `/api/users/{id}`          | admins only                                              |
-| PUT    | `/api/users/{id}/groups`   | `{groups}`: the group names the user should be in. Restricted operators may only add or remove their target groups, and the user must keep one of them |
+| PUT    | `/api/users/{id}/groups`   | `{groups, primary_group?}`: the group names the user should be in, and the name of their primary group (one of `groups`; empty removes it, omitted keeps it). Restricted operators may only add or remove their target groups, and the user must keep one of them. The primary group cannot be removed |
 | GET    | `/healthz`                 | no login required                                        |
 | GET    | `/auth/login`              | starts the OIDC login                                     |
 | GET    | `/auth/callback`           | OIDC redirect target                                      |

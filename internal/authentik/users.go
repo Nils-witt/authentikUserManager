@@ -155,6 +155,8 @@ type CreateUserRequest struct {
 	Type     UserType `json:"type,omitempty"`
 	// Groups lists the primary keys of the groups the new user joins.
 	Groups []string `json:"groups,omitempty"`
+	// Attributes are the custom attributes of the new user.
+	Attributes map[string]any `json:"attributes,omitempty"`
 }
 
 // UpdateUserRequest is a partial update; nil fields are left unchanged.
@@ -165,6 +167,9 @@ type UpdateUserRequest struct {
 	IsActive *bool     `json:"is_active,omitempty"`
 	Path     *string   `json:"path,omitempty"`
 	Type     *UserType `json:"type,omitempty"`
+	// Attributes replaces all custom attributes of the user, so pass the
+	// current ones with the changes applied. An empty map removes them all.
+	Attributes map[string]any `json:"attributes,omitzero"`
 }
 
 func userPath(id int) string {
