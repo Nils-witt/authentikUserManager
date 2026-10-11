@@ -879,6 +879,75 @@ func TestServer_userByID_scoped(t *testing.T) {
 	}
 }
 
+func TestServer_changeUser_primaryGroup(t *testing.T) {
+	t.Parallel()
+	requests := []struct{ method, target, body string }{
+		{http.MethodPatch, "/api/users/4", `{"name":"x"}`},
+		{http.MethodPut, "/api/users/4/groups", `{"groups":["staff","other"]}`},
+		{http.MethodPost, "/api/users/4/recovery-email", ""},
+	}
+	tests := []struct {
+		name     string
+		operator string
+		// primary is the name of the user's primary group; empty for none.
+		primary  string
+		expected bool
+	}{
+		{name: "primary group in scope", operator: "helpdesk", primary: "staff", expected: true},
+		{name: "primary group outside scope", operator: "helpdesk", primary: "other", expected: false},
+		{name: "no primary group", operator: "helpdesk", expected: true},
+		{name: "all users", operator: "superhelp", primary: "other", expected: true},
+		{name: "access administrator", operator: "admins", primary: "other", expected: true},
+	}
+	for _, tt := range tests {
+		newTarget := func() *authentik.User {
+			user := member("staff", "other")
+			if tt.primary != "" {
+				withPrimary(user, tt.primary)
+			}
+			return user
+		}
+		t.Run(tt.name+"/GET", func(t *testing.T) {
+			t.Parallel()
+			rec := do(t, newScopedServer(t, &fakeUsers{user: newTarget()}, tt.operator), http.MethodGet, "/api/users/4", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+			}
+			var body struct {
+				Changeable bool `json:"changeable"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			if body.Changeable != tt.expected {
+				t.Errorf("changeable = %v, want %v", body.Changeable, tt.expected)
+			}
+		})
+		for _, req := range requests {
+			t.Run(tt.name+"/"+req.method+" "+req.target, func(t *testing.T) {
+				t.Parallel()
+				fake := &fakeUsers{user: newTarget()}
+				log := &fakeAudit{}
+				h := newAuditedServer(t, fake, newFakeRules(), log, fakeAuth{groups: []string{tt.operator}})
+				rec := do(t, h, req.method, req.target, req.body)
+				if tt.expected {
+					if rec.Code >= 400 {
+						t.Errorf("status = %d, want success (body %s)", rec.Code, rec.Body)
+					}
+					return
+				}
+				if rec.Code != http.StatusForbidden || fake.mutated {
+					t.Errorf("status = %d, mutated = %v, want 403 without change", rec.Code, fake.mutated)
+				}
+				denied := slices.ContainsFunc(log.recorded, func(e audit.Entry) bool { return e.Action == audit.ActionAccessDenied })
+				if !denied {
+					t.Errorf("recorded %v, want an access denied entry", log.recorded)
+				}
+			})
+		}
+	}
+}
+
 func TestServer_deleteUser_admin(t *testing.T) {
 	t.Parallel()
 	serviceAccount := member("staff")
@@ -1198,8 +1267,7 @@ func TestServer_setUserGroups_primaryGroup(t *testing.T) {
 			operator:       "helpdesk",
 			primary:        "other",
 			body:           `{"groups":["staff","other"],"primary_group":"staff"}`,
-			expectedStatus: http.StatusBadRequest,
-			expectedField:  "primary_group",
+			expectedStatus: http.StatusForbidden,
 		},
 	}
 	for _, tt := range tests {

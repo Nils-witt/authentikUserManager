@@ -17,6 +17,8 @@ export interface User {
   groups_obj?: { pk: string; name: string }[] | null
   /** Name of the user's primary group, one of their groups; empty when none is set. */
   primary_group: string
+  /** Whether the operator may change the user: only the operators managing their primary group may. */
+  changeable: boolean
 }
 
 export interface Pagination {

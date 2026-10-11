@@ -117,8 +117,13 @@ direct member of. The user list shows it first, marked "(primary)".
 - A new user's group (the group restricted operators must choose) becomes their primary group.
 - A user cannot be removed from their primary group, neither in the user dialog nor under
   **Groups**. Choose another primary group first, or in the same save in the user dialog.
-- Restricted operators may only choose, change or remove a primary group that is one of their
-  target groups.
+- Only the operators managing a user's primary group may change the user: edit them, (de)activate
+  them, change their groups, send them a recovery email or delete them. These are access
+  administrators, operators with the "all users" rule, and operators whose rules name the group as
+  a target. Other operators who manage one of the user's other groups still see the user, marked
+  with a lock, and get 403 on these routes. Users without a primary group can be changed by every
+  operator who may manage them.
+- Restricted operators may only choose a primary group that is one of their target groups.
 - If the user leaves the group in authentik directly, they have no primary group until another
   one is chosen.
 
@@ -229,7 +234,7 @@ the frontend, run `make build` again.
 | GET    | `/api/users`               | internal users only; query: `search`, `page`, `page_size` (≤100), `ordering`, `path`, `path_startswith`, `is_active` |
 | GET    | `/api/users/paths`         | all user folders: `{paths}`                              |
 | POST   | `/api/users`               | `{username, name, email?, is_active?, path?, type?, group?}`; `type` must be `internal` |
-| GET    | `/api/users/{id}`          | users carry `primary_group`: the name of their primary group, or empty |
+| GET    | `/api/users/{id}`          | users carry `primary_group`: the name of their primary group, or empty, and `changeable`: whether the operator may change them ([primary groups](#primary-groups)) |
 | PATCH  | `/api/users/{id}`          | any subset of the create fields                          |
 | DELETE | `/api/users/{id}`          | admins only                                              |
 | PUT    | `/api/users/{id}/groups`   | `{groups, primary_group?}`: the group names the user should be in, and the name of their primary group (one of `groups`; empty removes it, omitted keeps it). Restricted operators may only add or remove their target groups, and the user must keep one of them. The primary group cannot be removed |

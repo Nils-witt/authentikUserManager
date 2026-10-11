@@ -66,21 +66,32 @@ func withPrimaryGroup(attrs map[string]any, pk string) map[string]any {
 	return out
 }
 
+// mayChange reports whether an operator with scope may change u, which they
+// may already see. Only the operators managing the user's primary group may
+// change a user who has one, so the operators of the user's other groups
+// cannot take the user over.
+func mayChange(u *authentik.User, scope access.Scope) bool {
+	g := primaryGroupName(u)
+	return g == "" || scope.HasGroup(g)
+}
+
 // userView is a user as operators see it.
 type userView struct {
 	authentik.User
 	// PrimaryGroup is the name of the user's primary group; empty when none is set.
 	PrimaryGroup string `json:"primary_group"`
+	// Changeable is set when the operator may change the user (see mayChange).
+	Changeable bool `json:"changeable"`
 }
 
-func newUserView(u *authentik.User) userView {
-	return userView{User: *u, PrimaryGroup: primaryGroupName(u)}
+func newUserView(u *authentik.User, scope access.Scope) userView {
+	return userView{User: *u, PrimaryGroup: primaryGroupName(u), Changeable: mayChange(u, scope)}
 }
 
-func newUserPage(list *authentik.UserList) page[userView] {
+func newUserPage(list *authentik.UserList, scope access.Scope) page[userView] {
 	out := page[userView]{Pagination: list.Pagination, Results: make([]userView, len(list.Results))}
 	for i := range list.Results {
-		out.Results[i] = newUserView(&list.Results[i])
+		out.Results[i] = newUserView(&list.Results[i], scope)
 	}
 	return out
 }
@@ -151,7 +162,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
 		return u.Type != authentik.UserTypeInternal || !scope.Allows(&u)
 	})
-	writeJSON(w, http.StatusOK, newUserPage(list))
+	writeJSON(w, http.StatusOK, newUserPage(list, scope))
 }
 
 // allowedUser loads the user with the {id} path value and checks that the
@@ -180,6 +191,24 @@ func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik
 	return user, scope, true
 }
 
+// changeableUser is allowedUser for the routes that change the user: it also
+// checks that the operator may change them (see mayChange), and answers 403
+// otherwise, since the operator may see the user.
+func (s *Server) changeableUser(w http.ResponseWriter, r *http.Request) (*authentik.User, access.Scope, bool) {
+	user, scope, ok := s.allowedUser(w, r)
+	if !ok {
+		return nil, access.Scope{}, false
+	}
+	if !mayChange(user, scope) {
+		primary := primaryGroupName(user)
+		s.recordUser(r, audit.ActionAccessDenied, user, map[string]string{"primary_group": primary})
+		writeError(w, http.StatusForbidden,
+			fmt.Sprintf("only the operators managing the primary group %q may change this user", primary), nil)
+		return nil, access.Scope{}, false
+	}
+	return user, scope, true
+}
+
 func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 	scope, ok := s.scope(w, r)
 	if !ok {
@@ -199,11 +228,11 @@ func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
-	user, _, ok := s.allowedUser(w, r)
+	user, scope, ok := s.allowedUser(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, newUserView(user))
+	writeJSON(w, http.StatusOK, newUserView(user, scope))
 }
 
 // createUserInput is the body of POST /api/users. It is decoded separately from
@@ -290,7 +319,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		details["group"] = in.Group
 	}
 	s.recordUser(r, audit.ActionUserCreated, user, details)
-	writeJSON(w, http.StatusCreated, newUserView(user))
+	writeJSON(w, http.StatusCreated, newUserView(user, scope))
 }
 
 // findGroup resolves a group a user joins, writing the error response for the
@@ -338,7 +367,7 @@ func (in updateUserInput) request() authentik.UpdateUserRequest {
 }
 
 func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
-	target, _, ok := s.allowedUser(w, r)
+	target, scope, ok := s.changeableUser(w, r)
 	if !ok {
 		return
 	}
@@ -367,7 +396,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		details["is_active"] = strconv.FormatBool(*req.IsActive)
 	}
 	s.recordUser(r, audit.ActionUserUpdated, user, details)
-	writeJSON(w, http.StatusOK, newUserView(user))
+	writeJSON(w, http.StatusOK, newUserView(user, scope))
 }
 
 // userGroupsInput is the body of PUT /api/users/{id}/groups.
@@ -385,7 +414,7 @@ type userGroupsInput struct {
 // not lose access to it. The user's primary group cannot be removed unless the
 // same request chooses another one.
 func (s *Server) setUserGroups(w http.ResponseWriter, r *http.Request) {
-	user, scope, ok := s.allowedUser(w, r)
+	user, scope, ok := s.changeableUser(w, r)
 	if !ok {
 		return
 	}
@@ -438,7 +467,7 @@ func (s *Server) setUserGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newUserView(updated))
+	writeJSON(w, http.StatusOK, newUserView(updated, scope))
 }
 
 // groupChange is the difference between a user's groups and the requested ones.
@@ -488,9 +517,9 @@ func diffGroups(user *authentik.User, names []string, scope access.Scope) (group
 
 // nextPrimaryGroup returns the name of the primary group user has once they
 // are in exactly groups, or "" for none. requested is the name of the new
-// primary group, "" to remove it, or nil to keep the current one. When the
-// change is not allowed it returns the messages per field, which are safe to
-// show users.
+// primary group, "" to remove it, or nil to keep the current one. The operator
+// must manage the current primary group (see changeableUser). When the change
+// is not allowed it returns the messages per field, which are safe to show users.
 func nextPrimaryGroup(user *authentik.User, groups []string, requested *string, scope access.Scope) (string, map[string][]string) {
 	current := primaryGroupName(user)
 	next := current
@@ -509,8 +538,6 @@ func nextPrimaryGroup(user *authentik.User, groups []string, requested *string, 
 		return next, nil
 	case next != "" && !scope.HasGroup(next):
 		return "", map[string][]string{"primary_group": {fmt.Sprintf("You may not make %q the primary group.", next)}}
-	case current != "" && !scope.HasGroup(current):
-		return "", map[string][]string{"primary_group": {fmt.Sprintf("You may not change the primary group %q.", current)}}
 	}
 	return next, nil
 }
@@ -551,7 +578,7 @@ func (s *Server) setPrimaryGroup(w http.ResponseWriter, r *http.Request, user *a
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
-	target, _, ok := s.allowedUser(w, r)
+	target, _, ok := s.changeableUser(w, r)
 	if !ok {
 		return
 	}
@@ -569,7 +596,7 @@ func (s *Server) sendRecoveryEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "recovery emails are not configured", nil)
 		return
 	}
-	user, _, ok := s.allowedUser(w, r)
+	user, _, ok := s.changeableUser(w, r)
 	if !ok {
 		return
 	}

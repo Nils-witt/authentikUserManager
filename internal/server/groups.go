@@ -337,7 +337,8 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
 		return !slices.ContainsFunc(u.Groups, func(g authentik.UserGroup) bool { return g.PK == group.PK })
 	})
-	writeJSON(w, http.StatusOK, newUserPage(list))
+	// Only access administrators list the members, and they may change every user.
+	writeJSON(w, http.StatusOK, newUserPage(list, access.Scope{All: true}))
 }
 
 func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request) {

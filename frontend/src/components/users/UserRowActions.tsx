@@ -2,6 +2,7 @@ import BlockIcon from '@mui/icons-material/Block'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import DeleteIcon from '@mui/icons-material/Delete'
 import EditIcon from '@mui/icons-material/Edit'
+import LockIcon from '@mui/icons-material/Lock'
 import MailLockIcon from '@mui/icons-material/MailLock'
 import IconButton from '@mui/material/IconButton'
 import Tooltip from '@mui/material/Tooltip'
@@ -19,7 +20,7 @@ export interface UserRowActionsProps {
   onDelete: (user: User) => void
 }
 
-/** Icon buttons acting on a single user. */
+/** Icon buttons acting on a single user, or a lock when the operator may not change them. */
 export function UserRowActions({
   user,
   canSendRecovery,
@@ -29,6 +30,15 @@ export function UserRowActions({
   onSendRecovery,
   onDelete,
 }: UserRowActionsProps) {
+  if (!user.changeable) {
+    return (
+      <Tooltip
+        title={`Only the operators managing the primary group "${user.primary_group}" can change this user`}
+      >
+        <LockIcon fontSize="small" color="disabled" sx={{ verticalAlign: 'middle' }} />
+      </Tooltip>
+    )
+  }
   return (
     <>
       <Tooltip title="Edit">
