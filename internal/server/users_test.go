@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -41,7 +42,9 @@ func (f fakeAuth) Require(next http.Handler) http.Handler {
 // fakeUsers is a UserService whose behavior is set per test.
 type fakeUsers struct {
 	listParams authentik.ListUsersParams
-	created    authentik.CreateUserRequest
+	// listCalls records the parameters of every ListUsers call, in order.
+	listCalls []authentik.ListUsersParams
+	created   authentik.CreateUserRequest
 	// listed are returned by ListUsers; nil means a single user "ann".
 	listed []authentik.User
 	// user is returned by GetUser; nil means a user without groups.
@@ -69,6 +72,7 @@ type fakeUsers struct {
 
 func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*authentik.UserList, error) {
 	f.listParams = p
+	f.listCalls = append(f.listCalls, p)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -774,6 +778,111 @@ func TestServer_listUsers_scoped(t *testing.T) {
 	})
 }
 
+// self returns the account of the operator signed in by fakeAuth, a member of the named groups.
+func self(groups ...string) *authentik.User {
+	u := member(groups...)
+	u.Username = "admin"
+	return u
+}
+
+func TestServer_listUsers_self(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		groups   []string
+		target   string
+		listed   []authentik.User
+		expected []string
+		// selfChangeable is whether the own account, when listed, may be changed.
+		selfChangeable bool
+		// wantCount, when set, is the expected total count.
+		wantCount int
+	}{
+		{
+			name:      "no access sees only themselves",
+			groups:    []string{"guests"},
+			target:    "/api/users",
+			listed:    []authentik.User{*member("staff"), *self("guests")},
+			expected:  []string{"admin"},
+			wantCount: 1,
+		},
+		{
+			name:     "outside the scope goes first",
+			groups:   []string{"helpdesk"},
+			target:   "/api/users",
+			listed:   []authentik.User{*member("staff"), *self("other")},
+			expected: []string{"admin", "target"},
+		},
+		{
+			name:           "inside the scope is listed once",
+			groups:         []string{"helpdesk"},
+			target:         "/api/users",
+			listed:         []authentik.User{*member("staff"), *self("staff")},
+			expected:       []string{"target", "admin"},
+			selfChangeable: true,
+		},
+		{
+			name:     "only on the first page",
+			groups:   []string{"helpdesk"},
+			target:   "/api/users?page=2",
+			listed:   []authentik.User{*member("staff"), *self("other")},
+			expected: []string{"target"},
+		},
+		{
+			name:     "not matching the filters",
+			groups:   []string{"guests"},
+			target:   "/api/users?search=ann",
+			listed:   []authentik.User{*member("staff")},
+			expected: []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{listed: tt.listed}
+			rec := do(t, newScopedServer(t, fake, tt.groups...), http.MethodGet, tt.target, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+			}
+			var body struct {
+				Pagination authentik.Pagination `json:"pagination"`
+				Results    []struct {
+					Username   string `json:"username"`
+					Changeable bool   `json:"changeable"`
+				} `json:"results"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			usernames := []string{}
+			for _, u := range body.Results {
+				usernames = append(usernames, u.Username)
+				if u.Username == "admin" && u.Changeable != tt.selfChangeable {
+					t.Errorf("own account changeable = %v, want %v", u.Changeable, tt.selfChangeable)
+				}
+			}
+			if !slices.Equal(usernames, tt.expected) {
+				t.Errorf("usernames = %v, want %v", usernames, tt.expected)
+			}
+			if tt.wantCount != 0 && body.Pagination.Count != tt.wantCount {
+				t.Errorf("count = %d, want %d", body.Pagination.Count, tt.wantCount)
+			}
+			// The own account is looked up with the list's filters, but without the scope.
+			own := fake.listCalls[0]
+			if own.Username != "admin" || own.GroupsByName != nil || own.IsSuperuser != nil {
+				t.Errorf("own account looked up with %+v", own)
+			}
+			target, err := url.Parse(tt.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := target.Query().Get("search"); own.Search != want {
+				t.Errorf("own account search = %q, want the list's %q", own.Search, want)
+			}
+		})
+	}
+}
+
 func TestServer_getUser_primaryGroup(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -877,6 +986,46 @@ func TestServer_userByID_scoped(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestServer_userByID_self(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		method     string
+		groups     []string
+		target     *authentik.User
+		wantStatus int
+	}{
+		{name: "get outside the scope", method: http.MethodGet, groups: []string{"guests"}, target: self("other"), wantStatus: http.StatusOK},
+		{name: "change outside the scope", method: http.MethodPatch, groups: []string{"guests"}, target: self("other"), wantStatus: http.StatusForbidden},
+		{name: "change inside the scope", method: http.MethodPatch, groups: []string{"helpdesk"}, target: self("staff"), wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{user: tt.target}
+			body := ""
+			if tt.method == http.MethodPatch {
+				body = `{"name":"x"}`
+			}
+			rec := do(t, newScopedServer(t, fake, tt.groups...), tt.method, "/api/users/4", body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus == http.StatusForbidden && fake.mutated {
+				t.Error("own account changed outside the scope")
+			}
+		})
+	}
+
+	t.Run("get reports read-only", func(t *testing.T) {
+		t.Parallel()
+		rec := do(t, newScopedServer(t, &fakeUsers{user: self("other")}, "guests"), http.MethodGet, "/api/users/4", "")
+		if !strings.Contains(rec.Body.String(), `"changeable":false`) {
+			t.Errorf("body = %s, want changeable false", rec.Body)
+		}
+	})
 }
 
 func TestServer_changeUser_primaryGroup(t *testing.T) {

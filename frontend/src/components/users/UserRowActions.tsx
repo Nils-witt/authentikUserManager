@@ -33,7 +33,12 @@ export function UserRowActions({
   if (!user.changeable) {
     return (
       <Tooltip
-        title={`Only the operators managing the primary group "${user.primary_group}" can change this user`}
+        title={
+          user.primary_group
+            ? `Only the operators managing the primary group "${user.primary_group}" can change this user`
+            : // Without a primary group, only an own account outside the operator's scope is locked.
+              'You can see your own account but not change it'
+        }
       >
         <LockIcon fontSize="small" color="disabled" sx={{ verticalAlign: 'middle' }} />
       </Tooltip>

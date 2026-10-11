@@ -106,22 +106,7 @@ func (s *Server) requester(w http.ResponseWriter, r *http.Request) (*authentik.U
 // findRequester returns the internal authentik account of the signed-in user,
 // or nil when there is none. Unlike the groups read at login, its groups are current.
 func (s *Server) findRequester(r *http.Request) (*authentik.User, error) {
-	username := actorName(r)
-	list, err := s.users.ListUsers(r.Context(), authentik.ListUsersParams{
-		Username: username,
-		Type:     []authentik.UserType{authentik.UserTypeInternal},
-	})
-	if err != nil {
-		return nil, err
-	}
-	// authentik silently ignores filters it does not know, so match exactly.
-	i := slices.IndexFunc(list.Results, func(u authentik.User) bool {
-		return u.Username == username && u.Type == authentik.UserTypeInternal
-	})
-	if i < 0 {
-		return nil, nil
-	}
-	return &list.Results[i], nil
+	return s.findActor(r, authentik.ListUsersParams{})
 }
 
 // listMyJoinRequests returns the requests of the signed-in user, newest first.

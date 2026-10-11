@@ -23,7 +23,8 @@ export function StatusAlerts({ errors, access, noAccess }: StatusAlertsProps) {
       ))}
       {noAccess && (
         <Alert severity="warning">
-          Your groups do not grant access to any users. Ask an administrator to add an access rule.
+          Your groups do not grant access to any other users. Ask an administrator to add an access
+          rule.
         </Alert>
       )}
       {access && !access.all && !noAccess && (

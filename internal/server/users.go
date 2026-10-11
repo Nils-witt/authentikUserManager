@@ -66,11 +66,14 @@ func withPrimaryGroup(attrs map[string]any, pk string) map[string]any {
 	return out
 }
 
-// mayChange reports whether an operator with scope may change u, which they
-// may already see. Only the operators managing the user's primary group may
-// change a user who has one, so the operators of the user's other groups
-// cannot take the user over.
+// mayChange reports whether an operator with scope may change u. Only the
+// operators managing the user's primary group may change a user who has one,
+// so the operators of the user's other groups cannot take the user over. Users
+// see their own account even outside their scope, but may not change it then.
 func mayChange(u *authentik.User, scope access.Scope) bool {
+	if !scope.Allows(u) {
+		return false
+	}
 	g := primaryGroupName(u)
 	return g == "" || scope.HasGroup(g)
 }
@@ -143,33 +146,96 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if scope.Empty() {
-		writeJSON(w, http.StatusOK, authentik.UserList{Results: []authentik.User{}})
+	if scope.All {
+		list, err := s.users.ListUsers(r.Context(), params)
+		if err != nil {
+			s.writeUpstreamError(w, r, err)
+			return
+		}
+		// Defense in depth: authentik silently ignores filters it does not know,
+		// so drop anything not internal even if the filter was not applied.
+		list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool { return u.Type != authentik.UserTypeInternal })
+		writeJSON(w, http.StatusOK, newUserPage(list, scope))
 		return
 	}
-	if !scope.All {
-		params.GroupsByName = scope.Groups
-		params.IsSuperuser = new(false)
-	}
 
-	list, err := s.users.ListUsers(r.Context(), params)
+	// Every user sees their own account, even outside their scope.
+	self, err := s.findActor(r, params)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	// Defense in depth: authentik silently ignores filters it does not know,
-	// so drop anything outside the scope or not internal even if the filters were not applied.
-	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
-		return u.Type != authentik.UserTypeInternal || !scope.Allows(&u)
-	})
+	if self != nil && scope.Allows(self) {
+		self = nil // listed with the others
+	}
+	list := &authentik.UserList{Results: []authentik.User{}}
+	if !scope.Empty() {
+		scoped := params
+		scoped.GroupsByName = scope.Groups
+		scoped.IsSuperuser = new(false)
+		if list, err = s.users.ListUsers(r.Context(), scoped); err != nil {
+			s.writeUpstreamError(w, r, err)
+			return
+		}
+		// Defense in depth: authentik silently ignores filters it does not know,
+		// so drop anything outside the scope or not internal even if the filters were not applied.
+		list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
+			return u.Type != authentik.UserTypeInternal || !scope.Allows(&u)
+		})
+	}
+	if self != nil {
+		addSelf(list, self, params.Page)
+	}
 	writeJSON(w, http.StatusOK, newUserPage(list, scope))
 }
 
-// allowedUser loads the user with the {id} path value and checks that the
-// operator may manage it. Only internal users are managed. Users outside the
-// scope or of another type are reported as not found so their existence is not revealed.
-// It returns the operator's scope too, and writes the error response when it returns false.
-func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik.User, access.Scope, bool) {
+// addSelf adds the operator's own account, which is outside their scope, to a
+// page of the users in scope. It goes first on the first page and is counted
+// on every page, so that page holds one user more than the others.
+func addSelf(list *authentik.UserList, self *authentik.User, page int) {
+	p := &list.Pagination
+	p.Count++
+	if p.TotalPages == 0 {
+		// No user in scope matched, so there is just this page.
+		*p = authentik.Pagination{Count: 1, Current: 1, TotalPages: 1, StartIndex: 1, EndIndex: 1}
+	}
+	if page == 1 {
+		list.Results = slices.Insert(list.Results, 0, *self)
+	}
+}
+
+// findActor returns the internal authentik account of the signed-in user when
+// it matches the filters of params, or nil otherwise. The groups and paging of
+// params are ignored.
+func (s *Server) findActor(r *http.Request, params authentik.ListUsersParams) (*authentik.User, error) {
+	username := actorName(r)
+	if username == "" {
+		return nil, nil
+	}
+	params.Username = username
+	params.Type = []authentik.UserType{authentik.UserTypeInternal}
+	params.GroupsByName, params.GroupsByPK, params.IsSuperuser = nil, nil, nil
+	params.Page, params.PageSize = 0, 0
+	list, err := s.users.ListUsers(r.Context(), params)
+	if err != nil {
+		return nil, err
+	}
+	// authentik silently ignores filters it does not know, so match exactly.
+	i := slices.IndexFunc(list.Results, func(u authentik.User) bool {
+		return u.Username == username && u.Type == authentik.UserTypeInternal
+	})
+	if i < 0 {
+		return nil, nil
+	}
+	return &list.Results[i], nil
+}
+
+// visibleUser loads the user with the {id} path value and checks that the
+// operator may see it: users in their scope, and their own account. Only
+// internal users are managed. Other users are reported as not found so their
+// existence is not revealed. It returns the operator's scope too, and writes
+// the error response when it returns false.
+func (s *Server) visibleUser(w http.ResponseWriter, r *http.Request) (*authentik.User, access.Scope, bool) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return nil, access.Scope{}, false
@@ -183,7 +249,7 @@ func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik
 	if !ok {
 		return nil, access.Scope{}, false
 	}
-	if user.Type != authentik.UserTypeInternal || !scope.Allows(user) {
+	if user.Type != authentik.UserTypeInternal || !scope.Allows(user) && !isActor(r, user) {
 		s.recordUser(r, audit.ActionAccessDenied, user, nil)
 		writeError(w, http.StatusNotFound, "user not found", nil)
 		return nil, access.Scope{}, false
@@ -191,12 +257,23 @@ func (s *Server) allowedUser(w http.ResponseWriter, r *http.Request) (*authentik
 	return user, scope, true
 }
 
-// changeableUser is allowedUser for the routes that change the user: it also
+// isActor reports whether u is the signed-in user's own account.
+func isActor(r *http.Request, u *authentik.User) bool {
+	username := actorName(r)
+	return username != "" && u.Username == username
+}
+
+// changeableUser is visibleUser for the routes that change the user: it also
 // checks that the operator may change them (see mayChange), and answers 403
 // otherwise, since the operator may see the user.
 func (s *Server) changeableUser(w http.ResponseWriter, r *http.Request) (*authentik.User, access.Scope, bool) {
-	user, scope, ok := s.allowedUser(w, r)
+	user, scope, ok := s.visibleUser(w, r)
 	if !ok {
+		return nil, access.Scope{}, false
+	}
+	if !scope.Allows(user) {
+		s.recordUser(r, audit.ActionAccessDenied, user, nil)
+		writeError(w, http.StatusForbidden, "your groups do not allow changing your own account", nil)
 		return nil, access.Scope{}, false
 	}
 	if !mayChange(user, scope) {
@@ -228,7 +305,7 @@ func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
-	user, scope, ok := s.allowedUser(w, r)
+	user, scope, ok := s.visibleUser(w, r)
 	if !ok {
 		return
 	}
