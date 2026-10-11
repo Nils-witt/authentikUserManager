@@ -2,6 +2,7 @@ package authentik
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -15,6 +16,8 @@ type Group struct {
 	IsSuperuser bool   `json:"is_superuser"`
 	// ParentName is the name of the parent group; empty for a top-level group.
 	ParentName string `json:"parent_name"`
+	// Attributes are the group's custom attributes.
+	Attributes map[string]any `json:"attributes"`
 }
 
 // GroupList is one page of groups.
@@ -28,11 +31,16 @@ type ListGroupsParams struct {
 	Search   string
 	Page     int
 	PageSize int
+	// Attributes matches groups whose attributes have all of these values.
+	Attributes map[string]any
 }
 
 // UpdateGroupRequest is a partial update; nil fields are left unchanged.
 type UpdateGroupRequest struct {
 	Name *string `json:"name,omitempty"`
+	// Attributes replaces all custom attributes of the group, so pass the
+	// current ones with the changes applied. An empty map removes them all.
+	Attributes map[string]any `json:"attributes,omitzero"`
 }
 
 func groupPath(pk string) string {
@@ -71,6 +79,13 @@ func (c *Client) ListGroups(ctx context.Context, p ListGroupsParams) (*GroupList
 	}
 	if p.PageSize > 0 {
 		q.Set("page_size", strconv.Itoa(p.PageSize))
+	}
+	if len(p.Attributes) > 0 {
+		attrs, err := json.Marshal(p.Attributes)
+		if err != nil {
+			return nil, fmt.Errorf("listing groups: encoding attribute filter: %w", err)
+		}
+		q.Set("attributes", string(attrs))
 	}
 	var out GroupList
 	if err := c.do(ctx, http.MethodGet, "core/groups/", q, nil, &out); err != nil {

@@ -57,7 +57,7 @@ they are stored in PostgreSQL.
 - **Access administrators** are the members of `ACCESS_ADMIN_GROUPS`. They always have full
   access and are the only ones who may edit the rules, so nobody can lock themselves out.
   They are also the only ones who may delete users (other operators can deactivate them)
-  and manage the [groups](#groups).
+  and manage the [groups](#groups); everyone else only sees the groups marked visible.
 - A **rule** names an operator group (from the `groups` claim at login) and the target groups
   its members may manage. An operator gets the union of the target groups of all their groups.
 - An operator may manage a user only if the user is a direct member of one of the target groups.
@@ -78,8 +78,18 @@ The schema is created and migrated automatically at startup
 ## Groups
 
 Access administrators manage the authentik groups in the UI (**Groups** in the toolbar):
-search and page through them, rename a group, and add or remove its direct members.
-Other operators change the groups of the users they manage in the user dialog instead.
+search and page through them, rename a group, make it visible to everyone, and add or remove
+its direct members. Other operators change the groups of the users they manage in the user
+dialog instead.
+
+Every signed-in user, even one who may not manage any users, can open **Groups** to see the
+groups marked visible. They see each group's name and parent only, never its members, its
+attributes or whether it grants superuser rights.
+
+- Visibility is stored in authentik as the group attribute `authentik_manager_visible: true`,
+  so it can also be set there. Only the JSON value `true` counts. authentik replaces all
+  attributes of a group on update, so the app reads them, changes only this key and writes
+  them back; a change made to other attributes in authentik at the same moment can be lost.
 
 - Access rules match groups by name, so renaming a group renames it in every rule too, in one
   transaction. If the rules cannot be updated, the group gets its previous name back.
@@ -89,16 +99,18 @@ Other operators change the groups of the users they manage in the user dialog in
   those names, to `*`, or to the name of another group.
 - Adding a user to a group that grants superuser rights asks for confirmation first.
 
-The API is `GET /api/groups` (`search`, `page`, `page_size`), `GET` and `PATCH /api/groups/{pk}`
-(body `{"name": "..."}`), `GET /api/groups/{pk}/members` (`search`, `page`, `page_size`), and
-`PUT` and `DELETE /api/groups/{pk}/members/{user id}`.
+The API for access administrators is `GET /api/groups` (`search`, `page`, `page_size`),
+`GET` and `PATCH /api/groups/{pk}` (body `{"name": "...", "visible": true}`, both optional),
+`GET /api/groups/{pk}/members` (`search`, `page`, `page_size`), and `PUT` and
+`DELETE /api/groups/{pk}/members/{user id}`. Every signed-in user may call
+`GET /api/groups/visible` (`search`, `page`, `page_size`).
 
 ## Audit log
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
 creating, updating and deleting users, changing their groups, sending recovery emails,
-saving and deleting access rules, renaming groups, and requests for users outside the operator's scope.
+saving and deleting access rules, renaming groups and changing their visibility, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
 

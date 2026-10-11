@@ -2,7 +2,9 @@ import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
 import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import Stack from '@mui/material/Stack'
+import Switch from '@mui/material/Switch'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import { useState, type FormEvent } from 'react'
@@ -12,17 +14,18 @@ import { GroupMembers } from './GroupMembers'
 
 interface GroupEditorProps {
   group: Group
-  /** Receives the group after it was renamed. */
-  onRenamed: (group: Group) => void
+  /** Receives the group after it was renamed or its visibility changed. */
+  onUpdated: (group: Group) => void
   onBack: () => void
 }
 
-/** Renames one group and edits its direct members. */
-export function GroupEditor({ group, onRenamed, onBack }: GroupEditorProps) {
+/** Renames one group, sets its visibility and edits its direct members. */
+export function GroupEditor({ group, onUpdated, onBack }: GroupEditorProps) {
   const [name, setName] = useState(group.name)
   const [error, setError] = useState<ApiError | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [savingVisibility, setSavingVisibility] = useState(false)
   const unchanged = name.trim() === group.name
 
   async function rename(e: FormEvent) {
@@ -31,14 +34,27 @@ export function GroupEditor({ group, onRenamed, onBack }: GroupEditorProps) {
     setError(null)
     setNotice(null)
     try {
-      const renamed = await api.renameGroup(group.pk, name.trim())
+      const renamed = await api.updateGroup(group.pk, { name: name.trim() })
       setName(renamed.name)
       setNotice(`Renamed to ${renamed.name}.`)
-      onRenamed(renamed)
+      onUpdated(renamed)
     } catch (err) {
       setError(err instanceof ApiError ? err : new ApiError(0, String(err)))
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function setVisible(visible: boolean) {
+    setSavingVisibility(true)
+    setError(null)
+    setNotice(null)
+    try {
+      onUpdated(await api.updateGroup(group.pk, { visible }))
+    } catch (err) {
+      setError(err instanceof ApiError ? err : new ApiError(0, String(err)))
+    } finally {
+      setSavingVisibility(false)
     }
   }
 
@@ -68,6 +84,21 @@ export function GroupEditor({ group, onRenamed, onBack }: GroupEditorProps) {
             <Typography variant="body2" color="text.secondary">
               Access rules naming this group are renamed with it. Operators who are members of it
               must sign in again before the renamed rules apply to them.
+            </Typography>
+          </Stack>
+          <Stack spacing={0.5}>
+            <FormControlLabel
+              label="Visible to all signed-in users"
+              control={
+                <Switch
+                  checked={group.visible}
+                  disabled={savingVisibility}
+                  onChange={(e) => void setVisible(e.target.checked)}
+                />
+              }
+            />
+            <Typography variant="body2" color="text.secondary">
+              Everyone who can sign in to this app sees the group&apos;s name, but not its members.
             </Typography>
           </Stack>
           <GroupMembers group={group} />

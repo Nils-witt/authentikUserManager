@@ -80,7 +80,7 @@ export function UserDialog({
     case 'rules':
       return <AccessRules onClose={onAdminClose} />
     case 'groups':
-      return <GroupAdmin onClose={onAdminClose} />
+      return <GroupAdmin admin={access?.admin ?? false} onClose={onAdminClose} />
     case 'audit':
       return <AuditLog onClose={onClose} />
     default:

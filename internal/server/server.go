@@ -143,8 +143,10 @@ func New(d Deps) *Server {
 	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
 	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
+	// Every signed-in user may list the visible groups, without their members.
+	api.HandleFunc("GET /api/groups/visible", s.listVisibleGroups)
 	api.Handle("GET /api/groups/{pk}", s.requireAdmin(s.getGroup))
-	api.Handle("PATCH /api/groups/{pk}", s.requireAdmin(s.renameGroup))
+	api.Handle("PATCH /api/groups/{pk}", s.requireAdmin(s.updateGroup))
 	api.Handle("GET /api/groups/{pk}/members", s.requireAdmin(s.listGroupMembers))
 	api.Handle("PUT /api/groups/{pk}/members/{id}", s.requireAdmin(s.addGroupMember))
 	api.Handle("DELETE /api/groups/{pk}/members/{id}", s.requireAdmin(s.removeGroupMember))

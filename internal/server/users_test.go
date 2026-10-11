@@ -51,6 +51,10 @@ type fakeUsers struct {
 	groupParams authentik.ListGroupsParams
 	// groupRenames records the names passed to UpdateGroup, in order.
 	groupRenames []string
+	// groupAttrs records the attributes passed to UpdateGroup, in order.
+	groupAttrs []map[string]any
+	// groupList, when set, is returned by ListGroups.
+	groupList []authentik.Group
 	// added and removed record the group keys passed to AddUserToGroup and RemoveUserFromGroup.
 	added   []string
 	removed []string
@@ -106,6 +110,9 @@ func (f *fakeUsers) ListGroups(_ context.Context, p authentik.ListGroupsParams) 
 	if f.err != nil {
 		return nil, f.err
 	}
+	if f.groupList != nil {
+		return &authentik.GroupList{Results: slices.Clone(f.groupList)}, nil
+	}
 	return &authentik.GroupList{Results: []authentik.Group{{PK: "g1", Name: "staff"}, {PK: "g2", Name: "students"}}}, nil
 }
 
@@ -126,8 +133,19 @@ func (f *fakeUsers) UpdateGroup(_ context.Context, pk string, req authentik.Upda
 	if f.err != nil {
 		return nil, f.err
 	}
-	f.groupRenames = append(f.groupRenames, *req.Name)
-	return &authentik.Group{PK: pk, Name: *req.Name}, nil
+	g, err := f.GetGroup(context.Background(), pk)
+	if err != nil {
+		return nil, err
+	}
+	if req.Name != nil {
+		f.groupRenames = append(f.groupRenames, *req.Name)
+		g.Name = *req.Name
+	}
+	if req.Attributes != nil {
+		f.groupAttrs = append(f.groupAttrs, req.Attributes)
+		g.Attributes = req.Attributes
+	}
+	return g, nil
 }
 
 func (f *fakeUsers) CreateUser(_ context.Context, req authentik.CreateUserRequest) (*authentik.User, error) {

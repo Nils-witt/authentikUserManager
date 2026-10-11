@@ -28,19 +28,26 @@ export interface UserList {
   results: User[]
 }
 
-/** An authentik group. */
-export interface Group {
+/** A group visible to every signed-in user; its members stay hidden. */
+export interface PublicGroup {
   pk: string
   name: string
-  /** Members are authentik superusers. */
-  is_superuser: boolean
   /** Name of the parent group; empty or null for a top-level group. */
   parent_name: string | null
 }
 
-export interface GroupList {
+/** An authentik group, as access administrators see it. */
+export interface Group extends PublicGroup {
+  /** Members are authentik superusers. */
+  is_superuser: boolean
+  /** Every signed-in user may see the group's name, but not its members. */
+  visible: boolean
+}
+
+/** One page of a list. */
+export interface Page<T> {
   pagination: Pagination
-  results: Group[]
+  results: T[]
 }
 
 export interface UserInput {
@@ -88,6 +95,7 @@ export type AuditAction =
   | 'access_rule.saved'
   | 'access_rule.deleted'
   | 'group.renamed'
+  | 'group.visibility_changed'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -210,7 +218,7 @@ export function listAudit(params: { search?: string; action?: AuditAction; befor
 
 /** Up to 100 authentik group names, for suggestions; only access administrators may list them. */
 export const listGroupNames = () =>
-  request<GroupList>('GET', '/api/groups?page_size=100').then((res) =>
+  request<Page<Group>>('GET', '/api/groups?page_size=100').then((res) =>
     res.results.map((g) => g.name),
   )
 
@@ -218,12 +226,22 @@ export const listGroupNames = () =>
 export function listGroups(params: { search: string; page: number; pageSize: number }) {
   const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
   if (params.search) q.set('search', params.search)
-  return request<GroupList>('GET', `/api/groups?${q}`)
+  return request<Page<Group>>('GET', `/api/groups?${q}`)
 }
 
-/** Renames a group; the access rules naming it are renamed too. */
-export const renameGroup = (pk: string, name: string) =>
-  request<Group>('PATCH', `/api/groups/${encodeURIComponent(pk)}`, { name })
+/** Loads a page of the groups visible to every signed-in user, ordered by name. */
+export function listVisibleGroups(params: { search: string; page: number; pageSize: number }) {
+  const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
+  if (params.search) q.set('search', params.search)
+  return request<Page<PublicGroup>>('GET', `/api/groups/visible?${q}`)
+}
+
+/**
+ * Renames a group or sets its visibility; omitted fields stay unchanged.
+ * A rename renames the group in the access rules too.
+ */
+export const updateGroup = (pk: string, changes: { name?: string; visible?: boolean }) =>
+  request<Group>('PATCH', `/api/groups/${encodeURIComponent(pk)}`, changes)
 
 /** Loads a page of the direct members of a group, ordered by username. */
 export function listGroupMembers(

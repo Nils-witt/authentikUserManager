@@ -26,6 +26,8 @@ const (
 	ActionRuleDeleted  Action = "access_rule.deleted"
 	// ActionGroupRenamed is recorded when a group is renamed, together with the access rules naming it.
 	ActionGroupRenamed Action = "group.renamed"
+	// ActionGroupVisibilityChanged is recorded when a group is made visible to every signed-in user or hidden again.
+	ActionGroupVisibilityChanged Action = "group.visibility_changed"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -33,7 +35,8 @@ func (a Action) Valid() bool {
 	switch a {
 	case ActionUserCreated, ActionUserUpdated, ActionUserDeleted,
 		ActionUserGroupAdded, ActionUserGroupRemoved, ActionRecoveryEmailSent,
-		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted, ActionGroupRenamed:
+		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted,
+		ActionGroupRenamed, ActionGroupVisibilityChanged:
 		return true
 	}
 	return false

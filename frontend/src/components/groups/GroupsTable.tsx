@@ -12,17 +12,25 @@ import TableContainer from '@mui/material/TableContainer'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import Tooltip from '@mui/material/Tooltip'
-import type { Group } from '../../api'
+import type { Group, PublicGroup } from '../../api'
 
 interface GroupsTableProps {
   /** The groups of the current page, or undefined before the first load. */
-  groups: Group[] | undefined
+  groups: (PublicGroup | Group)[] | undefined
   loading: boolean
-  onEdit: (group: Group) => void
+  /**
+   * Called to edit a group. When set, the table shows the details access
+   * administrators see, and an edit button for each group.
+   */
+  onEdit?: (group: Group) => void
 }
 
-/** Lists authentik groups with an edit button each. */
+/** Reports whether g carries the details access administrators see. */
+const isAdminView = (g: PublicGroup | Group): g is Group => 'visible' in g
+
+/** Lists authentik groups, with an edit button each for access administrators. */
 export function GroupsTable({ groups, loading, onEdit }: GroupsTableProps) {
+  const columns = onEdit ? 4 : 2
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={loading}>
       <Box sx={{ height: 4 }}>{loading && <LinearProgress />}</Box>
@@ -31,7 +39,8 @@ export function GroupsTable({ groups, loading, onEdit }: GroupsTableProps) {
           <TableRow>
             <TableCell>Name</TableCell>
             <TableCell>Parent</TableCell>
-            <TableCell aria-label="Actions" />
+            {onEdit && <TableCell>Visible to all</TableCell>}
+            {onEdit && <TableCell aria-label="Actions" />}
           </TableRow>
         </TableHead>
         <TableBody>
@@ -40,22 +49,29 @@ export function GroupsTable({ groups, loading, onEdit }: GroupsTableProps) {
               <TableCell>
                 <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
                   <span>{group.name}</span>
-                  {group.is_superuser && <Chip size="small" variant="outlined" label="admin" />}
+                  {isAdminView(group) && group.is_superuser && (
+                    <Chip size="small" variant="outlined" label="admin" />
+                  )}
                 </Stack>
               </TableCell>
               <TableCell>{group.parent_name || '—'}</TableCell>
-              <TableCell align="right">
-                <Tooltip title="Edit">
-                  <IconButton size="small" onClick={() => onEdit(group)}>
-                    <EditIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              </TableCell>
+              {onEdit && isAdminView(group) && (
+                <>
+                  <TableCell>{group.visible ? 'yes' : 'no'}</TableCell>
+                  <TableCell align="right">
+                    <Tooltip title="Edit">
+                      <IconButton size="small" onClick={() => onEdit(group)}>
+                        <EditIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
+                </>
+              )}
             </TableRow>
           ))}
           {groups?.length === 0 && (
             <TableRow>
-              <TableCell colSpan={3} align="center" sx={{ color: 'text.secondary', py: 3 }}>
+              <TableCell colSpan={columns} align="center" sx={{ color: 'text.secondary', py: 3 }}>
                 No groups found.
               </TableCell>
             </TableRow>

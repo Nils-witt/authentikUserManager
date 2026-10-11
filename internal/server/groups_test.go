@@ -3,6 +3,7 @@ package server_test
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -18,8 +19,12 @@ func testGroups() map[string]authentik.Group {
 		"admins":   {PK: "g0", Name: "admins"},
 		"staff":    {PK: "g1", Name: "staff"},
 		"students": {PK: "g2", Name: "students"},
+		"teachers": {PK: "g3", Name: "teachers", Attributes: map[string]any{visibleAttribute: true, "other": "kept"}},
 	}
 }
+
+// visibleAttribute is the group attribute marking groups visible to every signed-in user.
+const visibleAttribute = "authentik_manager_visible"
 
 func TestServer_groups_requireAdmin(t *testing.T) {
 	t.Parallel()
@@ -27,6 +32,7 @@ func TestServer_groups_requireAdmin(t *testing.T) {
 		{http.MethodGet, "/api/groups", ""},
 		{http.MethodGet, "/api/groups/g1", ""},
 		{http.MethodPatch, "/api/groups/g1", `{"name":"employees"}`},
+		{http.MethodPatch, "/api/groups/g1", `{"visible":true}`},
 		{http.MethodGet, "/api/groups/g1/members", ""},
 		{http.MethodPut, "/api/groups/g1/members/4", ""},
 		{http.MethodDelete, "/api/groups/g1/members/4", ""},
@@ -55,9 +61,9 @@ func TestServer_listGroups(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d %s", rec.Code, rec.Body)
 	}
-	expected := authentik.ListGroupsParams{Search: "st", Page: 2, PageSize: 50}
-	if users.groupParams != expected {
-		t.Errorf("params = %+v, want %+v", users.groupParams, expected)
+	p := users.groupParams
+	if p.Search != "st" || p.Page != 2 || p.PageSize != 50 || p.Attributes != nil {
+		t.Errorf("params = %+v, want the search and paging without a filter", p)
 	}
 	var list authentik.GroupList
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
@@ -65,6 +71,49 @@ func TestServer_listGroups(t *testing.T) {
 	}
 	if len(list.Results) != 2 || list.Results[0].Name != "staff" {
 		t.Errorf("groups = %+v", list.Results)
+	}
+}
+
+func TestServer_listGroups_views(t *testing.T) {
+	t.Parallel()
+	users := &fakeUsers{groupList: []authentik.Group{
+		{PK: "g1", Name: "staff", Attributes: map[string]any{visibleAttribute: true, "secret": "x"}},
+		{PK: "g2", Name: "students", Attributes: map[string]any{visibleAttribute: "true"}},
+	}}
+	rec := do(t, newServer(t, users), http.MethodGet, "/api/groups", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	// Only a JSON true counts; other attributes are not passed on.
+	if !strings.Contains(body, `"name":"staff","is_superuser":false,"parent_name":"","visible":true`) ||
+		!strings.Contains(body, `"name":"students","is_superuser":false,"parent_name":"","visible":false`) ||
+		strings.Contains(body, "secret") {
+		t.Errorf("body = %s, want the visibility and no attributes", body)
+	}
+}
+
+func TestServer_listVisibleGroups(t *testing.T) {
+	t.Parallel()
+	users := &fakeUsers{groupList: []authentik.Group{
+		{PK: "g1", Name: "staff", IsSuperuser: true, Attributes: map[string]any{visibleAttribute: true, "secret": "x"}},
+		// Returned as if authentik ignored the filter; it must be dropped.
+		{PK: "g2", Name: "hidden"},
+	}}
+	// Any signed-in user may list them, even without access to any user.
+	h := newTestServer(t, users, newFakeRules(), fakeAuth{groups: []string{"guests"}})
+	rec := do(t, h, http.MethodGet, "/api/groups/visible?search=st&page=2", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	p := users.groupParams
+	if p.Search != "st" || p.Page != 2 || !maps.Equal(p.Attributes, map[string]any{visibleAttribute: true}) {
+		t.Errorf("params = %+v, want the search, paging and visibility filter", p)
+	}
+	expected := `{"pagination":{"count":0,"current":0,"total_pages":0,"next":0,"previous":0,"start_index":0,"end_index":0},` +
+		`"results":[{"pk":"g1","name":"staff","parent_name":""}]}`
+	if got := strings.TrimSpace(rec.Body.String()); got != expected {
+		t.Errorf("body = %s, want %s", got, expected)
 	}
 }
 
@@ -216,6 +265,85 @@ func TestServer_renameGroup_storeFailureRestoresName(t *testing.T) {
 	}
 	if len(log.recorded) != 0 {
 		t.Errorf("audit = %+v, want nothing recorded", log.recorded)
+	}
+}
+
+func TestServer_updateGroup_visibility(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		target      string
+		body        string
+		expectAttrs map[string]any
+		expectAudit string
+	}{
+		{
+			name:        "show",
+			target:      "/api/groups/g1",
+			body:        `{"visible":true}`,
+			expectAttrs: map[string]any{visibleAttribute: true},
+			expectAudit: "true",
+		},
+		{
+			name:        "hide keeps other attributes",
+			target:      "/api/groups/g3",
+			body:        `{"visible":false}`,
+			expectAttrs: map[string]any{"other": "kept"},
+			expectAudit: "false",
+		},
+		{name: "already visible", target: "/api/groups/g3", body: `{"visible":true}`},
+		{name: "already hidden", target: "/api/groups/g1", body: `{"visible":false}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			users := &fakeUsers{groups: testGroups()}
+			log := &fakeAudit{}
+			rec := do(t, newAuditedServer(t, users, newFakeRules(), log, adminAuth), http.MethodPatch, tt.target, tt.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d %s", rec.Code, rec.Body)
+			}
+			if len(users.groupRenames) != 0 {
+				t.Errorf("renames = %v, want none", users.groupRenames)
+			}
+			if tt.expectAttrs == nil {
+				if users.mutated || len(log.recorded) != 0 {
+					t.Errorf("updated %v, audit %+v; want nothing changed", users.groupAttrs, log.recorded)
+				}
+				return
+			}
+			if len(users.groupAttrs) != 1 || !maps.Equal(users.groupAttrs[0], tt.expectAttrs) {
+				t.Errorf("attributes = %v, want %v", users.groupAttrs, tt.expectAttrs)
+			}
+			if !strings.Contains(rec.Body.String(), `"visible":`+tt.expectAudit) {
+				t.Errorf("body = %s, want visible %s", rec.Body, tt.expectAudit)
+			}
+			if len(log.recorded) != 1 || log.recorded[0].Action != audit.ActionGroupVisibilityChanged ||
+				log.recorded[0].Details["visible"] != tt.expectAudit {
+				t.Errorf("audit = %+v, want the visibility change", log.recorded)
+			}
+		})
+	}
+}
+
+func TestServer_updateGroup_renameAndVisibility(t *testing.T) {
+	t.Parallel()
+	users := &fakeUsers{groups: testGroups()}
+	log := &fakeAudit{}
+	rec := do(t, newAuditedServer(t, users, newFakeRules(), log, adminAuth),
+		http.MethodPatch, "/api/groups/g1", `{"name":"employees","visible":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	if !slices.Equal(users.groupRenames, []string{"employees"}) || len(users.groupAttrs) != 1 {
+		t.Errorf("renames %v, attributes %v; want both in one update", users.groupRenames, users.groupAttrs)
+	}
+	var actions []audit.Action
+	for _, e := range log.recorded {
+		actions = append(actions, e.Action)
+	}
+	if !slices.Equal(actions, []audit.Action{audit.ActionGroupVisibilityChanged, audit.ActionGroupRenamed}) {
+		t.Errorf("audit actions = %v", actions)
 	}
 }
 

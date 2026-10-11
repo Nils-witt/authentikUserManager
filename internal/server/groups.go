@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -16,15 +17,78 @@ import (
 )
 
 // The group handlers are restricted to access administrators (see requireAdmin),
-// who have full access, so they do not check the operator's scope.
+// who have full access, so they do not check the operator's scope. The only
+// exception is listVisibleGroups.
+
+// visibleAttribute is the authentik group attribute that, when true, lets every
+// signed-in user see the group's name. Its members stay hidden.
+const visibleAttribute = "authentik_manager_visible"
+
+// isVisible reports whether g is visible to every signed-in user.
+func isVisible(g *authentik.Group) bool {
+	visible, ok := g.Attributes[visibleAttribute].(bool)
+	return ok && visible
+}
+
+// withVisibility returns a copy of attrs with the visibility set, leaving the
+// other attributes as they are. It never returns nil, so an update clearing
+// the last attribute is still sent.
+func withVisibility(attrs map[string]any, visible bool) map[string]any {
+	out := maps.Clone(attrs)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if visible {
+		out[visibleAttribute] = true
+	} else {
+		delete(out, visibleAttribute)
+	}
+	return out
+}
+
+// groupView is a group as access administrators see it. It leaves out the
+// other attributes, which authentik and other applications use.
+type groupView struct {
+	PK          string `json:"pk"`
+	Name        string `json:"name"`
+	IsSuperuser bool   `json:"is_superuser"`
+	ParentName  string `json:"parent_name"`
+	// Visible is set when every signed-in user may see the group's name.
+	Visible bool `json:"visible"`
+}
+
+func newGroupView(g *authentik.Group) groupView {
+	return groupView{PK: g.PK, Name: g.Name, IsSuperuser: g.IsSuperuser, ParentName: g.ParentName, Visible: isVisible(g)}
+}
+
+// publicGroup is a visible group as every signed-in user sees it.
+type publicGroup struct {
+	PK         string `json:"pk"`
+	Name       string `json:"name"`
+	ParentName string `json:"parent_name"`
+}
+
+// page is one page of a list response.
+type page[T any] struct {
+	Pagination authentik.Pagination `json:"pagination"`
+	Results    []T                  `json:"results"`
+}
+
+// groupListParams parses the query parameters search, page and page_size of a
+// group list, writing a 400 response when they are invalid.
+func groupListParams(w http.ResponseWriter, r *http.Request) (authentik.ListGroupsParams, bool) {
+	q := r.URL.Query()
+	params := authentik.ListGroupsParams{Search: q.Get("search")}
+	var ok bool
+	params.Page, params.PageSize, ok = parsePaging(w, q)
+	return params, ok
+}
 
 // listGroups returns a page of authentik groups, ordered by name. The query
 // parameters search, page and page_size filter and page it.
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	params := authentik.ListGroupsParams{Search: q.Get("search")}
-	var ok bool
-	if params.Page, params.PageSize, ok = parsePaging(w, q); !ok {
+	params, ok := groupListParams(w, r)
+	if !ok {
 		return
 	}
 	list, err := s.users.ListGroups(r.Context(), params)
@@ -32,7 +96,38 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	out := page[groupView]{Pagination: list.Pagination, Results: make([]groupView, len(list.Results))}
+	for i := range list.Results {
+		out.Results[i] = newGroupView(&list.Results[i])
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// listVisibleGroups returns a page of the groups visible to every signed-in
+// user, ordered by name, with their names only. It is open to every operator,
+// including those who may not manage any users. The query parameters search,
+// page and page_size filter and page it.
+func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
+	params, ok := groupListParams(w, r)
+	if !ok {
+		return
+	}
+	params.Attributes = map[string]any{visibleAttribute: true}
+	list, err := s.users.ListGroups(r.Context(), params)
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	out := page[publicGroup]{Pagination: list.Pagination, Results: []publicGroup{}}
+	for i := range list.Results {
+		g := &list.Results[i]
+		// authentik silently ignores filters it does not know, so drop hidden
+		// groups in case the filter was not applied.
+		if isVisible(g) {
+			out.Results = append(out.Results, publicGroup{PK: g.PK, Name: g.Name, ParentName: g.ParentName})
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // loadGroup loads the group with the {pk} path value, writing the error
@@ -56,57 +151,100 @@ func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, group)
+	writeJSON(w, http.StatusOK, newGroupView(group))
 }
 
-// renameGroup renames a group in authentik and in every access rule naming
-// it, since the rules match groups by name.
-func (s *Server) renameGroup(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Name string `json:"name"`
-	}
+// groupInput is the body of PATCH /api/groups/{pk}; nil fields are left unchanged.
+type groupInput struct {
+	Name    *string `json:"name"`
+	Visible *bool   `json:"visible"`
+}
+
+// updateGroup renames a group and sets whether it is visible to every
+// signed-in user. A rename applies to every access rule naming the group too,
+// since the rules match groups by name.
+func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request) {
+	var in groupInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	name := strings.TrimSpace(in.Name)
-	if name == "" {
-		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"name": {"Name is required."}})
-		return
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"name": {"Name is required."}})
+			return
+		}
+		in.Name = &name
 	}
 	group, ok := s.loadGroup(w, r)
 	if !ok {
 		return
 	}
-	if name == group.Name {
-		writeJSON(w, http.StatusOK, group)
-		return
-	}
-	msg, ok := s.checkGroupName(w, r, group, name)
+	req, ok := s.groupUpdate(w, r, group, in)
 	if !ok {
 		return
 	}
-	if msg != "" {
-		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"name": {msg}})
+	if req.Name == nil && req.Attributes == nil {
+		writeJSON(w, http.StatusOK, newGroupView(group))
 		return
 	}
 
-	updated, err := s.users.UpdateGroup(r.Context(), group.PK, authentik.UpdateGroupRequest{Name: &name})
+	updated, err := s.users.UpdateGroup(r.Context(), group.PK, req)
 	if err != nil {
 		s.writeGroupError(w, r, err)
 		return
 	}
+	if req.Attributes != nil {
+		s.record(r, audit.ActionGroupVisibilityChanged, updated.Name, map[string]string{
+			"group_id": updated.PK,
+			"visible":  strconv.FormatBool(isVisible(updated)),
+		})
+	}
+	if req.Name != nil && !s.renameInRules(w, r, group, updated) {
+		return
+	}
+	writeJSON(w, http.StatusOK, newGroupView(updated))
+}
+
+// groupUpdate returns the authentik update for in, leaving out the fields that
+// do not change. It writes the error response and returns false when in is invalid.
+func (s *Server) groupUpdate(w http.ResponseWriter, r *http.Request, group *authentik.Group, in groupInput) (authentik.UpdateGroupRequest, bool) {
+	var req authentik.UpdateGroupRequest
+	if in.Name != nil && *in.Name != group.Name {
+		msg, ok := s.checkGroupName(w, r, group, *in.Name)
+		if !ok {
+			return req, false
+		}
+		if msg != "" {
+			writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"name": {msg}})
+			return req, false
+		}
+		req.Name = in.Name
+	}
+	if in.Visible != nil && *in.Visible != isVisible(group) {
+		// authentik replaces all attributes, so keep the others. A concurrent
+		// change to them elsewhere between loading and saving is lost.
+		req.Attributes = withVisibility(group.Attributes, *in.Visible)
+	}
+	return req, true
+}
+
+// renameInRules renames group in the access rules after authentik renamed it
+// to updated.Name. When the rules cannot be renamed it restores the previous
+// name, writes the error response and returns false.
+func (s *Server) renameInRules(w http.ResponseWriter, r *http.Request, group, updated *authentik.Group) bool {
 	changed, err := s.rules.RenameGroup(r.Context(), group.Name, updated.Name, actorName(r))
 	if err != nil {
 		s.undoRename(r, group)
 		s.writeStoreError(w, r, err)
-		return
+		return false
 	}
 	s.record(r, audit.ActionGroupRenamed, updated.Name, map[string]string{
 		"group_id":      updated.PK,
 		"previous_name": group.Name,
 		"rules_changed": strconv.FormatInt(changed, 10),
 	})
-	writeJSON(w, http.StatusOK, updated)
+	return true
 }
 
 // checkGroupName checks whether group may be renamed to name. It returns a
@@ -139,7 +277,8 @@ func (s *Server) checkGroupName(w http.ResponseWriter, r *http.Request, group *a
 }
 
 // undoRename restores the previous name of group after its access rules could
-// not be renamed, so the rules keep matching it.
+// not be renamed, so the rules keep matching it. A visibility change made in
+// the same update stays.
 func (s *Server) undoRename(r *http.Request, group *authentik.Group) {
 	// Restore the name even when the client has gone away meanwhile.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditTimeout)
