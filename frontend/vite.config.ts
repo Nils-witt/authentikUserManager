@@ -4,6 +4,11 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  html: {
+    // Adds <meta property="csp-nonce"> to index.html; the Go server replaces
+    // the placeholder with a per-request nonce (internal/server/server.go).
+    cspNonce: '__CSP_NONCE__',
+  },
   build: {
     // The Go binary embeds the build from here (internal/web, //go:embed).
     outDir: '../internal/web/dist',

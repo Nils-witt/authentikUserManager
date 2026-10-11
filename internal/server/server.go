@@ -3,7 +3,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,20 @@ import (
 
 // maxRequestBytes bounds JSON request bodies.
 const maxRequestBytes = 1 << 20
+
+// cspNoncePlaceholder is written into index.html by Vite (html.cspNonce in
+// frontend/vite.config.ts) and replaced with a fresh nonce on every request.
+const cspNoncePlaceholder = "__CSP_NONCE__"
+
+// contentSecurityPolicy returns the CSP header value. A non-empty nonce allows
+// the <style> elements the frontend's CSS-in-JS library (Emotion) injects.
+func contentSecurityPolicy(nonce string) string {
+	styleSrc := "style-src 'self'"
+	if nonce != "" {
+		styleSrc += " 'nonce-" + nonce + "'"
+	}
+	return "default-src 'self'; " + styleSrc + "; img-src 'self' https: data:; frame-ancestors 'none'"
+}
 
 // UserService is the subset of the authentik client the handlers depend on.
 type UserService interface {
@@ -143,7 +159,7 @@ func New(d Deps) *Server {
 	mux.Handle("/auth/", d.Auth.Handler())
 	mux.Handle("/api/", d.Auth.Require(api))
 	if d.Static != nil {
-		mux.Handle("/", spaHandler(d.Static))
+		mux.Handle("/", s.spaHandler(d.Static))
 	}
 
 	// Rejects cross-origin state-changing browser requests (CSRF), on top of SameSite cookies.
@@ -158,7 +174,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; frame-ancestors 'none'")
+	h.Set("Content-Security-Policy", contentSecurityPolicy(""))
 
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	s.handler.ServeHTTP(rec, r)
@@ -239,18 +255,37 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.Handler {
 }
 
 // spaHandler serves files from static and falls back to index.html for unknown paths.
-func spaHandler(static fs.FS) http.Handler {
+func (s *Server) spaHandler(static fs.FS) http.Handler {
 	files := http.FileServerFS(static)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[1:]
-		if name != "" && fs.ValidPath(name) {
+		if name != "" && name != "index.html" && fs.ValidPath(name) {
 			if _, err := fs.Stat(static, name); err == nil {
 				files.ServeHTTP(w, r)
 				return
 			}
 		}
-		http.ServeFileFS(w, r, static, "index.html")
+		s.serveIndex(w, r, static)
 	})
+}
+
+// serveIndex serves index.html with a per-request CSP nonce in place of
+// cspNoncePlaceholder, and allows that nonce in the style-src directive.
+func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request, static fs.FS) {
+	page, err := fs.ReadFile(static, "index.html")
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "reading index.html", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	nonce := rand.Text()
+	h := w.Header()
+	h.Set("Content-Security-Policy", contentSecurityPolicy(nonce))
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	// The nonce must not be reused, so the page must not be cached.
+	h.Set("Cache-Control", "no-store")
+	// The status line is already sent; a write error here means the client went away.
+	_, _ = w.Write(bytes.ReplaceAll(page, []byte(cspNoncePlaceholder), []byte(nonce)))
 }
 
 // OpenStatic opens dir as a traversal-safe filesystem for New.

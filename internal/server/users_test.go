@@ -557,6 +557,50 @@ func TestServer_static(t *testing.T) {
 	}
 }
 
+func TestServer_static_cspNonce(t *testing.T) {
+	t.Parallel()
+	static := fstest.MapFS{
+		"index.html": {Data: []byte(`<meta property="csp-nonce" nonce="__CSP_NONCE__">`)},
+	}
+	policy, err := access.NewPolicy([]string{"admins"}, newFakeRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := server.New(server.Deps{
+		Users:  &fakeUsers{},
+		Auth:   fakeAuth{},
+		Policy: policy,
+		Rules:  newFakeRules(),
+		Audit:  &fakeAudit{},
+		Logger: slog.New(slog.DiscardHandler),
+		Static: static,
+	})
+
+	nonceOf := func(t *testing.T) string {
+		t.Helper()
+		rec := do(t, h, http.MethodGet, "/", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+		}
+		body := rec.Body.String()
+		nonce, ok := strings.CutPrefix(body, `<meta property="csp-nonce" nonce="`)
+		nonce, _, found := strings.Cut(nonce, `"`)
+		if !ok || !found || nonce == "" || nonce == "__CSP_NONCE__" {
+			t.Fatalf("body = %q, want the placeholder replaced by a nonce", body)
+		}
+		if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "style-src 'self' 'nonce-"+nonce+"'") {
+			t.Errorf("Content-Security-Policy = %q, want style-src allowing nonce %q", csp, nonce)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", cc)
+		}
+		return nonce
+	}
+	if first, second := nonceOf(t), nonceOf(t); first == second {
+		t.Errorf("nonce %q reused across requests", first)
+	}
+}
+
 func TestServer_getAccess(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

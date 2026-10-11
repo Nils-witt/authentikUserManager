@@ -1,18 +1,49 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     environment:
-      POSTGRES_USER: authentik_manager
-      POSTGRES_PASSWORD: authentik_manager
-      POSTGRES_DB: authentik_manager
+      POSTGRES_USER: ${POSTGRES_USER:-authentik_manager}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-authentik_manager}
+      POSTGRES_DB: ${POSTGRES_DB:-authentik_manager}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - ${MOUNT_DB:-./data/db}:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "authentik_manager"]
       interval: 5s
       retries: 10
+    labels:
+      autoheal-app: true
+      com.centurylinklabs.watchtower.scope: ${COMPOSE_PROJECT_NAME}
 
-volumes:
-  db-data:
+  usermanger:
+    image: ghcr.io/nils-witt/authentikusermanager:main
+    ports:
+      - ${EXPOSE_PORT:-8080}:8080
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-authentik_manager}:${POSTGRES_PASSWORD:-authentik_manager}@db:5432/${POSTGRES_DB:-authentik_manager}?sslmode=disable
+    env_file:
+      - env.usermanager
+    depends_on:
+      db:
+        condition: service_healthy
+    labels:
+      autoheal-app: true
+      com.centurylinklabs.watchtower.scope: ${COMPOSE_PROJECT_NAME}
+
+  autoheal:
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal-app
+    image: willfarrell/autoheal:latest
+    network_mode: none
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  watchtower:
+    image: nickfedor/watchtower
+    volumes: [ "/var/run/docker.sock:/var/run/docker.sock" ]
+    command: --interval 30 --scope ${COMPOSE_PROJECT_NAME}
+    labels: [ "com.centurylinklabs.watchtower.scope=${COMPOSE_PROJECT_NAME}" ]
