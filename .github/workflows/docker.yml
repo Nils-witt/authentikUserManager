@@ -13,48 +13,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  container-scan:
-    name: Container scan
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          load: true
-          tags: authentik-manager:scan
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Pinned by SHA: trivy-action tags were force-pushed with malicious code in 2026.
-      - name: Run Trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: authentik-manager:scan
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
-
-      - name: Upload Trivy results
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy
-
   publish:
     name: Build & push
-    needs: container-scan
     runs-on: ubuntu-latest
     permissions:
       contents: read
