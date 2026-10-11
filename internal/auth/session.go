@@ -32,7 +32,18 @@ func UserFromContext(ctx context.Context) (User, bool) {
 type session struct {
 	user      User
 	idToken   string // raw ID token, used as id_token_hint on logout
+	sid       string // provider session ID ("sid" claim), empty if the provider sent none
 	expiresAt time.Time
+}
+
+// matchesLogout reports whether a back-channel logout for sub and sid ends
+// this session. sid selects one provider session; without a sid on either
+// side, all sessions of sub end.
+func (s session) matchesLogout(sub, sid string) bool {
+	if sid != "" && s.sid != "" {
+		return s.sid == sid && (sub == "" || s.user.Subject == sub)
+	}
+	return sub != "" && s.user.Subject == sub
 }
 
 // sessionStore keeps sessions in memory: a restart logs everyone out, and the
@@ -49,7 +60,7 @@ func newSessionStore(ttl time.Duration) *sessionStore {
 }
 
 // create stores a new session and returns its unguessable ID (128 bits from crypto/rand).
-func (s *sessionStore) create(u User, idToken string) string {
+func (s *sessionStore) create(u User, idToken, sid string) string {
 	id := rand.Text()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -59,7 +70,7 @@ func (s *sessionStore) create(u User, idToken string) string {
 			delete(s.sessions, k)
 		}
 	}
-	s.sessions[id] = session{user: u, idToken: idToken, expiresAt: now.Add(s.ttl)}
+	s.sessions[id] = session{user: u, idToken: idToken, sid: sid, expiresAt: now.Add(s.ttl)}
 	return id
 }
 
@@ -83,4 +94,19 @@ func (s *sessionStore) delete(id string) (session, bool) {
 	sess, ok := s.sessions[id]
 	delete(s.sessions, id)
 	return sess, ok
+}
+
+// deleteMatching removes the sessions a back-channel logout for sub and sid
+// ends (see session.matchesLogout) and returns them.
+func (s *sessionStore) deleteMatching(sub, sid string) []session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ended []session
+	for id, sess := range s.sessions {
+		if sess.matchesLogout(sub, sid) {
+			ended = append(ended, sess)
+			delete(s.sessions, id)
+		}
+	}
+	return ended
 }

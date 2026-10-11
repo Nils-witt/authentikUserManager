@@ -1,5 +1,7 @@
 // Package auth protects the application with an OpenID Connect login against
 // authentik (authorization code flow with PKCE) and server-side sessions.
+// Logout works both ways: RP-initiated (the app redirects to the provider's
+// end-session endpoint) and OP-initiated via OIDC Back-Channel Logout.
 //
 // Tokens never reach the browser: it only holds an opaque, HttpOnly session cookie.
 package auth
@@ -26,6 +28,15 @@ const (
 	loginCookiePath = "/auth/callback"
 	loginTTL        = 10 * time.Minute
 	httpTimeout     = 15 * time.Second
+
+	// backchannelLogoutEvent is the "events" member that marks a logout token.
+	backchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+	// logoutTokenMaxAge bounds how old (by iat) an accepted logout token may be.
+	logoutTokenMaxAge = 5 * time.Minute
+	// clockSkew tolerates provider clocks running slightly ahead.
+	clockSkew = time.Minute
+	// maxLogoutRequestBytes bounds the back-channel logout request body.
+	maxLogoutRequestBytes = 64 << 10
 )
 
 // Config configures the OIDC client.
@@ -42,15 +53,16 @@ type Config struct {
 
 // Authenticator serves the /auth/ endpoints and guards other handlers.
 type Authenticator struct {
-	oauth         oauth2.Config
-	verifier      *oidc.IDTokenVerifier
-	endSessionURL string
-	sessions      *sessionStore
-	secure        bool
-	sessionCookie string
-	httpClient    *http.Client
-	logger        *slog.Logger
-	mux           *http.ServeMux
+	oauth          oauth2.Config
+	verifier       *oidc.IDTokenVerifier
+	logoutVerifier *oidc.IDTokenVerifier
+	endSessionURL  string
+	sessions       *sessionStore
+	secure         bool
+	sessionCookie  string
+	httpClient     *http.Client
+	logger         *slog.Logger
+	mux            *http.ServeMux
 }
 
 // New discovers the provider's configuration. ctx must outlive the
@@ -91,18 +103,22 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 			Endpoint:     provider.Endpoint(),
 			Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 		},
-		verifier:      provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
-		endSessionURL: meta.EndSessionEndpoint,
-		sessions:      newSessionStore(cfg.SessionTTL),
-		secure:        secure,
-		sessionCookie: sessionCookie,
-		httpClient:    httpClient,
-		logger:        logger,
-		mux:           http.NewServeMux(),
+		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		// Logout tokens carry iat but, in older providers, no exp: expiry is
+		// checked in backchannelLogout instead.
+		logoutVerifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID, SkipExpiryCheck: true}),
+		endSessionURL:  meta.EndSessionEndpoint,
+		sessions:       newSessionStore(cfg.SessionTTL),
+		secure:         secure,
+		sessionCookie:  sessionCookie,
+		httpClient:     httpClient,
+		logger:         logger,
+		mux:            http.NewServeMux(),
 	}
 	a.mux.HandleFunc("GET /auth/login", a.login)
 	a.mux.HandleFunc("GET /auth/callback", a.callback)
 	a.mux.HandleFunc("POST /auth/logout", a.logout)
+	a.mux.HandleFunc("POST /auth/backchannel-logout", a.backchannelLogout)
 	a.mux.HandleFunc("GET /auth/me", a.me)
 	return a, nil
 }
@@ -191,13 +207,13 @@ func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, rawIDToken, err := a.exchange(r.Context(), q.Get("code"), st)
+	user, rawIDToken, sid, err := a.exchange(r.Context(), q.Get("code"), st)
 	if err != nil {
 		a.logger.ErrorContext(r.Context(), "oidc login failed", slog.Any("error", err))
 		http.Error(w, "Login failed.", http.StatusBadGateway)
 		return
 	}
-	id := a.sessions.create(user, rawIDToken)
+	id := a.sessions.create(user, rawIDToken, sid)
 	a.setCookie(w, a.sessionCookie, id, "/", 0)
 	a.logger.InfoContext(r.Context(), "login", slog.String("username", user.Username))
 	http.Redirect(w, r, "/", http.StatusFound)
@@ -221,32 +237,34 @@ func (a *Authenticator) takeLoginState(w http.ResponseWriter, r *http.Request) (
 	return st, true
 }
 
-// exchange redeems the authorization code and verifies the ID token.
-func (a *Authenticator) exchange(ctx context.Context, code string, st loginState) (User, string, error) {
+// exchange redeems the authorization code and verifies the ID token. It
+// returns the user, the raw ID token and the provider session ID ("sid").
+func (a *Authenticator) exchange(ctx context.Context, code string, st loginState) (User, string, string, error) {
 	ctx = oidc.ClientContext(ctx, a.httpClient)
 	tok, err := a.oauth.Exchange(ctx, code, oauth2.VerifierOption(st.Verifier))
 	if err != nil {
-		return User{}, "", fmt.Errorf("exchanging code: %w", err)
+		return User{}, "", "", fmt.Errorf("exchanging code: %w", err)
 	}
 	rawIDToken, ok := tok.Extra("id_token").(string)
 	if !ok {
-		return User{}, "", errors.New("token response has no id_token")
+		return User{}, "", "", errors.New("token response has no id_token")
 	}
 	idToken, err := a.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return User{}, "", fmt.Errorf("verifying id token: %w", err)
+		return User{}, "", "", fmt.Errorf("verifying id token: %w", err)
 	}
 	if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(st.Nonce)) != 1 {
-		return User{}, "", errors.New("id token nonce mismatch")
+		return User{}, "", "", errors.New("id token nonce mismatch")
 	}
 	var claims struct {
 		PreferredUsername string   `json:"preferred_username"`
 		Name              string   `json:"name"`
 		Email             string   `json:"email"`
 		Groups            []string `json:"groups"`
+		SID               string   `json:"sid"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
-		return User{}, "", fmt.Errorf("decoding id token claims: %w", err)
+		return User{}, "", "", fmt.Errorf("decoding id token claims: %w", err)
 	}
 	return User{
 		Subject:  idToken.Subject,
@@ -254,7 +272,7 @@ func (a *Authenticator) exchange(ctx context.Context, code string, st loginState
 		Name:     claims.Name,
 		Email:    claims.Email,
 		Groups:   claims.Groups,
-	}, rawIDToken, nil
+	}, rawIDToken, claims.SID, nil
 }
 
 // logout ends the local session. The response carries the provider's
@@ -273,6 +291,69 @@ func (a *Authenticator) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	a.setCookie(w, a.sessionCookie, "", "/", -1)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// backchannelLogout implements OpenID Connect Back-Channel Logout 1.0: the
+// provider POSTs a signed logout token when a user's provider session ends,
+// and the matching local sessions end too. It needs no session cookie and is
+// safe from CSRF because only a token signed by the provider is accepted.
+func (a *Authenticator) backchannelLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, maxLogoutRequestBytes)
+	if err := r.ParseForm(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	sub, sid, err := a.verifyLogoutToken(r.Context(), r.PostForm.Get("logout_token"))
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "rejected back-channel logout", slog.Any("error", err))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+	for _, sess := range a.sessions.deleteMatching(sub, sid) {
+		a.logger.InfoContext(r.Context(), "back-channel logout", slog.String("username", sess.user.Username))
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// verifyLogoutToken validates a logout token as required by OpenID Connect
+// Back-Channel Logout 1.0, section 2.6, and returns its sub and sid claims
+// (at least one is set).
+func (a *Authenticator) verifyLogoutToken(ctx context.Context, raw string) (string, string, error) {
+	if raw == "" {
+		return "", "", errors.New("missing logout_token")
+	}
+	// Checks the signature, iss and aud.
+	tok, err := a.logoutVerifier.Verify(oidc.ClientContext(ctx, a.httpClient), raw)
+	if err != nil {
+		return "", "", fmt.Errorf("verifying logout token: %w", err)
+	}
+	now := time.Now()
+	if tok.IssuedAt.IsZero() || tok.IssuedAt.Before(now.Add(-logoutTokenMaxAge)) || tok.IssuedAt.After(now.Add(clockSkew)) {
+		return "", "", fmt.Errorf("logout token iat %v is outside the accepted window", tok.IssuedAt)
+	}
+	if !tok.Expiry.IsZero() && now.After(tok.Expiry.Add(clockSkew)) {
+		return "", "", errors.New("logout token expired")
+	}
+	// A nonce would mean an ID token is replayed as a logout token.
+	if tok.Nonce != "" {
+		return "", "", errors.New("logout token must not contain a nonce")
+	}
+	var claims struct {
+		SID    string                     `json:"sid"`
+		Events map[string]json.RawMessage `json:"events"`
+	}
+	if err := tok.Claims(&claims); err != nil {
+		return "", "", fmt.Errorf("decoding logout token claims: %w", err)
+	}
+	var event map[string]any
+	if err := json.Unmarshal(claims.Events[backchannelLogoutEvent], &event); err != nil || event == nil {
+		return "", "", errors.New("logout token has no back-channel logout event")
+	}
+	if tok.Subject == "" && claims.SID == "" {
+		return "", "", errors.New("logout token has neither sub nor sid")
+	}
+	return tok.Subject, claims.SID, nil
 }
 
 func (a *Authenticator) me(w http.ResponseWriter, r *http.Request) {

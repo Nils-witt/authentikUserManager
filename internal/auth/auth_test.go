@@ -22,7 +22,10 @@ import (
 	"github.com/go-jose/go-jose/v4"
 )
 
-const clientID = "test-client"
+const (
+	clientID    = "test-client"
+	providerSID = "provider-session-1"
+)
 
 // fakeProvider is a minimal OIDC provider: discovery, JWKS, authorize and token.
 // /authorize immediately redirects back with a code; the issued ID token
@@ -108,7 +111,7 @@ func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := json.Marshal(map[string]any{
+	idToken := p.sign(map[string]any{
 		"iss":                p.srv.URL,
 		"aud":                clientID,
 		"sub":                "user-1",
@@ -119,24 +122,37 @@ func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
 		"name":               "Alice",
 		"email":              "alice@example.com",
 		"groups":             p.groups,
+		"sid":                providerSID,
 	})
-	if err != nil {
-		p.t.Fatalf("encoding claims: %v", err)
-	}
-	jws, err := p.signer.Sign(claims)
-	if err != nil {
-		p.t.Fatalf("signing id token: %v", err)
-	}
-	idToken, err := jws.CompactSerialize()
-	if err != nil {
-		p.t.Fatalf("serializing id token: %v", err)
-	}
 	writeJSON(p.t, w, map[string]any{
 		"access_token": "access",
 		"token_type":   "Bearer",
 		"expires_in":   3600,
 		"id_token":     idToken,
 	})
+}
+
+// sign returns claims as a compact JWS signed with the provider's key.
+func (p *fakeProvider) sign(claims map[string]any) string {
+	p.t.Helper()
+	return signWith(p.t, p.signer, claims)
+}
+
+func signWith(t *testing.T, signer jose.Signer, claims map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("encoding claims: %v", err)
+	}
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+	token, err := jws.CompactSerialize()
+	if err != nil {
+		t.Fatalf("serializing token: %v", err)
+	}
+	return token
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
@@ -273,5 +289,181 @@ func TestCallback_rejectsForeignState(t *testing.T) {
 	send(t, &noRedirect, http.MethodGet, appURL+"/auth/login")
 	if code, _ := get(t, &noRedirect, appURL+"/auth/callback?code=x&state=forged"); code != http.StatusBadRequest {
 		t.Errorf("callback with forged state: status = %d, want 400", code)
+	}
+}
+
+// logoutClaims returns valid back-channel logout token claims for the
+// session the fake provider logs in, with overrides applied (nil deletes).
+func logoutClaims(p *fakeProvider, overrides map[string]any) map[string]any {
+	claims := map[string]any{
+		"iss":    p.srv.URL,
+		"aud":    clientID,
+		"iat":    time.Now().Unix(),
+		"exp":    time.Now().Add(2 * time.Minute).Unix(),
+		"jti":    rand.Text(),
+		"sub":    "user-1",
+		"sid":    providerSID,
+		"events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}},
+	}
+	for k, v := range overrides {
+		if v == nil {
+			delete(claims, k)
+		} else {
+			claims[k] = v
+		}
+	}
+	return claims
+}
+
+// postLogoutToken sends a back-channel logout request the way the provider
+// does: server to server, without the browser's cookies.
+func postLogoutToken(t *testing.T, appURL, token string) int {
+	t.Helper()
+	form := url.Values{"logout_token": {token}}.Encode()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, appURL+"/auth/backchannel-logout", strings.NewReader(form))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("back-channel logout: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // closing a test response
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+	return resp.StatusCode
+}
+
+func TestBackchannelLogout(t *testing.T) {
+	t.Parallel()
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	otherSigner, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: otherKey},
+		(&jose.SignerOptions{}).WithHeader("kid", "k1"),
+	)
+	if err != nil {
+		t.Fatalf("creating signer: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		token      func(p *fakeProvider) string
+		wantStatus int
+		wantEnded  bool
+	}{
+		{
+			name:       "sub and sid",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, nil)) },
+			wantStatus: http.StatusOK,
+			wantEnded:  true,
+		},
+		{
+			name:       "sid only",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"sub": nil})) },
+			wantStatus: http.StatusOK,
+			wantEnded:  true,
+		},
+		{
+			name:       "sub only ends all sessions of the user",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"sid": nil})) },
+			wantStatus: http.StatusOK,
+			wantEnded:  true,
+		},
+		{
+			name:       "without exp",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"exp": nil})) },
+			wantStatus: http.StatusOK,
+			wantEnded:  true,
+		},
+		{
+			name:       "other provider session",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"sid": "other"})) },
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "other user",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"sub": "user-2"})) },
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "missing token",
+			token:      func(*fakeProvider) string { return "" },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "foreign signature",
+			token:      func(p *fakeProvider) string { return signWith(t, otherSigner, logoutClaims(p, nil)) },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "wrong audience",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"aud": "other-client"})) },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "stale iat",
+			token: func(p *fakeProvider) string {
+				return p.sign(logoutClaims(p, map[string]any{"iat": time.Now().Add(-time.Hour).Unix()}))
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "expired",
+			token: func(p *fakeProvider) string {
+				return p.sign(logoutClaims(p, map[string]any{"exp": time.Now().Add(-time.Hour).Unix()}))
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing event",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"events": nil})) },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "event is not an object",
+			token: func(p *fakeProvider) string {
+				return p.sign(logoutClaims(p, map[string]any{"events": map[string]any{
+					"http://schemas.openid.net/event/backchannel-logout": true,
+				}}))
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "with nonce",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"nonce": "n"})) },
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "neither sub nor sid",
+			token:      func(p *fakeProvider) string { return p.sign(logoutClaims(p, map[string]any{"sub": nil, "sid": nil})) },
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			provider := newFakeProvider(t, nil)
+			appURL, client := newApp(t, provider)
+			if code, _ := get(t, client, appURL+"/auth/login"); code != http.StatusNotFound {
+				t.Fatalf("login flow ended with %d, want 404 from /", code)
+			}
+
+			if code := postLogoutToken(t, appURL, tt.token(provider)); code != tt.wantStatus {
+				t.Errorf("back-channel logout: status = %d, want %d", code, tt.wantStatus)
+			}
+
+			wantPing := http.StatusOK
+			if tt.wantEnded {
+				wantPing = http.StatusUnauthorized
+			}
+			if code, _ := get(t, client, appURL+"/api/ping"); code != wantPing {
+				t.Errorf("after back-channel logout: status = %d, want %d", code, wantPing)
+			}
+		})
 	}
 }

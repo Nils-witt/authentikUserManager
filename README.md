@@ -217,6 +217,7 @@ the frontend, run `make build` again.
   If the rules cannot be loaded, requests fail with 500 instead of falling back to more access.
 - Every `/api/` route requires a login. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Any authentik user may log in; operators without an access rule see and manage no users.
 - The browser only holds an opaque session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` with a `__Host-` prefix when served over https). ID and access tokens never reach the browser.
+- Logging out of authentik also ends the app's sessions when the provider's **Back-Channel Logout URI** is set to `https://<app-host>/auth/backchannel-logout`. The app only accepts logout tokens signed by the provider for this client ID. It checks that the token is recent, carries the back-channel logout event and has no nonce. It ends the session with the token's `sid`. If the token or the session has no `sid`, it ends all sessions of the token's `sub`.
 - Sessions live in memory for 8 hours. A restart logs everyone out, and you must run a single instance.
 - Cross-origin state-changing requests are rejected (Go's `http.CrossOriginProtection`).
 - Changes to users go to authentik with `AUTHENTIK_TOKEN`, not as the logged-in user. The app logs each change with the operator's username (`actor`).
@@ -243,5 +244,6 @@ the frontend, run `make build` again.
 | GET    | `/auth/callback`           | OIDC redirect target                                      |
 | GET    | `/auth/me`                 | the logged-in user, or 401                                |
 | POST   | `/auth/logout`             | ends the session; returns `{logout_url}` for authentik    |
+| POST   | `/auth/backchannel-logout` | OIDC Back-Channel Logout target for authentik (no login; requires a logout token signed by the provider) |
 
 All `/api/` routes return 401 without a session. Errors are returned as `{"error": "...", "fields": {"field": ["message"]}}`.
