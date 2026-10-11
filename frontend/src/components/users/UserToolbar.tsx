@@ -1,5 +1,4 @@
 import SearchIcon from '@mui/icons-material/Search'
-import Badge from '@mui/material/Badge'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import InputAdornment from '@mui/material/InputAdornment'
@@ -16,12 +15,6 @@ interface UserToolbarProps {
   onStatusChange: (value: StatusFilter | null) => void
   /** Called to open the access rules; the button is hidden when undefined. */
   onOpenRules?: () => void
-  /** Called to open the groups; the button is hidden when undefined. */
-  onOpenGroups?: () => void
-  /** Called to open the join requests; the button is hidden when undefined. */
-  onOpenJoinRequests?: () => void
-  /** Number of pending join requests, shown on the join requests button. */
-  joinRequestCount?: number
   /** Called to open the audit log; the button is hidden when undefined. */
   onOpenAudit?: () => void
   /** Called to create a user; the button is hidden when undefined. */
@@ -35,9 +28,6 @@ export function UserToolbar({
   status,
   onStatusChange,
   onOpenRules,
-  onOpenGroups,
-  onOpenJoinRequests,
-  joinRequestCount = 0,
   onOpenAudit,
   onCreate,
 }: UserToolbarProps) {
@@ -81,24 +71,6 @@ export function UserToolbar({
       {onOpenAudit && (
         <Button variant="outlined" onClick={onOpenAudit}>
           Audit log
-        </Button>
-      )}
-      {onOpenJoinRequests && (
-        <Badge badgeContent={joinRequestCount} color="primary" max={99}>
-          <Button
-            variant="outlined"
-            onClick={onOpenJoinRequests}
-            aria-label={
-              joinRequestCount > 0 ? `Join requests (${joinRequestCount} pending)` : undefined
-            }
-          >
-            Join requests
-          </Button>
-        </Badge>
-      )}
-      {onOpenGroups && (
-        <Button variant="outlined" onClick={onOpenGroups}>
-          Groups
         </Button>
       )}
       {onOpenRules && (

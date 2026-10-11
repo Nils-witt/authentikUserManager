@@ -1,49 +1,63 @@
 import Box from '@mui/material/Box'
 import Container from '@mui/material/Container'
 import { useState } from 'react'
+import { Navigate, useLocation, useNavigate } from 'react-router'
 import * as api from '../../api'
-import type { Me, User } from '../../api'
+import type { User } from '../../api'
 import { errorMessage } from '../../errors'
-import { useAccess } from '../../hooks/useAccess'
+import { useAppContext } from '../../hooks/useAppContext'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useGroupNames } from '../../hooks/useGroupNames'
-import { useJoinRequestCount } from '../../hooks/useJoinRequestCount'
 import { useUserFilters } from '../../hooks/useUserFilters'
 import { useUserList } from '../../hooks/useUserList'
 import { useUserPaths } from '../../hooks/useUserPaths'
+import { dialogForPath, dialogPaths, pagePaths, type RoutedDialog } from '../../paths'
 import { ListPagination } from '../common/ListPagination'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
 import { FolderTree } from '../folders/FolderTree'
-import { AppFooter } from '../layout/AppFooter'
-import { AppHeader } from '../layout/AppHeader'
 import { StatusAlerts } from './StatusAlerts'
 import { UserDialog, type UserDialogState } from './UserDialog'
 import { UserTable } from './UserTable'
 import { UserToolbar } from './UserToolbar'
 
 /** The user list with its filters, actions and dialogs. */
-export function UserAdmin({ me }: { me: Me }) {
+export function UserAdmin() {
   const [confirm, confirmDialog] = useConfirm()
   const filters = useUserFilters()
-  // Bumped after every mutation to refetch the users, folders and access.
-  const [version, setVersion] = useState(0)
+  // The version is bumped after every mutation to refetch the users, folders and access.
+  const { access, noAccess, accessError, version, refresh } = useAppContext()
   const { data, loading, error: listError } = useUserList(filters, version)
   const { paths, error: pathsError } = useUserPaths(version)
-  const { access, noAccess, error: accessError } = useAccess(version)
   const isAdmin = access?.admin ?? false
   // Suggestions for a user's groups; only access administrators may list every group.
   const groupNames = useGroupNames(isAdmin)
-  // Operators who manage any users decide the requests to join their groups.
-  const canDecideJoins = access !== null && !noAccess
-  const joinRequestCount = useJoinRequestCount(canDecideJoins, version)
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [dialog, setDialog] = useState<UserDialogState>(null)
+  // Editing needs the user object, so it is kept in state; the other dialogs have a URL.
+  const [editing, setEditing] = useState<User | null>(null)
+  const navigate = useNavigate()
+  const { pathname, search } = useLocation()
+  const routed = dialogForPath(pathname)
+  // The dialogs keep the list's filters in the query.
+  const go = (path: string) => void navigate({ pathname: path, search })
+  const allowed: Record<RoutedDialog, boolean> = {
+    create: access !== null && !noAccess,
+    rules: isAdmin,
+    audit: isAdmin,
+  }
+  const dialog: UserDialogState = editing
+    ? { kind: 'edit', user: editing }
+    : routed && allowed[routed]
+      ? { kind: routed }
+      : null
 
-  const refresh = () => setVersion((v) => v + 1)
+  const closeDialog = () => {
+    setEditing(null)
+    if (routed) go(pagePaths.users)
+  }
 
   const done = (message: string) => {
-    setDialog(null)
+    closeDialog()
     setNotice(message)
     setActionError(null)
     refresh()
@@ -93,22 +107,15 @@ export function UserAdmin({ me }: { me: Me }) {
 
   return (
     <>
-      <AppHeader me={me} />
-
       <Container component="main" maxWidth="xl" sx={{ py: 3 }}>
         <UserToolbar
           search={filters.search}
           onSearchChange={filters.setSearch}
           status={filters.status}
           onStatusChange={filters.selectStatus}
-          onOpenRules={isAdmin ? () => setDialog({ kind: 'rules' }) : undefined}
-          onOpenGroups={access ? () => setDialog({ kind: 'groups' }) : undefined}
-          onOpenJoinRequests={
-            canDecideJoins ? () => setDialog({ kind: 'join-requests' }) : undefined
-          }
-          joinRequestCount={joinRequestCount}
-          onOpenAudit={isAdmin ? () => setDialog({ kind: 'audit' }) : undefined}
-          onCreate={access && !noAccess ? () => setDialog({ kind: 'create' }) : undefined}
+          onOpenRules={allowed.rules ? () => go(dialogPaths.rules) : undefined}
+          onOpenAudit={allowed.audit ? () => go(dialogPaths.audit) : undefined}
+          onCreate={allowed.create ? () => go(dialogPaths.create) : undefined}
         />
 
         <StatusAlerts
@@ -132,7 +139,7 @@ export function UserAdmin({ me }: { me: Me }) {
               loading={loading}
               canSendRecovery={access?.recovery_email ?? false}
               canDelete={isAdmin}
-              onEdit={(user) => setDialog({ kind: 'edit', user })}
+              onEdit={setEditing}
               onToggleActive={(user) => void toggleActive(user)}
               onSendRecovery={(user) => void sendRecovery(user)}
               onDelete={(user) => void remove(user)}
@@ -147,7 +154,10 @@ export function UserAdmin({ me }: { me: Me }) {
         </Box>
       </Container>
 
-      <AppFooter />
+      {/* A dialog the operator may not open closes again. */}
+      {routed && access && !allowed[routed] && (
+        <Navigate to={{ pathname: pagePaths.users, search }} replace />
+      )}
 
       <NoticeSnackbar notice={notice} onClose={() => setNotice(null)} />
       {confirmDialog}
@@ -157,10 +167,10 @@ export function UserAdmin({ me }: { me: Me }) {
         access={access}
         folder={filters.folder}
         groupSuggestions={groupNames}
-        onClose={() => setDialog(null)}
+        onClose={closeDialog}
         onDone={done}
         onAdminClose={() => {
-          setDialog(null)
+          closeDialog()
           refresh()
         }}
       />

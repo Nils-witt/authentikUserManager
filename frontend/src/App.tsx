@@ -6,10 +6,10 @@ import Typography from '@mui/material/Typography'
 import { useEffect, useState } from 'react'
 import * as api from './api'
 import type { Me } from './api'
-import { UserAdmin } from './components/users/UserAdmin'
+import { AppLayout } from './components/layout/AppLayout'
 import { errorMessage } from './errors'
 
-/** Ensures the operator is signed in before showing the user admin. */
+/** Ensures the operator is signed in before showing the app. */
 export default function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -40,5 +40,5 @@ export default function App() {
       </Stack>
     )
   }
-  return <UserAdmin me={me} />
+  return <AppLayout me={me} />
 }

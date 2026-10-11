@@ -4,7 +4,8 @@ import CssBaseline from '@mui/material/CssBaseline'
 import { ThemeProvider } from '@mui/material/styles'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App.tsx'
+import { RouterProvider } from 'react-router'
+import { router } from './routes'
 import { theme } from './theme'
 
 // The server's Content-Security-Policy only allows <style> elements carrying
@@ -17,7 +18,7 @@ createRoot(document.getElementById('root')!).render(
     <CacheProvider value={emotionCache}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <App />
+        <RouterProvider router={router} />
       </ThemeProvider>
     </CacheProvider>
   </StrictMode>,

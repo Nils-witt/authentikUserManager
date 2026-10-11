@@ -2,19 +2,11 @@ import * as api from '../../api'
 import type { Access, User } from '../../api'
 import { AccessRules } from '../access-rules/AccessRules'
 import { AuditLog } from '../audit/AuditLog'
-import { GroupAdmin } from '../groups/GroupAdmin'
-import { JoinRequests } from '../groups/JoinRequests'
 import { UserForm } from './UserForm'
 
 /** The dialog open on the user admin page, if any. */
 export type UserDialogState =
-  | { kind: 'create' }
-  | { kind: 'edit'; user: User }
-  | { kind: 'rules' }
-  | { kind: 'groups' }
-  | { kind: 'join-requests' }
-  | { kind: 'audit' }
-  | null
+  { kind: 'create' } | { kind: 'edit'; user: User } | { kind: 'rules' } | { kind: 'audit' } | null
 
 interface UserDialogProps {
   dialog: UserDialogState
@@ -26,10 +18,7 @@ interface UserDialogProps {
   onClose: () => void
   /** Called with a notice once a user was created or saved. */
   onDone: (message: string) => void
-  /**
-   * Called when the access rules, the groups or the join requests are closed; changes to them may
-   * have changed the users' groups and the operator's access.
-   */
+  /** Called when the access rules are closed; changes to them may have changed the operator's access. */
   onAdminClose: () => void
 }
 
@@ -84,11 +73,6 @@ export function UserDialog({
     }
     case 'rules':
       return <AccessRules onClose={onAdminClose} />
-    case 'groups':
-      return <GroupAdmin admin={access?.admin ?? false} onClose={onAdminClose} />
-    case 'join-requests':
-      // Approving a request changes the user's groups.
-      return <JoinRequests onClose={onAdminClose} />
     case 'audit':
       return <AuditLog onClose={onClose} />
     default:

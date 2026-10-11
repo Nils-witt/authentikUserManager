@@ -2,7 +2,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
-import DialogContent from '@mui/material/DialogContent'
+import Container from '@mui/material/Container'
 import InputAdornment from '@mui/material/InputAdornment'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
@@ -27,14 +27,15 @@ interface GroupAdminProps {
    * may request to join them.
    */
   admin: boolean
-  onClose: () => void
+  /** Called after a group was edited; its members may include the operator. */
+  onChange: () => void
 }
 
 /**
  * Lists the authentik groups; access administrators also edit them here, and
  * everyone else may request to join the visible ones.
  */
-export function GroupAdmin({ admin, onClose }: GroupAdminProps) {
+export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
   const [search, setSearch] = useState('')
   const query = useDebounced(search)
   const [page, setPage] = useState(1)
@@ -125,82 +126,78 @@ export function GroupAdmin({ admin, onClose }: GroupAdminProps) {
     )
   }
 
-  if (editing) {
-    return (
-      <Modal title={`Group ${editing.name}`} onClose={onClose} wide>
-        <GroupEditor
-          group={editing}
-          onUpdated={setEditing}
-          onBack={() => {
-            setEditing(null)
-            setVersion((v) => v + 1)
-          }}
-        />
-      </Modal>
-    )
-  }
-
-  if (requesting) {
-    return (
-      <Modal title={`Join ${requesting.name}`} onClose={onClose}>
-        <JoinGroupForm
-          group={requesting}
-          onRequested={() => {
-            setNotice(`Requested to join ${requesting.name}.`)
-            setRequesting(null)
-            setVersion((v) => v + 1)
-          }}
-          onBack={() => setRequesting(null)}
-        />
-      </Modal>
-    )
+  function closeEditor() {
+    setEditing(null)
+    setVersion((v) => v + 1)
+    onChange()
   }
 
   return (
-    <Modal title="Groups" onClose={onClose} wide>
-      <DialogContent sx={{ pt: 0 }}>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          {error && <Alert severity="error">{error}</Alert>}
-          {notice && <Alert severity="success">{notice}</Alert>}
-          <Typography variant="body2" color="text.secondary">
-            {admin
-              ? 'Groups marked visible are listed here for every signed-in user, without their members.'
-              : 'Groups the access administrators made visible to everyone. Their members are not shown. You can request to join one; the operators managing it decide.'}
-          </Typography>
-          <TextField
-            type="search"
-            size="small"
-            placeholder="Search groups…"
-            aria-label="Search groups"
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value)
-              setPage(1)
+    <Container component="main" maxWidth="lg" sx={{ py: 3 }}>
+      <Stack spacing={2}>
+        <Typography variant="h5" component="h2">
+          Groups
+        </Typography>
+        {error && <Alert severity="error">{error}</Alert>}
+        {notice && <Alert severity="success">{notice}</Alert>}
+        <Typography variant="body2" color="text.secondary">
+          {admin
+            ? 'Groups marked visible are listed here for every signed-in user, without their members.'
+            : 'Groups the access administrators made visible to everyone. Their members are not shown. You can request to join one; the operators managing it decide.'}
+        </Typography>
+        <TextField
+          type="search"
+          size="small"
+          placeholder="Search groups…"
+          aria-label="Search groups"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value)
+            setPage(1)
+          }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+        <GroupsTable
+          groups={list?.data.results}
+          loading={list?.key !== requestKey && !error}
+          onEdit={admin ? setEditing : undefined}
+          renderJoin={admin ? undefined : renderJoin}
+        />
+        <ListPagination
+          pagination={list?.data.pagination}
+          page={page}
+          onChange={setPage}
+          noun="groups"
+        />
+      </Stack>
+
+      {editing && (
+        <Modal title={`Group ${editing.name}`} onClose={closeEditor} wide>
+          <GroupEditor group={editing} onUpdated={setEditing} onBack={closeEditor} />
+        </Modal>
+      )}
+
+      {requesting && (
+        <Modal title={`Join ${requesting.name}`} onClose={() => setRequesting(null)}>
+          <JoinGroupForm
+            group={requesting}
+            onRequested={() => {
+              setNotice(`Requested to join ${requesting.name}.`)
+              setRequesting(null)
+              setVersion((v) => v + 1)
             }}
-            slotProps={{
-              input: {
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-              },
-            }}
+            onBack={() => setRequesting(null)}
           />
-          <GroupsTable
-            groups={list?.data.results}
-            loading={list?.key !== requestKey && !error}
-            onEdit={admin ? setEditing : undefined}
-            renderJoin={admin ? undefined : renderJoin}
-          />
-          <ListPagination
-            pagination={list?.data.pagination}
-            page={page}
-            onChange={setPage}
-            noun="groups"
-          />
-        </Stack>
-      </DialogContent>
-    </Modal>
+        </Modal>
+      )}
+    </Container>
   )
 }
