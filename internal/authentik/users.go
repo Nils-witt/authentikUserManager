@@ -83,7 +83,9 @@ type UserList struct {
 
 // ListUsersParams filters and paginates ListUsers. Zero values are omitted.
 type ListUsersParams struct {
-	Search   string
+	Search string
+	// Username matches the user with exactly this username.
+	Username string
 	Ordering string
 	Page     int
 	PageSize int
@@ -106,6 +108,9 @@ func (p ListUsersParams) values() url.Values {
 	q := url.Values{}
 	if p.Search != "" {
 		q.Set("search", p.Search)
+	}
+	if p.Username != "" {
+		q.Set("username", p.Username)
 	}
 	if p.Ordering != "" {
 		q.Set("ordering", p.Ordering)

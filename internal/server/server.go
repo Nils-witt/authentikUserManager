@@ -19,6 +19,7 @@ import (
 	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
+	"authentikManager/internal/joinrequest"
 )
 
 // maxRequestBytes bounds JSON request bodies.
@@ -94,6 +95,21 @@ type AuditLog interface {
 	ListAudit(ctx context.Context, q audit.Query) ([]audit.Entry, error)
 }
 
+// JoinRequestStore keeps the requests to join groups.
+type JoinRequestStore interface {
+	// CreateJoinRequest returns joinrequest.ErrPending when the user already has a pending request for the group.
+	CreateJoinRequest(ctx context.Context, jr joinrequest.Request) (joinrequest.Request, error)
+	// GetJoinRequest returns joinrequest.ErrNotFound when there is no request.
+	GetJoinRequest(ctx context.Context, id int64) (joinrequest.Request, error)
+	ListJoinRequests(ctx context.Context, q joinrequest.Query) ([]joinrequest.Request, error)
+	// DecideJoinRequest returns joinrequest.ErrDecided when the request is no longer pending.
+	DecideJoinRequest(ctx context.Context, id int64, status joinrequest.Status, actor string) (joinrequest.Request, error)
+	// ReopenJoinRequest makes an approved request pending again.
+	ReopenJoinRequest(ctx context.Context, id int64) error
+	// WithdrawJoinRequest deletes a pending request of username, or returns joinrequest.ErrNotFound.
+	WithdrawJoinRequest(ctx context.Context, id int64, username string) error
+}
+
 // Deps are the collaborators of the Server.
 type Deps struct {
 	Users  UserService
@@ -101,7 +117,9 @@ type Deps struct {
 	Policy Policy
 	Rules  RuleStore
 	Audit  AuditLog
-	Logger *slog.Logger
+	// JoinRequests keeps the requests to join groups.
+	JoinRequests JoinRequestStore
+	Logger       *slog.Logger
 	// Static, when non-nil, is the built frontend.
 	Static fs.FS
 	// RecoveryEmailStage is the UUID of the email stage that sends password
@@ -116,7 +134,9 @@ type Server struct {
 	rules  RuleStore
 	// auditLog records changes; see Server.record.
 	auditLog AuditLog
-	logger   *slog.Logger
+	// joinRequests keeps the requests to join groups.
+	joinRequests JoinRequestStore
+	logger       *slog.Logger
 	// recoveryEmailStage is the email stage for recovery emails; empty disables them.
 	recoveryEmailStage string
 	// handler is the router wrapped in CSRF protection.
@@ -133,6 +153,7 @@ func New(d Deps) *Server {
 		policy:             d.Policy,
 		rules:              d.Rules,
 		auditLog:           d.Audit,
+		joinRequests:       d.JoinRequests,
 		logger:             d.Logger,
 		recoveryEmailStage: d.RecoveryEmailStage,
 	}
@@ -145,11 +166,19 @@ func New(d Deps) *Server {
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
 	// Every signed-in user may list the visible groups, without their members.
 	api.HandleFunc("GET /api/groups/visible", s.listVisibleGroups)
+	// Every signed-in user may request to join a visible group.
+	api.HandleFunc("POST /api/groups/{pk}/join-requests", s.requestJoin)
 	api.Handle("GET /api/groups/{pk}", s.requireAdmin(s.getGroup))
 	api.Handle("PATCH /api/groups/{pk}", s.requireAdmin(s.updateGroup))
 	api.Handle("GET /api/groups/{pk}/members", s.requireAdmin(s.listGroupMembers))
 	api.Handle("PUT /api/groups/{pk}/members/{id}", s.requireAdmin(s.addGroupMember))
 	api.Handle("DELETE /api/groups/{pk}/members/{id}", s.requireAdmin(s.removeGroupMember))
+	// The operators managing a group decide the requests to join it; see joinrequests.go.
+	api.HandleFunc("GET /api/join-requests", s.listJoinRequests)
+	api.HandleFunc("GET /api/join-requests/mine", s.listMyJoinRequests)
+	api.HandleFunc("POST /api/join-requests/{id}/approve", s.approveJoinRequest)
+	api.HandleFunc("POST /api/join-requests/{id}/reject", s.rejectJoinRequest)
+	api.HandleFunc("DELETE /api/join-requests/{id}", s.withdrawJoinRequest)
 	api.Handle("GET /api/audit", s.requireAdmin(s.listAudit))
 	api.HandleFunc("GET /api/users", s.listUsers)
 	api.HandleFunc("POST /api/users", s.createUser)

@@ -18,7 +18,7 @@ import (
 
 // The group handlers are restricted to access administrators (see requireAdmin),
 // who have full access, so they do not check the operator's scope. The only
-// exception is listVisibleGroups.
+// exceptions are listVisibleGroups and requestJoin.
 
 // visibleAttribute is the authentik group attribute that, when true, lets every
 // signed-in user see the group's name. Its members stay hidden.
@@ -66,6 +66,8 @@ type publicGroup struct {
 	PK         string `json:"pk"`
 	Name       string `json:"name"`
 	ParentName string `json:"parent_name"`
+	// Member is set when the signed-in user is a direct member of the group.
+	Member bool `json:"member"`
 }
 
 // page is one page of a list response.
@@ -106,7 +108,8 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 // listVisibleGroups returns a page of the groups visible to every signed-in
 // user, ordered by name, with their names only. It is open to every operator,
 // including those who may not manage any users. The query parameters search,
-// page and page_size filter and page it.
+// page and page_size filter and page it. Users may request to join them; see
+// requestJoin.
 func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
 	params, ok := groupListParams(w, r)
 	if !ok {
@@ -118,13 +121,30 @@ func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
+	// The groups read at login miss the ones joined since, by an approved request for example.
+	user, err := s.findRequester(r)
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	isMember := func(*authentik.Group) bool { return false }
+	if user != nil {
+		isMember = func(g *authentik.Group) bool {
+			return slices.ContainsFunc(user.Groups, func(ug authentik.UserGroup) bool { return ug.PK == g.PK })
+		}
+	}
 	out := page[publicGroup]{Pagination: list.Pagination, Results: []publicGroup{}}
 	for i := range list.Results {
 		g := &list.Results[i]
 		// authentik silently ignores filters it does not know, so drop hidden
 		// groups in case the filter was not applied.
 		if isVisible(g) {
-			out.Results = append(out.Results, publicGroup{PK: g.PK, Name: g.Name, ParentName: g.ParentName})
+			out.Results = append(out.Results, publicGroup{
+				PK:         g.PK,
+				Name:       g.Name,
+				ParentName: g.ParentName,
+				Member:     isMember(g),
+			})
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

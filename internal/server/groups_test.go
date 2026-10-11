@@ -100,6 +100,8 @@ func TestServer_listVisibleGroups(t *testing.T) {
 		// Returned as if authentik ignored the filter; it must be dropped.
 		{PK: "g2", Name: "hidden"},
 	}}
+	// The signed-in user joined staff after their login.
+	users.listed = requester(authentik.UserGroup{PK: "g1", Name: "staff"})
 	// Any signed-in user may list them, even without access to any user.
 	h := newTestServer(t, users, newFakeRules(), fakeAuth{groups: []string{"guests"}})
 	rec := do(t, h, http.MethodGet, "/api/groups/visible?search=st&page=2", "")
@@ -111,7 +113,7 @@ func TestServer_listVisibleGroups(t *testing.T) {
 		t.Errorf("params = %+v, want the search, paging and visibility filter", p)
 	}
 	expected := `{"pagination":{"count":0,"current":0,"total_pages":0,"next":0,"previous":0,"start_index":0,"end_index":0},` +
-		`"results":[{"pk":"g1","name":"staff","parent_name":""}]}`
+		`"results":[{"pk":"g1","name":"staff","parent_name":"","member":true}]}`
 	if got := strings.TrimSpace(rec.Body.String()); got != expected {
 		t.Errorf("body = %s, want %s", got, expected)
 	}

@@ -34,6 +34,8 @@ export interface PublicGroup {
   name: string
   /** Name of the parent group; empty or null for a top-level group. */
   parent_name: string | null
+  /** The signed-in user was a member at login; set in the list of visible groups only. */
+  member?: boolean
 }
 
 /** An authentik group, as access administrators see it. */
@@ -96,6 +98,10 @@ export type AuditAction =
   | 'access_rule.deleted'
   | 'group.renamed'
   | 'group.visibility_changed'
+  | 'group.join_requested'
+  | 'group.join_withdrawn'
+  | 'group.join_approved'
+  | 'group.join_rejected'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -114,6 +120,25 @@ export interface AuditPage {
   entries: AuditEntry[]
   /** Pass as `before` to load the next page; absent on the last page. */
   next?: number
+}
+
+export type JoinRequestStatus = 'pending' | 'approved' | 'rejected'
+
+/** A user's request to join a visible group, decided by the operators managing the group. */
+export interface JoinRequest {
+  id: number
+  group_pk: string
+  /** Name of the group when the request was made. */
+  group_name: string
+  user_pk: number
+  username: string
+  /** The user's optional reason for joining. */
+  message: string
+  status: JoinRequestStatus
+  created_at: string
+  decided_at: string | null
+  /** Username of the operator who decided; empty while pending. */
+  decided_by: string
 }
 
 /** Error returned by the backend; `fields` holds per-field validation messages. */
@@ -258,6 +283,31 @@ export const addGroupMember = (pk: string, userId: number) =>
 
 export const removeGroupMember = (pk: string, userId: number) =>
   request<void>('DELETE', `/api/groups/${encodeURIComponent(pk)}/members/${userId}`)
+
+/** Asks to join a visible group; the operators managing it approve or reject the request. */
+export const requestJoin = (groupPk: string, message: string) =>
+  request<JoinRequest>('POST', `/api/groups/${encodeURIComponent(groupPk)}/join-requests`, {
+    message,
+  })
+
+/** The signed-in user's own join requests, newest first. */
+export const listMyJoinRequests = () =>
+  request<{ requests: JoinRequest[] }>('GET', '/api/join-requests/mine').then((res) => res.requests)
+
+/** Withdraws one of the signed-in user's pending join requests. */
+export const withdrawJoinRequest = (id: number) =>
+  request<void>('DELETE', `/api/join-requests/${id}`)
+
+/** The pending join requests the signed-in operator may decide, newest first. */
+export const listJoinRequests = () =>
+  request<{ requests: JoinRequest[] }>('GET', '/api/join-requests').then((res) => res.requests)
+
+/** Approves a pending join request, which adds the user to the group. */
+export const approveJoinRequest = (id: number) =>
+  request<JoinRequest>('POST', `/api/join-requests/${id}/approve`)
+
+export const rejectJoinRequest = (id: number) =>
+  request<JoinRequest>('POST', `/api/join-requests/${id}/reject`)
 
 export const createUser = (input: CreateUserInput) => request<User>('POST', '/api/users', input)
 

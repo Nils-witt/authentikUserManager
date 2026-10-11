@@ -12,7 +12,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -29,7 +29,7 @@ Set these environment variables (see `.env.example`):
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
 | `OIDC_REDIRECT_URL`  | yes   |                  | Public callback URL of this app, ending in `/auth/callback` |
-| `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules and the audit log, e.g. `postgres://am:secret@db:5432/am` |
+| `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, the join requests and the audit log, e.g. `postgres://am:secret@db:5432/am` |
 | `AUDIT_RETENTION_DAYS` | no |                | Days to keep [audit log](#audit-log) entries; kept forever when unset |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 
@@ -103,14 +103,39 @@ The API for access administrators is `GET /api/groups` (`search`, `page`, `page_
 `GET` and `PATCH /api/groups/{pk}` (body `{"name": "...", "visible": true}`, both optional),
 `GET /api/groups/{pk}/members` (`search`, `page`, `page_size`), and `PUT` and
 `DELETE /api/groups/{pk}/members/{user id}`. Every signed-in user may call
-`GET /api/groups/visible` (`search`, `page`, `page_size`).
+`GET /api/groups/visible` (`search`, `page`, `page_size`); each group carries `member`, set when
+the caller is a direct member.
+
+## Join requests
+
+Every signed-in user can ask to join a visible group (**Request to join** in **Groups**), with an
+optional message of up to 500 characters. The request is stored in PostgreSQL until it is decided.
+
+- The operators who may manage the group's members decide it: access administrators, operators
+  with the "all users" rule, and operators whose rules name the group as a target. They see the
+  pending requests under **Join requests** in the toolbar, with a count of the pending ones.
+- Approving adds the user to the group in authentik. Rejecting leaves it unchanged; the user
+  may ask again. Nobody decides their own request.
+- Users see their pending requests in **Groups** and can withdraw them there.
+- Only internal users can ask, only for visible groups, and not for groups that grant superuser
+  rights. Each user has at most one pending request per group, and none for a group they are
+  already in.
+- Requests match groups by primary key, so renaming a group keeps them. They show the group's
+  name as it was when the request was made. A request for a deleted group can still be rejected
+  by the operators who managed the group under that name.
+- If authentik cannot add the user, the request becomes pending again.
+
+The API is `POST /api/groups/{pk}/join-requests` (body `{"message": "..."}`) and
+`GET /api/join-requests/mine` and `DELETE /api/join-requests/{id}` for the requester, and
+`GET /api/join-requests` (the pending requests the caller may decide) and
+`POST /api/join-requests/{id}/approve` or `/reject` for the deciders.
 
 ## Audit log
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
 creating, updating and deleting users, changing their groups, sending recovery emails,
-saving and deleting access rules, renaming groups and changing their visibility, and requests for users outside the operator's scope.
+saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
 

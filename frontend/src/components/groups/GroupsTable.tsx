@@ -12,6 +12,7 @@ import TableContainer from '@mui/material/TableContainer'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import Tooltip from '@mui/material/Tooltip'
+import type { ReactNode } from 'react'
 import type { Group, PublicGroup } from '../../api'
 
 interface GroupsTableProps {
@@ -23,14 +24,16 @@ interface GroupsTableProps {
    * administrators see, and an edit button for each group.
    */
   onEdit?: (group: Group) => void
+  /** Renders the join controls of a group for users who are not access administrators. */
+  renderJoin?: (group: PublicGroup) => ReactNode
 }
 
 /** Reports whether g carries the details access administrators see. */
 const isAdminView = (g: PublicGroup | Group): g is Group => 'visible' in g
 
-/** Lists authentik groups, with an edit button each for access administrators. */
-export function GroupsTable({ groups, loading, onEdit }: GroupsTableProps) {
-  const columns = onEdit ? 4 : 2
+/** Lists authentik groups, with an edit button each for access administrators or join controls for everyone else. */
+export function GroupsTable({ groups, loading, onEdit, renderJoin }: GroupsTableProps) {
+  const columns = 2 + (onEdit ? 2 : 0) + (renderJoin ? 1 : 0)
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={loading}>
       <Box sx={{ height: 4 }}>{loading && <LinearProgress />}</Box>
@@ -41,6 +44,7 @@ export function GroupsTable({ groups, loading, onEdit }: GroupsTableProps) {
             <TableCell>Parent</TableCell>
             {onEdit && <TableCell>Visible to all</TableCell>}
             {onEdit && <TableCell aria-label="Actions" />}
+            {renderJoin && <TableCell aria-label="Membership" />}
           </TableRow>
         </TableHead>
         <TableBody>
@@ -67,6 +71,7 @@ export function GroupsTable({ groups, loading, onEdit }: GroupsTableProps) {
                   </TableCell>
                 </>
               )}
+              {renderJoin && <TableCell align="right">{renderJoin(group)}</TableCell>}
             </TableRow>
           ))}
           {groups?.length === 0 && (

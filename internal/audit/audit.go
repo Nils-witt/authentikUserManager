@@ -28,6 +28,14 @@ const (
 	ActionGroupRenamed Action = "group.renamed"
 	// ActionGroupVisibilityChanged is recorded when a group is made visible to every signed-in user or hidden again.
 	ActionGroupVisibilityChanged Action = "group.visibility_changed"
+	// ActionJoinRequested is recorded when a user requests to join a visible group.
+	ActionJoinRequested Action = "group.join_requested"
+	// ActionJoinWithdrawn is recorded when a user withdraws their pending request.
+	ActionJoinWithdrawn Action = "group.join_withdrawn"
+	// ActionJoinApproved is recorded when an operator approves a request and the user joins the group.
+	ActionJoinApproved Action = "group.join_approved"
+	// ActionJoinRejected is recorded when an operator rejects a request.
+	ActionJoinRejected Action = "group.join_rejected"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -36,7 +44,8 @@ func (a Action) Valid() bool {
 	case ActionUserCreated, ActionUserUpdated, ActionUserDeleted,
 		ActionUserGroupAdded, ActionUserGroupRemoved, ActionRecoveryEmailSent,
 		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted,
-		ActionGroupRenamed, ActionGroupVisibilityChanged:
+		ActionGroupRenamed, ActionGroupVisibilityChanged,
+		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected:
 		return true
 	}
 	return false
@@ -52,7 +61,8 @@ type Entry struct {
 	Actor  string `json:"actor"`
 	Action Action `json:"action"`
 	// Target is the username of the affected user, the operator group of the
-	// affected rule, or the (new) name of the affected group.
+	// affected rule, or the (new) name of the affected group. For join requests
+	// it is the username of the requesting user.
 	Target string `json:"target"`
 	// Details holds action-specific values, such as the user ID or the changed fields.
 	Details map[string]string `json:"details"`

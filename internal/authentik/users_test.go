@@ -142,6 +142,19 @@ func TestClient_ListUsers_groupFilter(t *testing.T) {
 	}
 }
 
+func TestClient_ListUsers_usernameFilter(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("username"); got != "ann" {
+			t.Errorf("username = %q, want ann", got)
+		}
+		_, _ = io.WriteString(w, `{"pagination":{},"results":[]}`)
+	})
+	if _, err := c.ListUsers(t.Context(), authentik.ListUsersParams{Username: "ann"}); err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+}
+
 func TestClient_FindGroup(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -7,6 +7,7 @@ import { errorMessage } from '../../errors'
 import { useAccess } from '../../hooks/useAccess'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useGroupNames } from '../../hooks/useGroupNames'
+import { useJoinRequestCount } from '../../hooks/useJoinRequestCount'
 import { useUserFilters } from '../../hooks/useUserFilters'
 import { useUserList } from '../../hooks/useUserList'
 import { useUserPaths } from '../../hooks/useUserPaths'
@@ -31,6 +32,9 @@ export function UserAdmin({ me }: { me: Me }) {
   const isAdmin = access?.admin ?? false
   // Suggestions for a user's groups; only access administrators may list every group.
   const groupNames = useGroupNames(isAdmin)
+  // Operators who manage any users decide the requests to join their groups.
+  const canDecideJoins = access !== null && !noAccess
+  const joinRequestCount = useJoinRequestCount(canDecideJoins, version)
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [dialog, setDialog] = useState<UserDialogState>(null)
@@ -98,6 +102,10 @@ export function UserAdmin({ me }: { me: Me }) {
           onStatusChange={filters.selectStatus}
           onOpenRules={isAdmin ? () => setDialog({ kind: 'rules' }) : undefined}
           onOpenGroups={access ? () => setDialog({ kind: 'groups' }) : undefined}
+          onOpenJoinRequests={
+            canDecideJoins ? () => setDialog({ kind: 'join-requests' }) : undefined
+          }
+          joinRequestCount={joinRequestCount}
           onOpenAudit={isAdmin ? () => setDialog({ kind: 'audit' }) : undefined}
           onCreate={access && !noAccess ? () => setDialog({ kind: 'create' }) : undefined}
         />

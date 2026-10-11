@@ -107,13 +107,14 @@ func run(logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
 		Handler: server.New(server.Deps{
-			Users:  client,
-			Auth:   authn,
-			Policy: policy,
-			Rules:  db,
-			Audit:  db,
-			Logger: logger,
-			Static: static,
+			Users:        client,
+			Auth:         authn,
+			Policy:       policy,
+			Rules:        db,
+			Audit:        db,
+			JoinRequests: db,
+			Logger:       logger,
+			Static:       static,
 
 			RecoveryEmailStage: cfg.RecoveryEmailStage,
 		}),
