@@ -13,10 +13,6 @@ interface UserToolbarProps {
   onSearchChange: (value: string) => void
   status: StatusFilter
   onStatusChange: (value: StatusFilter | null) => void
-  /** Called to open the access rules; the button is hidden when undefined. */
-  onOpenRules?: () => void
-  /** Called to open the audit log; the button is hidden when undefined. */
-  onOpenAudit?: () => void
   /** Called to create a user; the button is hidden when undefined. */
   onCreate?: () => void
 }
@@ -27,8 +23,6 @@ export function UserToolbar({
   onSearchChange,
   status,
   onStatusChange,
-  onOpenRules,
-  onOpenAudit,
   onCreate,
 }: UserToolbarProps) {
   return (
@@ -68,16 +62,6 @@ export function UserToolbar({
         <ToggleButton value="inactive">Inactive</ToggleButton>
       </ToggleButtonGroup>
       <Box sx={{ flexGrow: 1 }} />
-      {onOpenAudit && (
-        <Button variant="outlined" onClick={onOpenAudit}>
-          Audit log
-        </Button>
-      )}
-      {onOpenRules && (
-        <Button variant="outlined" onClick={onOpenRules}>
-          Access rules
-        </Button>
-      )}
       {onCreate && (
         <Button variant="contained" onClick={onCreate}>
           New user

@@ -42,8 +42,6 @@ export function UserAdmin() {
   const go = (path: string) => void navigate({ pathname: path, search })
   const allowed: Record<RoutedDialog, boolean> = {
     create: access !== null && !noAccess,
-    rules: isAdmin,
-    audit: isAdmin,
   }
   const dialog: UserDialogState = editing
     ? { kind: 'edit', user: editing }
@@ -113,8 +111,6 @@ export function UserAdmin() {
           onSearchChange={filters.setSearch}
           status={filters.status}
           onStatusChange={filters.selectStatus}
-          onOpenRules={allowed.rules ? () => go(dialogPaths.rules) : undefined}
-          onOpenAudit={allowed.audit ? () => go(dialogPaths.audit) : undefined}
           onCreate={allowed.create ? () => go(dialogPaths.create) : undefined}
         />
 
@@ -169,10 +165,6 @@ export function UserAdmin() {
         groupSuggestions={groupNames}
         onClose={closeDialog}
         onDone={done}
-        onAdminClose={() => {
-          closeDialog()
-          refresh()
-        }}
       />
     </>
   )

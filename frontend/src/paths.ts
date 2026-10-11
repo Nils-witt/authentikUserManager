@@ -3,13 +3,13 @@ export const pagePaths = {
   users: '/',
   groups: '/groups',
   joinRequests: '/join-requests',
+  accessRules: '/access-rules',
+  audit: '/audit',
 } as const
 
 /** Dialogs on the user list that have their own URL, so they can be linked and reloaded. */
 export const dialogPaths = {
   create: '/users/new',
-  rules: '/access-rules',
-  audit: '/audit',
 } as const
 
 export type RoutedDialog = keyof typeof dialogPaths

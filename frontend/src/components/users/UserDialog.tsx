@@ -1,12 +1,9 @@
 import * as api from '../../api'
 import type { Access, User } from '../../api'
-import { AccessRules } from '../access-rules/AccessRules'
-import { AuditLog } from '../audit/AuditLog'
 import { UserForm } from './UserForm'
 
 /** The dialog open on the user admin page, if any. */
-export type UserDialogState =
-  { kind: 'create' } | { kind: 'edit'; user: User } | { kind: 'rules' } | { kind: 'audit' } | null
+export type UserDialogState = { kind: 'create' } | { kind: 'edit'; user: User } | null
 
 interface UserDialogProps {
   dialog: UserDialogState
@@ -18,8 +15,6 @@ interface UserDialogProps {
   onClose: () => void
   /** Called with a notice once a user was created or saved. */
   onDone: (message: string) => void
-  /** Called when the access rules are closed; changes to them may have changed the operator's access. */
-  onAdminClose: () => void
 }
 
 /** Renders the open dialog and saves its changes. */
@@ -30,7 +25,6 @@ export function UserDialog({
   groupSuggestions,
   onClose,
   onDone,
-  onAdminClose,
 }: UserDialogProps) {
   // Restricted operators may only use the groups they manage.
   const groups = access && !access.all ? access.groups : undefined
@@ -71,10 +65,6 @@ export function UserDialog({
         />
       )
     }
-    case 'rules':
-      return <AccessRules onClose={onAdminClose} />
-    case 'audit':
-      return <AuditLog onClose={onClose} />
     default:
       return null
   }

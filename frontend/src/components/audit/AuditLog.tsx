@@ -2,8 +2,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
-import DialogActions from '@mui/material/DialogActions'
-import DialogContent from '@mui/material/DialogContent'
+import Container from '@mui/material/Container'
 import InputAdornment from '@mui/material/InputAdornment'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
@@ -15,11 +14,11 @@ import TableContainer from '@mui/material/TableContainer'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import TextField from '@mui/material/TextField'
+import Typography from '@mui/material/Typography'
 import { useEffect, useState } from 'react'
 import * as api from '../../api'
 import type { AuditAction, AuditEntry } from '../../api'
 import { errorMessage } from '../../errors'
-import { Modal } from '../common/Modal'
 
 const ACTION_LABELS: Record<AuditAction, string> = {
   'user.created': 'User created',
@@ -44,7 +43,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
 const ACTIONS = Object.keys(ACTION_LABELS) as AuditAction[]
 
 /** Lets access administrators review the changes operators made, newest first. */
-export function AuditLog({ onClose }: { onClose: () => void }) {
+export function AuditLog() {
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
   const [action, setAction] = useState<AuditAction | ''>('')
@@ -103,56 +102,57 @@ export function AuditLog({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Modal title="Audit log" onClose={onClose} wide>
-      <DialogContent sx={{ pt: 0 }}>
-        <Stack spacing={2}>
-          {error && <Alert severity="error">{error}</Alert>}
-          <Stack direction="row" spacing={1.5} useFlexGap sx={{ flexWrap: 'wrap', pt: 1 }}>
-            <TextField
-              type="search"
-              size="small"
-              placeholder="Operator or target…"
-              aria-label="Search by operator or target"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              sx={{ flex: '1 1 220px' }}
-              slotProps={{
-                input: {
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <SearchIcon fontSize="small" />
-                    </InputAdornment>
-                  ),
-                },
-              }}
-            />
-            <TextField
-              select
-              size="small"
-              label="Action"
-              value={action}
-              onChange={(e) => setAction(e.target.value as AuditAction | '')}
-              sx={{ minWidth: 200 }}
-            >
-              <MenuItem value="">All actions</MenuItem>
-              {ACTIONS.map((a) => (
-                <MenuItem key={a} value={a}>
-                  {ACTION_LABELS[a]}
-                </MenuItem>
-              ))}
-            </TextField>
-          </Stack>
-          <AuditTable entries={current?.entries ?? null} />
+    <Container component="main" maxWidth="xl" sx={{ py: 3 }}>
+      <Stack spacing={2}>
+        <Typography variant="h5" component="h2">
+          Audit log
+        </Typography>
+        {error && <Alert severity="error">{error}</Alert>}
+        <Stack direction="row" spacing={1.5} useFlexGap sx={{ flexWrap: 'wrap' }}>
+          <TextField
+            type="search"
+            size="small"
+            placeholder="Operator or target…"
+            aria-label="Search by operator or target"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            sx={{ flex: '1 1 220px', maxWidth: 400 }}
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              },
+            }}
+          />
+          <TextField
+            select
+            size="small"
+            label="Action"
+            value={action}
+            onChange={(e) => setAction(e.target.value as AuditAction | '')}
+            sx={{ minWidth: 200 }}
+          >
+            <MenuItem value="">All actions</MenuItem>
+            {ACTIONS.map((a) => (
+              <MenuItem key={a} value={a}>
+                {ACTION_LABELS[a]}
+              </MenuItem>
+            ))}
+          </TextField>
         </Stack>
-      </DialogContent>
-      {current?.next !== undefined && (
-        <DialogActions>
-          <Button onClick={() => void loadMore()} disabled={loadingMore}>
-            Load more
-          </Button>
-        </DialogActions>
-      )}
-    </Modal>
+        <AuditTable entries={current?.entries ?? null} />
+        {current?.next !== undefined && (
+          <Stack direction="row" sx={{ justifyContent: 'center' }}>
+            <Button onClick={() => void loadMore()} disabled={loadingMore}>
+              Load more
+            </Button>
+          </Stack>
+        )}
+      </Stack>
+    </Container>
   )
 }
 

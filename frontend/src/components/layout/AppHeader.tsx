@@ -30,12 +30,22 @@ interface AppHeaderProps {
   showJoinRequests: boolean
   /** Number of pending join requests, shown on the join requests tab. */
   joinRequestCount: number
+  /** Show the access rules and audit log tabs. */
+  showAdmin: boolean
 }
 
 /** Top bar with the app title, the page tabs, the signed-in operator and a sign-out button. */
-export function AppHeader({ me, showGroups, showJoinRequests, joinRequestCount }: AppHeaderProps) {
+export function AppHeader({
+  me,
+  showGroups,
+  showJoinRequests,
+  joinRequestCount,
+  showAdmin,
+}: AppHeaderProps) {
   const { pathname, search } = useLocation()
-  const onOtherPage = pathname === pagePaths.groups || pathname === pagePaths.joinRequests
+  const onOtherPage = Object.values(pagePaths).some(
+    (path) => path !== pagePaths.users && path === pathname,
+  )
   // The users tab returns to the list's last filters, which live in its query.
   const [usersSearch, setUsersSearch] = useState(search)
   if (!onOtherPage && search !== usersSearch) setUsersSearch(search)
@@ -52,6 +62,8 @@ export function AppHeader({ me, showGroups, showJoinRequests, joinRequestCount }
       ),
       ariaLabel: joinRequestCount > 0 ? `Join requests (${joinRequestCount} pending)` : undefined,
     },
+    showAdmin && { path: pagePaths.accessRules, label: 'Access rules' },
+    showAdmin && { path: pagePaths.audit, label: 'Audit log' },
   ].filter((tab) => tab !== false)
   // The user list's dialogs have their own paths; they belong to the users tab.
   const current = tabs.find((tab) => tab.path === pathname)?.path ?? pagePaths.users

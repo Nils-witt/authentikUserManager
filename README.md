@@ -51,7 +51,7 @@ email to every user they may manage.
 ## Access rules
 
 Access rules limit which users each operator may see and manage, based on the groups of
-the target user. Access administrators edit them in the UI (**Access rules** in the toolbar);
+the target user. Access administrators edit them in the UI (the **Access rules** tab);
 they are stored in PostgreSQL.
 
 - **Access administrators** are the members of `ACCESS_ADMIN_GROUPS`. They always have full
