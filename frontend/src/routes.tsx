@@ -6,6 +6,7 @@ import { IssuedCertificatesPage } from './components/certificates/IssuedCertific
 import { MyCertificatesPage } from './components/certificates/MyCertificatesPage'
 import { GroupsPage } from './components/groups/GroupsPage'
 import { JoinRequestsPage } from './components/groups/JoinRequestsPage'
+import { ServiceAccountsPage } from './components/service-accounts/ServiceAccountsPage'
 import { UserAdmin } from './components/users/UserAdmin'
 import { dialogPaths, pagePaths } from './paths'
 
@@ -23,6 +24,7 @@ export const router = createBrowserRouter([
       },
       { path: pagePaths.groups, element: <GroupsPage /> },
       { path: pagePaths.joinRequests, element: <JoinRequestsPage /> },
+      { path: pagePaths.serviceAccounts, element: <ServiceAccountsPage /> },
       { path: pagePaths.certificates, element: <MyCertificatesPage /> },
       { path: pagePaths.accessRules, element: <AccessRulesPage /> },
       { path: pagePaths.audit, element: <AuditLogPage /> },

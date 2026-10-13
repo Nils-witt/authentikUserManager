@@ -26,6 +26,8 @@ interface AppHeaderProps {
   me: Me
   /** Show the groups tab. */
   showGroups: boolean
+  /** Show the service accounts tab. */
+  showServiceAccounts: boolean
   /** Show the join requests tab. */
   showJoinRequests: boolean
   /** Number of pending join requests, shown on the join requests tab. */
@@ -40,6 +42,7 @@ interface AppHeaderProps {
 export function AppHeader({
   me,
   showGroups,
+  showServiceAccounts,
   showJoinRequests,
   joinRequestCount,
   showCertificates,
@@ -55,6 +58,7 @@ export function AppHeader({
 
   const tabs = [
     { path: pagePaths.users, label: 'Users', search: usersSearch },
+    showServiceAccounts && { path: pagePaths.serviceAccounts, label: 'Service accounts' },
     showGroups && { path: pagePaths.groups, label: 'Groups' },
     showJoinRequests && {
       path: pagePaths.joinRequests,

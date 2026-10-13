@@ -35,7 +35,7 @@ func newPending() (*pki.Pending, *fakeClock) {
 }
 
 func annDownload() pki.Download {
-	return pki.Download{UserPK: 1, Username: "ann", Filename: "ann.p12", Data: []byte("secret")}
+	return pki.Download{UserPK: 1, Username: "ann", Downloader: "ann", Filename: "ann.p12", Data: []byte("secret")}
 }
 
 func TestPending_Put(t *testing.T) {
@@ -68,11 +68,30 @@ func TestPending_Take(t *testing.T) {
 	}
 }
 
+func TestPending_Take_downloader(t *testing.T) {
+	t.Parallel()
+	p, _ := newPending()
+	// An operator issued the key for the service account svc.
+	d := pki.Download{UserPK: 2, Username: "svc", Downloader: "ann", Data: []byte("secret")}
+	if _, err := p.Put("ab", d); err != nil {
+		t.Fatal(err)
+	}
+	if p.Has("ab", "svc") {
+		t.Error("Has for the certificate's user, want only for its downloader")
+	}
+	if _, ok := p.Take("ab", "svc"); ok {
+		t.Error("Take by the certificate's user succeeded")
+	}
+	if got, ok := p.Take("ab", "ann"); !ok || got.Username != "svc" {
+		t.Errorf("Take by the downloader = %+v, %v, want the download", got, ok)
+	}
+}
+
 func TestPending_Take_expired(t *testing.T) {
 	t.Parallel()
 	p, clock := newPending()
 	data := []byte("secret")
-	if _, err := p.Put("ab", pki.Download{Username: "ann", Data: data}); err != nil {
+	if _, err := p.Put("ab", pki.Download{Username: "ann", Downloader: "ann", Data: data}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(pki.DownloadTTL)
@@ -114,7 +133,7 @@ func TestPending_Prune(t *testing.T) {
 	t.Parallel()
 	p, clock := newPending()
 	data := []byte("secret")
-	if _, err := p.Put("ab", pki.Download{Username: "ann", Data: data}); err != nil {
+	if _, err := p.Put("ab", pki.Download{Username: "ann", Downloader: "ann", Data: data}); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(pki.DownloadTTL - time.Second)
@@ -148,7 +167,7 @@ func TestPending_Run(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := pki.NewPending(time.Now)
 		data := []byte("secret")
-		if _, err := p.Put("ab", pki.Download{Username: "ann", Data: data}); err != nil {
+		if _, err := p.Put("ab", pki.Download{Username: "ann", Downloader: "ann", Data: data}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(t.Context())

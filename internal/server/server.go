@@ -57,6 +57,11 @@ type UserService interface {
 	ListGroups(ctx context.Context, p authentik.ListGroupsParams) (*authentik.GroupList, error)
 	GetGroup(ctx context.Context, pk string) (*authentik.Group, error)
 	UpdateGroup(ctx context.Context, pk string, req authentik.UpdateGroupRequest) (*authentik.Group, error)
+	ListTokens(ctx context.Context, userPK int, username string) ([]authentik.Token, error)
+	GetToken(ctx context.Context, identifier string) (*authentik.Token, error)
+	CreateToken(ctx context.Context, req authentik.CreateTokenRequest) (*authentik.Token, error)
+	TokenKey(ctx context.Context, identifier string) (string, error)
+	DeleteToken(ctx context.Context, identifier string) error
 }
 
 var _ UserService = (*authentik.Client)(nil)
@@ -225,14 +230,24 @@ func New(d Deps) *Server {
 	api.HandleFunc("POST /api/join-requests/{id}/reject", s.rejectJoinRequest)
 	api.HandleFunc("DELETE /api/join-requests/{id}", s.withdrawJoinRequest)
 	api.Handle("GET /api/audit", s.requireAdmin(s.listAudit))
-	api.HandleFunc("GET /api/users", s.listUsers)
-	api.HandleFunc("POST /api/users", s.createUser)
+	api.HandleFunc("GET /api/users", s.listAccounts(userAccounts))
+	api.HandleFunc("POST /api/users", s.createAccount(userAccounts))
 	api.HandleFunc("GET /api/users/paths", s.listUserPaths)
-	api.HandleFunc("GET /api/users/{id}", s.getUser)
-	api.HandleFunc("PATCH /api/users/{id}", s.updateUser)
-	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteUser))
-	api.HandleFunc("PUT /api/users/{id}/groups", s.setUserGroups)
+	api.HandleFunc("GET /api/users/{id}", s.getAccount(userAccounts))
+	api.HandleFunc("PATCH /api/users/{id}", s.updateAccount(userAccounts))
+	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteAccount(userAccounts)))
+	api.HandleFunc("PUT /api/users/{id}/groups", s.setAccountGroups(userAccounts))
 	api.HandleFunc("POST /api/users/{id}/recovery-email", s.sendRecoveryEmail)
+	// Service accounts follow the access rules of users; see serviceaccounts.go.
+	api.HandleFunc("GET /api/service-accounts", s.listAccounts(serviceAccounts))
+	api.HandleFunc("POST /api/service-accounts", s.createAccount(serviceAccounts))
+	api.HandleFunc("GET /api/service-accounts/{id}", s.getAccount(serviceAccounts))
+	api.HandleFunc("PATCH /api/service-accounts/{id}", s.updateAccount(serviceAccounts))
+	api.Handle("DELETE /api/service-accounts/{id}", s.requireAdmin(s.deleteAccount(serviceAccounts)))
+	api.HandleFunc("PUT /api/service-accounts/{id}/groups", s.setAccountGroups(serviceAccounts))
+	api.HandleFunc("GET /api/service-accounts/{id}/tokens", s.listServiceAccountTokens)
+	api.HandleFunc("POST /api/service-accounts/{id}/tokens", s.createServiceAccountToken)
+	api.HandleFunc("DELETE /api/service-accounts/{id}/tokens/{identifier}", s.deleteServiceAccountToken)
 	// Users issue certificates for their own account only and download the
 	// generated key once; see certificates.go. Operators who may change a
 	// user may list and revoke the user's certificates.
@@ -240,7 +255,13 @@ func New(d Deps) *Server {
 	api.Handle("POST /api/certificates/mine", s.requireCertificates(s.issueCertificate))
 	api.Handle("GET /api/certificates/mine/{serial}/download", s.requireCertificates(s.downloadCertificateKey))
 	api.Handle("GET /api/users/{id}/certificates", s.requireCertificates(s.listUserCertificates))
-	api.Handle("POST /api/users/{id}/certificates/{serial}/revoke", s.requireCertificates(s.revokeCertificate))
+	api.Handle("POST /api/users/{id}/certificates/{serial}/revoke",
+		s.requireCertificates(s.revokeAccountCertificate(userAccounts)))
+	// Operators who may change a service account also issue its certificates.
+	api.Handle("GET /api/service-accounts/{id}/certificates", s.requireCertificates(s.listServiceAccountCertificates))
+	api.Handle("POST /api/service-accounts/{id}/certificates", s.requireCertificates(s.issueServiceAccountCertificate))
+	api.Handle("POST /api/service-accounts/{id}/certificates/{serial}/revoke",
+		s.requireCertificates(s.revokeAccountCertificate(serviceAccounts)))
 	// Access administrators may list, download and revoke the certificates of
 	// all users, including deleted ones.
 	api.Handle("GET /api/certificates", s.requireCertificates(s.requireAdmin(s.listCertificates).ServeHTTP))

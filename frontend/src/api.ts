@@ -115,6 +115,11 @@ export type AuditAction =
   | 'user.certificate_issued'
   | 'user.certificate_key_downloaded'
   | 'user.certificate_revoked'
+  | 'service_account.created'
+  | 'service_account.updated'
+  | 'service_account.deleted'
+  | 'service_account.token_created'
+  | 'service_account.token_deleted'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -202,6 +207,36 @@ export interface IssuedCertificate {
   download_expires_at?: string
 }
 
+/** What a service account token is for: the authentik API, or a password for applications. */
+export type TokenIntent = 'api' | 'app_password'
+
+/** A token of a service account; its key is only shown when it is created. */
+export interface Token {
+  identifier: string
+  intent: TokenIntent
+  description: string
+  /** Primary key of the account the token authenticates as. */
+  user: number
+  /** False for a token that never expires. */
+  expiring: boolean
+  expires: string | null
+  /** Set for tokens authentik manages itself, which cannot be deleted here. */
+  managed: string | null
+}
+
+export interface CreateTokenInput {
+  intent: TokenIntent
+  description: string
+  /** When the token expires (ISO 8601); null for a token that never expires. */
+  expires: string | null
+}
+
+/** A new token with its key, which is not shown again. */
+export interface CreatedToken {
+  token: Token
+  key: string
+}
+
 /** Error returned by the backend; `fields` holds per-field validation messages. */
 export class ApiError extends Error {
   readonly status: number
@@ -274,15 +309,18 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
   return res
 }
 
-export function listUsers(params: {
+/** Filters and pages a list of users or service accounts. */
+export interface AccountListParams {
   search: string
   page: number
   pageSize: number
-  /** Only users in this folder or one of its subfolders. */
+  /** Only accounts in this folder or one of its subfolders. */
   path?: string
-  /** Only active (true) or only inactive (false) users; all when omitted. */
+  /** Only active (true) or only inactive (false) accounts; all when omitted. */
   active?: boolean
-}) {
+}
+
+function accountListQuery(params: AccountListParams) {
   const q = new URLSearchParams({
     page: String(params.page),
     page_size: String(params.pageSize),
@@ -290,8 +328,15 @@ export function listUsers(params: {
   if (params.search) q.set('search', params.search)
   if (params.path) q.set('path_startswith', params.path)
   if (params.active !== undefined) q.set('is_active', String(params.active))
-  return request<UserList>('GET', `/api/users?${q}`)
+  return q
 }
+
+export const listUsers = (params: AccountListParams) =>
+  request<UserList>('GET', `/api/users?${accountListQuery(params)}`)
+
+/** Loads a page of the service accounts the operator may see. */
+export const listServiceAccounts = (params: AccountListParams) =>
+  request<UserList>('GET', `/api/service-accounts?${accountListQuery(params)}`)
 
 /** Every distinct user path (folder), e.g. "users" or "users/staff". */
 export const listUserPaths = () =>
@@ -421,6 +466,53 @@ export const sendRecoveryEmail = (id: number) =>
 
 export const deleteUser = (id: number) => request<void>('DELETE', `/api/users/${id}`)
 
+/** Creates a service account; it has no password, only tokens and certificates. */
+export const createServiceAccount = (input: CreateUserInput) =>
+  request<User>('POST', '/api/service-accounts', input)
+
+export const updateServiceAccount = (id: number, input: Partial<UserInput>) =>
+  request<User>('PATCH', `/api/service-accounts/${id}`, input)
+
+/** Like setUserGroups, for a service account. */
+export const setServiceAccountGroups = (id: number, groups: string[], primaryGroup?: string) =>
+  request<User>('PUT', `/api/service-accounts/${id}/groups`, {
+    groups,
+    primary_group: primaryGroup,
+  })
+
+export const deleteServiceAccount = (id: number) =>
+  request<void>('DELETE', `/api/service-accounts/${id}`)
+
+/** The tokens of a service account, without their keys. */
+export const listTokens = (id: number) =>
+  request<{ tokens: Token[] }>('GET', `/api/service-accounts/${id}/tokens`).then(
+    (res) => res.tokens,
+  )
+
+/** Creates a token for a service account; the result holds its key, which is not shown again. */
+export const createToken = (id: number, input: CreateTokenInput) =>
+  request<CreatedToken>('POST', `/api/service-accounts/${id}/tokens`, input)
+
+export const deleteToken = (id: number, identifier: string) =>
+  request<void>('DELETE', `/api/service-accounts/${id}/tokens/${encodeURIComponent(identifier)}`)
+
+/** The certificates of a service account; `downloadable` while the signed-in operator can download a key. */
+export const listServiceAccountCertificates = (id: number) =>
+  request<{ certificates: OwnCertificate[] }>(
+    'GET',
+    `/api/service-accounts/${id}/certificates`,
+  ).then((res) => res.certificates)
+
+/** Issues a certificate for a service account; the issuing operator downloads a generated key. */
+export const issueServiceAccountCertificate = (id: number, input: IssueCertificateInput) =>
+  request<IssuedCertificate>('POST', `/api/service-accounts/${id}/certificates`, input)
+
+export const revokeServiceAccountCertificate = (id: number, serial: string) =>
+  request<Certificate>(
+    'POST',
+    `/api/service-accounts/${id}/certificates/${encodeURIComponent(serial)}/revoke`,
+  )
+
 /** The signed-in user's own certificates, newest first. */
 export const listMyCertificates = () =>
   request<{ certificates: OwnCertificate[] }>('GET', '/api/certificates/mine').then(
@@ -431,7 +523,10 @@ export const listMyCertificates = () =>
 export const issueCertificate = (input: IssueCertificateInput) =>
   request<IssuedCertificate>('POST', '/api/certificates/mine', input)
 
-/** Downloads the generated key of an own certificate; the server forgets it afterwards. */
+/**
+ * Downloads the generated key of a certificate the signed-in user requested, for themselves or a
+ * service account; the server forgets it afterwards.
+ */
 export const downloadCertificateKey = (serial: string) =>
   send('GET', `/api/certificates/mine/${encodeURIComponent(serial)}/download`).then((res) =>
     res.blob(),

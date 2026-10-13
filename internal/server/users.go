@@ -24,6 +24,44 @@ const (
 	maxPageSize     = 100
 )
 
+// accountKind is a type of authentik account the application manages, with
+// the audit actions recorded for it. Internal users and service accounts share
+// the access rules and most handlers; other account types are never managed.
+type accountKind struct {
+	typ authentik.UserType
+	// noun names the accounts in messages, e.g. "user".
+	noun string
+	// typeError is the validation message for a request naming another type.
+	typeError                 string
+	created, updated, deleted audit.Action
+}
+
+// The managed account kinds.
+var (
+	userAccounts = accountKind{
+		typ:       authentik.UserTypeInternal,
+		noun:      "user",
+		typeError: "Only internal users can be managed.",
+		created:   audit.ActionUserCreated,
+		updated:   audit.ActionUserUpdated,
+		deleted:   audit.ActionUserDeleted,
+	}
+	serviceAccounts = accountKind{
+		typ:       authentik.UserTypeServiceAccount,
+		noun:      "service account",
+		typeError: "The type of a service account cannot be changed.",
+		created:   audit.ActionServiceAccountCreated,
+		updated:   audit.ActionServiceAccountUpdated,
+		deleted:   audit.ActionServiceAccountDeleted,
+	}
+)
+
+// seesOwnAccount reports whether operators see their own account of this kind
+// even outside their scope; only internal users sign in.
+func (k accountKind) seesOwnAccount() bool {
+	return k.typ == authentik.UserTypeInternal
+}
+
 // primaryGroupAttribute is the authentik user attribute holding the primary key
 // of the user's primary group. It holds the key rather than the name, so
 // renaming the group keeps it.
@@ -121,15 +159,23 @@ func parsePaging(w http.ResponseWriter, q url.Values) (page, size int, ok bool) 
 	return page, size, true
 }
 
-func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
+// listAccounts returns a handler listing the accounts of kind k the operator
+// may see, filtered and paged by the query parameters.
+func (s *Server) listAccounts(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.listAccountsOf(w, r, k)
+	}
+}
+
+func (s *Server) listAccountsOf(w http.ResponseWriter, r *http.Request, k accountKind) {
 	q := r.URL.Query()
 	params := authentik.ListUsersParams{
 		Search:         q.Get("search"),
 		Ordering:       q.Get("ordering"),
 		Path:           q.Get("path"),
 		PathStartsWith: q.Get("path_startswith"),
-		// Only internal users are managed here; service accounts and external users are hidden.
-		Type: []authentik.UserType{authentik.UserTypeInternal},
+		// Only accounts of kind k are listed; other types are hidden.
+		Type: []authentik.UserType{k.typ},
 	}
 	var ok bool
 	if params.Page, params.PageSize, ok = parsePaging(w, q); !ok {
@@ -155,34 +201,38 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Defense in depth: authentik silently ignores filters it does not know,
-		// so drop anything not internal even if the filter was not applied.
-		list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool { return u.Type != authentik.UserTypeInternal })
+		// so drop anything of another type even if the filter was not applied.
+		list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool { return u.Type != k.typ })
 		writeJSON(w, http.StatusOK, newUserPage(list, scope))
 		return
 	}
 
 	// Every user sees their own account, even outside their scope.
-	self, err := s.findActor(r, params)
-	if err != nil {
-		s.writeUpstreamError(w, r, err)
-		return
-	}
-	if self != nil && scope.Allows(self) {
-		self = nil // listed with the others
+	var self *authentik.User
+	if k.seesOwnAccount() {
+		var err error
+		if self, err = s.findActor(r, params); err != nil {
+			s.writeUpstreamError(w, r, err)
+			return
+		}
+		if self != nil && scope.Allows(self) {
+			self = nil // listed with the others
+		}
 	}
 	list := &authentik.UserList{Results: []authentik.User{}}
 	if !scope.Empty() {
 		scoped := params
 		scoped.GroupsByName = scope.Groups
 		scoped.IsSuperuser = new(false)
+		var err error
 		if list, err = s.users.ListUsers(r.Context(), scoped); err != nil {
 			s.writeUpstreamError(w, r, err)
 			return
 		}
 		// Defense in depth: authentik silently ignores filters it does not know,
-		// so drop anything outside the scope or not internal even if the filters were not applied.
+		// so drop anything outside the scope or of another type even if the filters were not applied.
 		list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
-			return u.Type != authentik.UserTypeInternal || !scope.Allows(&u)
+			return u.Type != k.typ || !scope.Allows(&u)
 		})
 	}
 	if self != nil {
@@ -232,12 +282,12 @@ func (s *Server) findActor(r *http.Request, params authentik.ListUsersParams) (*
 	return &list.Results[i], nil
 }
 
-// visibleUser loads the user with the {id} path value and checks that the
-// operator may see it: users in their scope, and their own account. Only
-// internal users are managed. Other users are reported as not found so their
-// existence is not revealed. It returns the operator's scope too, and writes
-// the error response when it returns false.
-func (s *Server) visibleUser(w http.ResponseWriter, r *http.Request) (*authentik.User, access.Scope, bool) {
+// visibleAccount loads the account of kind k with the {id} path value and
+// checks that the operator may see it: accounts in their scope, and their own
+// account. Accounts of other types and outside the scope are reported as not
+// found so their existence is not revealed. It returns the operator's scope
+// too, and writes the error response when it returns false.
+func (s *Server) visibleAccount(w http.ResponseWriter, r *http.Request, k accountKind) (*authentik.User, access.Scope, bool) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return nil, access.Scope{}, false
@@ -251,9 +301,10 @@ func (s *Server) visibleUser(w http.ResponseWriter, r *http.Request) (*authentik
 	if !ok {
 		return nil, access.Scope{}, false
 	}
-	if user.Type != authentik.UserTypeInternal || !scope.Allows(user) && !isActor(r, user) {
+	isOwn := k.seesOwnAccount() && isActor(r, user)
+	if user.Type != k.typ || !scope.Allows(user) && !isOwn {
 		s.recordUser(r, audit.ActionAccessDenied, user, nil)
-		writeError(w, http.StatusNotFound, "user not found", nil)
+		writeError(w, http.StatusNotFound, k.noun+" not found", nil)
 		return nil, access.Scope{}, false
 	}
 	return user, scope, true
@@ -265,11 +316,16 @@ func isActor(r *http.Request, u *authentik.User) bool {
 	return username != "" && u.Username == username
 }
 
-// changeableUser is visibleUser for the routes that change the user: it also
-// checks that the operator may change them (see mayChange), and answers 403
-// otherwise, since the operator may see the user.
+// changeableUser is changeableAccount for internal users.
 func (s *Server) changeableUser(w http.ResponseWriter, r *http.Request) (*authentik.User, access.Scope, bool) {
-	user, scope, ok := s.visibleUser(w, r)
+	return s.changeableAccount(w, r, userAccounts)
+}
+
+// changeableAccount is visibleAccount for the routes that change the account:
+// it also checks that the operator may change it (see mayChange), and answers
+// 403 otherwise, since the operator may see the account.
+func (s *Server) changeableAccount(w http.ResponseWriter, r *http.Request, k accountKind) (*authentik.User, access.Scope, bool) {
+	user, scope, ok := s.visibleAccount(w, r, k)
 	if !ok {
 		return nil, access.Scope{}, false
 	}
@@ -282,7 +338,7 @@ func (s *Server) changeableUser(w http.ResponseWriter, r *http.Request) (*authen
 		primary := primaryGroupName(user)
 		s.recordUser(r, audit.ActionAccessDenied, user, map[string]string{"primary_group": primary})
 		writeError(w, http.StatusForbidden,
-			fmt.Sprintf("only the operators managing the primary group %q may change this user", primary), nil)
+			fmt.Sprintf("only the operators managing the primary group %q may change this %s", primary, k.noun), nil)
 		return nil, access.Scope{}, false
 	}
 	return user, scope, true
@@ -306,15 +362,19 @@ func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string][]string{"paths": paths})
 }
 
-func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
-	user, scope, ok := s.visibleUser(w, r)
-	if !ok {
-		return
+// getAccount returns a handler serving the account of kind k with the {id} path value.
+func (s *Server) getAccount(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, scope, ok := s.visibleAccount(w, r, k)
+		if !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, newUserView(user, scope))
 	}
-	writeJSON(w, http.StatusOK, newUserView(user, scope))
 }
 
-// createUserInput is the body of POST /api/users. It is decoded separately from
+// createUserInput is the body of POST /api/users and POST
+// /api/service-accounts. It is decoded separately from
 // authentik.CreateUserRequest so clients cannot pass arbitrary group keys.
 type createUserInput struct {
 	Username string             `json:"username"`
@@ -329,16 +389,17 @@ type createUserInput struct {
 	Group string `json:"group"`
 }
 
-// validate checks the input against the operator's scope and returns the
-// authentik request, or the validation messages per field. in.Group must be trimmed.
-func (in createUserInput) validate(scope access.Scope) (authentik.CreateUserRequest, map[string][]string) {
+// validate checks the input for an account of kind k against the operator's
+// scope and returns the authentik request, or the validation messages per
+// field. in.Group must be trimmed.
+func (in createUserInput) validate(k accountKind, scope access.Scope) (authentik.CreateUserRequest, map[string][]string) {
 	req := authentik.CreateUserRequest{
 		Username: strings.TrimSpace(in.Username),
 		Name:     strings.TrimSpace(in.Name),
 		Email:    in.Email,
 		IsActive: in.IsActive,
 		Path:     in.Path,
-		Type:     authentik.UserTypeInternal,
+		Type:     k.typ,
 	}
 	fields := map[string][]string{}
 	if req.Username == "" {
@@ -347,8 +408,8 @@ func (in createUserInput) validate(scope access.Scope) (authentik.CreateUserRequ
 	if req.Name == "" {
 		fields["name"] = []string{"Name is required."}
 	}
-	if in.Type != "" && in.Type != authentik.UserTypeInternal {
-		fields["type"] = []string{"Only internal users can be managed."}
+	if in.Type != "" && in.Type != k.typ {
+		fields["type"] = []string{k.typeError}
 	}
 	switch {
 	case in.Group == "" && !scope.All:
@@ -359,7 +420,14 @@ func (in createUserInput) validate(scope access.Scope) (authentik.CreateUserRequ
 	return req, fields
 }
 
-func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
+// createAccount returns a handler creating an account of kind k.
+func (s *Server) createAccount(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.createAccountOf(w, r, k)
+	}
+}
+
+func (s *Server) createAccountOf(w http.ResponseWriter, r *http.Request, k accountKind) {
 	scope, ok := s.scope(w, r)
 	if !ok {
 		return
@@ -373,7 +441,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Group = strings.TrimSpace(in.Group)
-	req, fields := in.validate(scope)
+	req, fields := in.validate(k, scope)
 	if len(fields) > 0 {
 		writeError(w, http.StatusBadRequest, "validation failed", fields)
 		return
@@ -397,7 +465,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 	if in.Group != "" {
 		details["group"] = in.Group
 	}
-	s.recordUser(r, audit.ActionUserCreated, user, details)
+	s.recordUser(r, k.created, user, details)
 	writeJSON(w, http.StatusCreated, newUserView(user, scope))
 }
 
@@ -422,7 +490,8 @@ func (s *Server) findGroup(w http.ResponseWriter, r *http.Request, field, name s
 	return group, true
 }
 
-// updateUserInput is the body of PATCH /api/users/{id}; nil fields are left
+// updateUserInput is the body of PATCH /api/users/{id} and PATCH
+// /api/service-accounts/{id}; nil fields are left
 // unchanged. It is decoded separately from authentik.UpdateUserRequest so
 // clients cannot replace the user's attributes.
 type updateUserInput struct {
@@ -445,8 +514,16 @@ func (in updateUserInput) request() authentik.UpdateUserRequest {
 	}
 }
 
-func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
-	target, scope, ok := s.changeableUser(w, r)
+// updateAccount returns a handler applying a partial update to the account of
+// kind k with the {id} path value.
+func (s *Server) updateAccount(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.updateAccountOf(w, r, k)
+	}
+}
+
+func (s *Server) updateAccountOf(w http.ResponseWriter, r *http.Request, k accountKind) {
+	target, scope, ok := s.changeableAccount(w, r, k)
 	if !ok {
 		return
 	}
@@ -455,9 +532,9 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	// Changing the type would turn the user into one this application no longer manages.
-	if in.Type != nil && *in.Type != authentik.UserTypeInternal {
-		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"type": {"Only internal users can be managed."}})
+	// Changing the type would turn the account into one these routes no longer manage.
+	if in.Type != nil && *in.Type != k.typ {
+		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"type": {k.typeError}})
 		return
 	}
 
@@ -474,7 +551,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if req.IsActive != nil {
 		details["is_active"] = strconv.FormatBool(*req.IsActive)
 	}
-	s.recordUser(r, audit.ActionUserUpdated, user, details)
+	s.recordUser(r, k.updated, user, details)
 
 	if reason := certificateRevocationReason(target, req); reason != "" {
 		// The user is changed already, so finish revoking even when the client goes away.
@@ -485,7 +562,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 				slog.Any("error", err),
 			)
 			writeError(w, http.StatusInternalServerError,
-				"the user was updated, but revoking their certificates failed; revoke them manually", nil)
+				fmt.Sprintf("the %s was updated, but revoking their certificates failed; revoke them manually", k.noun), nil)
 			return
 		}
 	}
@@ -515,13 +592,21 @@ type userGroupsInput struct {
 	PrimaryGroup *string `json:"primary_group"`
 }
 
-// setUserGroups replaces the groups of a user with the names in the body and
-// sets their primary group. Restricted operators may only add or remove their
+// setAccountGroups returns a handler replacing the groups of the account of
+// kind k with the {id} path value; see setAccountGroupsOf.
+func (s *Server) setAccountGroups(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.setAccountGroupsOf(w, r, k)
+	}
+}
+
+// setAccountGroupsOf replaces the groups of an account with the names in the
+// body and sets its primary group. Restricted operators may only add or remove their
 // target groups, and the user must stay in one of them so the operator does
 // not lose access to it. The user's primary group cannot be removed unless the
 // same request chooses another one.
-func (s *Server) setUserGroups(w http.ResponseWriter, r *http.Request) {
-	user, scope, ok := s.changeableUser(w, r)
+func (s *Server) setAccountGroupsOf(w http.ResponseWriter, r *http.Request, k accountKind) {
+	user, scope, ok := s.changeableAccount(w, r, k)
 	if !ok {
 		return
 	}
@@ -684,8 +769,16 @@ func (s *Server) setPrimaryGroup(w http.ResponseWriter, r *http.Request, user *a
 	return true
 }
 
-func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
-	target, _, ok := s.changeableUser(w, r)
+// deleteAccount returns a handler deleting the account of kind k with the {id}
+// path value, after revoking its certificates.
+func (s *Server) deleteAccount(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.deleteAccountOf(w, r, k)
+	}
+}
+
+func (s *Server) deleteAccountOf(w http.ResponseWriter, r *http.Request, k accountKind) {
+	target, _, ok := s.changeableAccount(w, r, k)
 	if !ok {
 		return
 	}
@@ -697,14 +790,15 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 				slog.Any("error", err),
 			)
 		}
-		writeError(w, http.StatusInternalServerError, "revoking the user's certificates failed; the user was not deleted", nil)
+		writeError(w, http.StatusInternalServerError,
+			fmt.Sprintf("revoking the %[1]s's certificates failed; the %[1]s was not deleted", k.noun), nil)
 		return
 	}
 	if err := s.users.DeleteUser(r.Context(), target.PK); err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	s.recordUser(r, audit.ActionUserDeleted, target, nil)
+	s.recordUser(r, k.deleted, target, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

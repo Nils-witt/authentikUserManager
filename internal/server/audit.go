@@ -40,11 +40,15 @@ func (s *Server) record(r *http.Request, action audit.Action, target string, det
 }
 
 // recordUser adds an entry about user to the audit log; details may be nil.
+// Entries about service accounts carry their type.
 func (s *Server) recordUser(r *http.Request, action audit.Action, user *authentik.User, details map[string]string) {
 	if details == nil {
 		details = map[string]string{}
 	}
 	details["user_id"] = strconv.Itoa(user.PK)
+	if user.Type == authentik.UserTypeServiceAccount {
+		details["type"] = string(user.Type)
+	}
 	s.record(r, action, user.Username, details)
 }
 

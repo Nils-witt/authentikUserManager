@@ -25,12 +25,20 @@ type Mode = 'generate' | 'csr'
 type Format = 'pkcs12' | 'pem'
 
 interface IssueCertificateFormProps {
+  /** Username of the service account the certificate is for; the signed-in user's own when undefined. */
+  owner?: string
+  /** Issues the certificate; defaults to one for the signed-in user. */
+  issue?: (input: IssueCertificateInput) => Promise<IssuedCertificate>
   /** Called once a certificate was issued, with the format a generated key is downloaded in. */
   onIssued: (issued: IssuedCertificate, format: Format | null) => void
 }
 
-/** Issues a certificate for the signed-in user, for a generated key or for the key of a CSR. */
-export function IssueCertificateForm({ onIssued }: IssueCertificateFormProps) {
+/** Issues a certificate for the signed-in user or a service account, for a generated key or for the key of a CSR. */
+export function IssueCertificateForm({
+  owner,
+  issue = api.issueCertificate,
+  onIssued,
+}: IssueCertificateFormProps) {
   const [mode, setMode] = useState<Mode>('generate')
   const [format, setFormat] = useState<Format>('pkcs12')
   const [password, setPassword] = useState('')
@@ -66,7 +74,7 @@ export function IssueCertificateForm({ onIssued }: IssueCertificateFormProps) {
     setError(null)
     setFields({})
     try {
-      const issued = await api.issueCertificate(input)
+      const issued = await issue(input)
       setPassword('')
       setConfirmation('')
       setCsr('')
@@ -95,8 +103,8 @@ export function IssueCertificateForm({ onIssued }: IssueCertificateFormProps) {
         {mode === 'generate' ? (
           <>
             <Typography variant="body2" color="text.secondary">
-              A new key is generated for you. You can download it once, within 15 minutes; the
-              server forgets it afterwards.
+              A new key is generated for {owner ?? 'you'}. You can download it once, within 15
+              minutes; the server forgets it afterwards.
             </Typography>
             <RadioGroup
               value={format}
@@ -148,7 +156,7 @@ export function IssueCertificateForm({ onIssued }: IssueCertificateFormProps) {
             <Typography variant="body2" color="text.secondary">
               Keep your own key and paste its certificate signing request, e.g. from{' '}
               <code>openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes</code>. The
-              certificate is issued for your account whatever subject the CSR asks for.
+              certificate is issued for {owner ?? 'your account'} whatever subject the CSR asks for.
             </Typography>
             <TextField
               label="Certificate signing request (PEM)"

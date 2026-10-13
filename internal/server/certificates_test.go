@@ -475,7 +475,7 @@ func TestCertificates_noIssuingForOthers(t *testing.T) {
 func TestCertificates_downloadOtherUsersKey(t *testing.T) {
 	t.Parallel()
 	env := newCertServer(t, ownAccountUsers(), "admins")
-	if _, err := env.downloads.Put("ab", pki.Download{Username: "bob", Data: []byte("secret")}); err != nil {
+	if _, err := env.downloads.Put("ab", pki.Download{Username: "bob", Downloader: "bob", Data: []byte("secret")}); err != nil {
 		t.Fatal(err)
 	}
 	if rec := do(t, env.srv, http.MethodGet, "/api/certificates/mine/ab/download", ""); rec.Code != http.StatusGone {
@@ -802,7 +802,7 @@ func TestCertificates_operatorListAndRevoke(t *testing.T) {
 }
 
 func put(p *pki.Pending, serial, username string) error {
-	_, err := p.Put(serial, pki.Download{Username: username, Data: []byte("secret")})
+	_, err := p.Put(serial, pki.Download{Username: username, Downloader: username, Data: []byte("secret")})
 	if err != nil {
 		return fmt.Errorf("put: %w", err)
 	}

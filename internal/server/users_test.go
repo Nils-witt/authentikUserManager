@@ -67,7 +67,18 @@ type fakeUsers struct {
 	mutated bool
 	// recoveryStage records the email stage passed to SendRecoveryEmail.
 	recoveryStage string
-	err           error
+	// tokens are the tokens of all users, as authentik holds them.
+	tokens []authentik.Token
+	// createdToken records the request passed to CreateToken.
+	createdToken authentik.CreateTokenRequest
+	// tokenOwner, when non-zero, is the user CreateToken assigns every token
+	// to, as authentik does for API users who are no superusers.
+	tokenOwner int
+	// deletedTokens records the identifiers passed to DeleteToken, in order.
+	deletedTokens []string
+	// tokenKeyErr, when set, fails TokenKey only.
+	tokenKeyErr error
+	err         error
 }
 
 func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*authentik.UserList, error) {
@@ -160,7 +171,7 @@ func (f *fakeUsers) CreateUser(_ context.Context, req authentik.CreateUserReques
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &authentik.User{PK: 9, Username: req.Username, Name: req.Name}, nil
+	return &authentik.User{PK: 9, Username: req.Username, Name: req.Name, Type: req.Type}, nil
 }
 
 func (f *fakeUsers) UpdateUser(_ context.Context, id int, req authentik.UpdateUserRequest) (*authentik.User, error) {
@@ -195,6 +206,66 @@ func (f *fakeUsers) SendRecoveryEmail(_ context.Context, _ int, emailStage strin
 	f.mutated = true
 	f.recoveryStage = emailStage
 	return f.err
+}
+
+func (f *fakeUsers) ListTokens(_ context.Context, userPK int, _ string) ([]authentik.Token, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := []authentik.Token{}
+	for _, tok := range f.tokens {
+		if tok.UserPK == userPK {
+			out = append(out, tok)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeUsers) GetToken(_ context.Context, identifier string) (*authentik.Token, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	i := slices.IndexFunc(f.tokens, func(tok authentik.Token) bool { return tok.Identifier == identifier })
+	if i < 0 {
+		return nil, authentik.ErrNotFound
+	}
+	tok := f.tokens[i]
+	return &tok, nil
+}
+
+func (f *fakeUsers) CreateToken(_ context.Context, req authentik.CreateTokenRequest) (*authentik.Token, error) {
+	f.mutated = true
+	f.createdToken = req
+	if f.err != nil {
+		return nil, f.err
+	}
+	tok := authentik.Token{
+		Identifier:  req.Identifier,
+		Intent:      req.Intent,
+		Description: req.Description,
+		UserPK:      cmp.Or(f.tokenOwner, req.UserPK),
+		Expiring:    req.Expiring,
+		Expires:     req.Expires,
+	}
+	f.tokens = append(f.tokens, tok)
+	return &tok, nil
+}
+
+func (f *fakeUsers) TokenKey(context.Context, string) (string, error) {
+	if err := cmp.Or(f.tokenKeyErr, f.err); err != nil {
+		return "", err
+	}
+	return "s3cret-key", nil
+}
+
+func (f *fakeUsers) DeleteToken(_ context.Context, identifier string) error {
+	f.mutated = true
+	f.deletedTokens = append(f.deletedTokens, identifier)
+	if f.err != nil {
+		return f.err
+	}
+	f.tokens = slices.DeleteFunc(f.tokens, func(tok authentik.Token) bool { return tok.Identifier == identifier })
+	return nil
 }
 
 func do(t *testing.T, h http.Handler, method, target, body string) *httptest.ResponseRecorder {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import * as api from '../api'
-import type { UserList } from '../api'
+import type { AccountListParams, UserList } from '../api'
 import { errorMessage } from '../errors'
 import type { StatusFilter } from './useUserFilters'
 
@@ -14,8 +14,15 @@ interface UserListParams {
   page: number
 }
 
-/** Loads one page of users; bump `version` to refetch it after a mutation. */
-export function useUserList({ query, folder, status, page }: UserListParams, version: number) {
+/**
+ * Loads one page of users, or of service accounts with `list`; bump `version` to refetch it after
+ * a mutation. `list` must be a stable function, such as one exported by the api module.
+ */
+export function useUserList(
+  { query, folder, status, page }: UserListParams,
+  version: number,
+  list: (params: AccountListParams) => Promise<UserList> = api.listUsers,
+) {
   const [data, setData] = useState<UserList | null>(null)
   const [error, setError] = useState<string | null>(null)
   const requestKey = `${query}|${folder}|${status}|${page}|${version}`
@@ -23,17 +30,16 @@ export function useUserList({ query, folder, status, page }: UserListParams, ver
 
   useEffect(() => {
     let cancelled = false
-    api
-      .listUsers({
-        search: query,
-        page,
-        pageSize: PAGE_SIZE,
-        path: folder ?? undefined,
-        active: status === 'all' ? undefined : status === 'active',
-      })
-      .then((list) => {
+    list({
+      search: query,
+      page,
+      pageSize: PAGE_SIZE,
+      path: folder ?? undefined,
+      active: status === 'all' ? undefined : status === 'active',
+    })
+      .then((result) => {
         if (cancelled) return
-        setData(list)
+        setData(result)
         setError(null)
       })
       .catch((err: unknown) => {
@@ -45,7 +51,7 @@ export function useUserList({ query, folder, status, page }: UserListParams, ver
     return () => {
       cancelled = true
     }
-  }, [query, folder, status, page, requestKey])
+  }, [list, query, folder, status, page, requestKey])
 
   return { data, error, loading: loadedKey !== requestKey }
 }

@@ -5,14 +5,14 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 - `cmd/authentik-manager`: Go API server. It proxies a narrow, validated set of user operations to the authentik API (`/api/v3/core/users/`). It serves the frontend, which is embedded into the binary.
 - `internal/auth`: OIDC login against authentik (authorization code + PKCE) with server-side sessions.
-- `internal/authentik`: a minimal typed client for authentik's user endpoints.
+- `internal/authentik`: a minimal typed client for authentik's user, group and token endpoints.
 - `internal/server`: HTTP handlers, input validation and error mapping.
 - `internal/web`: embeds the built frontend (`internal/web/dist`, written by Vite).
 - `frontend/`: React + TypeScript (Vite) UI.
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Operators also manage [service accounts](#service-accounts) with their tokens and certificates. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -37,7 +37,7 @@ Set these environment variables (see `.env.example`):
 | `CERT_VALIDITY_DAYS` | no    | `365`            | Days client certificates are valid (at most 3650, and never beyond the CA's expiry) |
 | `CERT_CRL_URL`    | no       |                  | Public URL of `/pki/crl`, embedded in client certificates as their CRL distribution point |
 
-The token's user needs permission to view, add, change and delete users, to view and change groups, and to add users to groups and remove them.
+The token's user needs permission to view, add, change and delete users, to view and change groups, and to add users to groups and remove them. To manage the tokens of [service accounts](#service-accounts) it must be a superuser: authentik assigns tokens created by other users to themselves.
 
 ## Password recovery emails
 
@@ -84,6 +84,35 @@ certificates are listed in the CRL at `/pki/crl` until they expire, and the CA c
 For development, `make example-ca` (or `scripts/example-ca.sh [dir] [common name] [days]`)
 creates a self-signed ECDSA P-256 CA in `ca/`, which git ignores; then set
 `CA_CERT_FILE=ca/ca.crt` and `CA_KEY_FILE=ca/ca.key`. Use a properly protected CA in production.
+
+## Service accounts
+
+authentik service accounts (type `service_account`) are listed under **Service accounts**. They
+have no password and never sign in to this application; programs authenticate as them with tokens
+or client certificates. Internal service accounts, which authentik manages for outposts, are never
+shown.
+
+- They follow the [access rules](#access-rules) and [primary groups](#primary-groups) of users:
+  operators see the service accounts in their target groups, and only the operators managing a
+  service account's primary group may change it, its tokens and its certificates. Restricted
+  operators must pick one of their target groups when creating one. Only access administrators
+  delete them.
+- **Tokens**: API tokens (for the authentik API) and app passwords (e.g. for LDAP), optionally
+  expiring. The key is shown once, when the token is created; the app never stores or logs it.
+  Tokens authentik manages itself cannot be deleted here. Deactivating a service account makes
+  authentik reject its tokens; deleting it deletes them.
+- **Certificates**: the operators who may change a service account issue [client
+  certificates](#client-certificates) for it, like users do for themselves. A generated key can be
+  downloaded once, by the operator who issued the certificate. Renaming, deactivating or deleting
+  the service account revokes its certificates, as for users.
+
+The API mirrors the user routes under `/api/service-accounts` (`GET`, `POST`, `GET`/`PATCH`/`DELETE
+/{id}`, `PUT /{id}/groups`), plus `GET` and `POST /api/service-accounts/{id}/tokens` (body
+`{"intent": "api"|"app_password", "description": "...", "expires": "<RFC 3339>"|null}`, returning
+`{token, key}`), `DELETE /api/service-accounts/{id}/tokens/{identifier}`, `GET` and `POST
+/api/service-accounts/{id}/certificates` (as `/api/certificates/mine`) and `POST
+/api/service-accounts/{id}/certificates/{serial}/revoke`. Generated keys are downloaded from
+`/api/certificates/mine/{serial}/download` by the issuing operator.
 
 ## Access rules
 
@@ -192,7 +221,7 @@ The API is `POST /api/groups/{pk}/join-requests` (body `{"message": "..."}`) and
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
-creating, updating and deleting users, changing their groups and primary groups, sending recovery emails, issuing and revoking certificates and downloading their keys,
+creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing and revoking certificates and downloading their keys, creating and deleting service account tokens (never their keys),
 saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
@@ -278,9 +307,10 @@ the frontend, run `make build` again.
 | PUT    | `/api/users/{id}/groups`   | `{groups, primary_group?}`: the group names the user should be in, and the name of their primary group (one of `groups`; empty removes it, omitted keeps it). Restricted operators may only add or remove their target groups, and the user must keep one of them. The primary group cannot be removed |
 | GET    | `/api/certificates/mine`   | the caller's certificates: `{certificates}`, each with `downloadable` while its key can be downloaded |
 | POST   | `/api/certificates/mine`   | issues a certificate for the caller: `{csr}`, or `{format: "pem"}`, or `{format: "pkcs12", password}`; returns `{certificate, certificate_pem, chain_pem}` for a CSR, `{certificate, download_url, download_expires_at}` otherwise |
-| GET    | `/api/certificates/mine/{serial}/download` | the generated key bundle, once; 410 afterwards |
+| GET    | `/api/certificates/mine/{serial}/download` | the generated key bundle, once, for the user who requested it (also an operator who issued it for a service account); 410 afterwards |
 | GET    | `/api/users/{id}/certificates` | the user's certificates, for the user and the operators who may change them |
 | POST   | `/api/users/{id}/certificates/{serial}/revoke` | revokes a certificate of the user |
+| …      | `/api/service-accounts/…`  | see [service accounts](#service-accounts)                |
 | GET    | `/api/certificates`        | access administrators only; the certificates of all users, newest first, paginated: `?search=` (username substring or serial prefix), `?status=active\|revoked\|expired`, `?page=`, `?page_size=` |
 | GET    | `/api/certificates/{serial}/pem` | access administrators only; the certificate as PEM, without its key; 404 for certificates issued before certificates were stored |
 | POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |

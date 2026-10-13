@@ -46,6 +46,16 @@ const (
 	ActionCertificateKeyDownloaded Action = "user.certificate_key_downloaded"
 	// ActionCertificateRevoked is recorded when a user or an operator revokes a certificate.
 	ActionCertificateRevoked Action = "user.certificate_revoked"
+	// ActionServiceAccountCreated is recorded when an operator creates a service account.
+	ActionServiceAccountCreated Action = "service_account.created"
+	// ActionServiceAccountUpdated is recorded when an operator changes a service account.
+	ActionServiceAccountUpdated Action = "service_account.updated"
+	// ActionServiceAccountDeleted is recorded when an access administrator deletes a service account.
+	ActionServiceAccountDeleted Action = "service_account.deleted"
+	// ActionTokenCreated is recorded when an operator creates a token of a service account.
+	ActionTokenCreated Action = "service_account.token_created"
+	// ActionTokenDeleted is recorded when an operator deletes a token of a service account.
+	ActionTokenDeleted Action = "service_account.token_deleted"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -56,7 +66,9 @@ func (a Action) Valid() bool {
 		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted,
 		ActionGroupRenamed, ActionGroupVisibilityChanged, ActionGroupPathChanged,
 		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected,
-		ActionCertificateIssued, ActionCertificateKeyDownloaded, ActionCertificateRevoked:
+		ActionCertificateIssued, ActionCertificateKeyDownloaded, ActionCertificateRevoked,
+		ActionServiceAccountCreated, ActionServiceAccountUpdated, ActionServiceAccountDeleted,
+		ActionTokenCreated, ActionTokenDeleted:
 		return true
 	}
 	return false
@@ -71,7 +83,7 @@ type Entry struct {
 	// Actor is the username of the operator.
 	Actor  string `json:"actor"`
 	Action Action `json:"action"`
-	// Target is the username of the affected user, the operator group of the
+	// Target is the username of the affected user or service account, the operator group of the
 	// affected rule, or the (new) name of the affected group. For join requests
 	// it is the username of the requesting user.
 	Target string `json:"target"`

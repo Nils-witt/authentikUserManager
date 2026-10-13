@@ -67,33 +67,44 @@ func (s *Server) ownAccount(w http.ResponseWriter, r *http.Request) (*authentik.
 	return user, true
 }
 
-// certificateUser loads the user with the {id} path value whose certificates
-// the signed-in user may list and revoke: their own account, and the users
-// they may change (see changeableUser). Operators can never issue or download
-// certificates of other users. It writes the error response when it returns false.
-func (s *Server) certificateUser(w http.ResponseWriter, r *http.Request) (*authentik.User, bool) {
-	user, scope, ok := s.visibleUser(w, r)
+// certificateAccount loads the account of kind k with the {id} path value
+// whose certificates the signed-in user may list and revoke: their own
+// account, and the accounts they may change (see changeableAccount). Operators
+// can never issue or download certificates of other users, only of service
+// accounts. It writes the error response when it returns false.
+func (s *Server) certificateAccount(w http.ResponseWriter, r *http.Request, k accountKind) (*authentik.User, bool) {
+	user, scope, ok := s.visibleAccount(w, r, k)
 	if !ok {
 		return nil, false
 	}
-	if isActor(r, user) {
+	if k.seesOwnAccount() && isActor(r, user) {
 		return user, true
 	}
 	if !mayChange(user, scope) {
 		primary := primaryGroupName(user)
 		s.recordUser(r, audit.ActionAccessDenied, user, map[string]string{"primary_group": primary})
 		writeError(w, http.StatusForbidden,
-			fmt.Sprintf("only the operators managing the primary group %q may revoke certificates of this user", primary), nil)
+			fmt.Sprintf("only the operators managing the primary group %q may revoke certificates of this %s", primary, k.noun), nil)
 		return nil, false
 	}
 	return user, true
 }
 
-// ownCertificate is a certificate of the signed-in user.
+// ownCertificate is a certificate the signed-in user requested: one of their
+// own, or one they issued for a service account.
 type ownCertificate struct {
 	certificate.Certificate
-	// Downloadable is set while the generated key can still be downloaded.
+	// Downloadable is set while the signed-in user can still download the generated key.
 	Downloadable bool `json:"downloadable"`
+}
+
+// withDownloads marks the certificates whose generated key the signed-in user can still download.
+func (s *Server) withDownloads(r *http.Request, list []certificate.Certificate) []ownCertificate {
+	out := make([]ownCertificate, 0, len(list))
+	for _, c := range list {
+		out = append(out, ownCertificate{Certificate: c, Downloadable: s.keyDownloads.Has(c.Serial, actorName(r))})
+	}
+	return out
 }
 
 type certificateList[T any] struct {
@@ -111,17 +122,13 @@ func (s *Server) listMyCertificates(w http.ResponseWriter, r *http.Request) {
 		s.writeCertificateError(w, r, err)
 		return
 	}
-	out := make([]ownCertificate, 0, len(list))
-	for _, c := range list {
-		out = append(out, ownCertificate{Certificate: c, Downloadable: s.keyDownloads.Has(c.Serial, user.Username)})
-	}
-	writeJSON(w, http.StatusOK, certificateList[ownCertificate]{Certificates: out})
+	writeJSON(w, http.StatusOK, certificateList[ownCertificate]{Certificates: s.withDownloads(r, list)})
 }
 
 // listUserCertificates returns the certificates of the user with the {id}
 // path value, without their keys.
 func (s *Server) listUserCertificates(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.certificateUser(w, r)
+	user, ok := s.certificateAccount(w, r, userAccounts)
 	if !ok {
 		return
 	}
@@ -224,9 +231,8 @@ type issuedCertificate struct {
 }
 
 // issueCertificate issues a client certificate for the signed-in user's own
-// account. Nobody can issue certificates for other users. With a CSR, the
-// certificate is returned; otherwise a key is generated and the bundle of key
-// and certificate is held for a single download (see downloadCertificateKey).
+// account. Nobody can issue certificates for other users, only for service
+// accounts (see issueServiceAccountCertificate).
 func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 	var in issueCertificateInput
 	if !decodeJSON(w, r, &in) {
@@ -241,6 +247,14 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.issueFor(w, r, user, pub, in)
+}
+
+// issueFor issues a client certificate for user, for the public key pub of a
+// validated CSR, or for a generated key when pub is nil. With a CSR, the
+// certificate is returned; otherwise the bundle of key and certificate is held
+// for a single download by the signed-in user (see downloadCertificateKey).
+func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authentik.User, pub crypto.PublicKey, in issueCertificateInput) {
 	var key crypto.Signer
 	if pub == nil {
 		var err error
@@ -292,7 +306,7 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, out)
 		return
 	}
-	expires, err := s.holdKey(user, cert, key, in)
+	expires, err := s.holdKey(user, actorName(r), cert, key, in)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "holding generated key", slog.String("serial", record.Serial), slog.Any("error", err))
 		status := http.StatusInternalServerError
@@ -307,10 +321,17 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
-// holdKey encodes the key, the certificate and the CA chain as requested and
-// holds the file for a single download by user. It returns when the download expires.
-func (s *Server) holdKey(user *authentik.User, cert *x509.Certificate, key crypto.Signer, in issueCertificateInput) (time.Time, error) {
-	d := pki.Download{UserPK: user.PK, Username: user.Username}
+// holdKey encodes the key, the certificate and the CA chain of user as
+// requested and holds the file for a single download by the user named
+// downloader. It returns when the download expires.
+func (s *Server) holdKey(
+	user *authentik.User,
+	downloader string,
+	cert *x509.Certificate,
+	key crypto.Signer,
+	in issueCertificateInput,
+) (time.Time, error) {
+	d := pki.Download{UserPK: user.PK, Username: user.Username, Downloader: downloader}
 	var err error
 	if in.Format == formatPKCS12 {
 		d.Filename, d.ContentType = user.Username+".p12", "application/x-pkcs12"
@@ -330,8 +351,9 @@ func (s *Server) holdKey(user *authentik.User, cert *x509.Certificate, key crypt
 	return expires, nil
 }
 
-// downloadCertificateKey serves the generated key of the signed-in user's
-// certificate with the {serial} path value, once: the server forgets it then.
+// downloadCertificateKey serves the generated key of the certificate with the
+// {serial} path value that the signed-in user requested, for their own account
+// or for a service account, once: the server forgets it then.
 func (s *Server) downloadCertificateKey(w http.ResponseWriter, r *http.Request) {
 	serial := r.PathValue("serial")
 	if _, ok := pki.ParseSerial(serial); !ok {
@@ -364,15 +386,22 @@ func (s *Server) downloadCertificateKey(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// revokeCertificate revokes the certificate with the {serial} path value of
-// the user with the {id} path value. Its key can no longer be downloaded.
-func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
+// revokeAccountCertificate returns a handler revoking the certificate with
+// the {serial} path value of the account of kind k with the {id} path value.
+// Its key can no longer be downloaded.
+func (s *Server) revokeAccountCertificate(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.revokeAccountCertificateOf(w, r, k)
+	}
+}
+
+func (s *Server) revokeAccountCertificateOf(w http.ResponseWriter, r *http.Request, k accountKind) {
 	serial := r.PathValue("serial")
 	if _, ok := pki.ParseSerial(serial); !ok {
 		writeError(w, http.StatusBadRequest, "invalid serial number", nil)
 		return
 	}
-	user, ok := s.certificateUser(w, r)
+	user, ok := s.certificateAccount(w, r, k)
 	if !ok {
 		return
 	}

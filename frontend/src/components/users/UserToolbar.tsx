@@ -15,6 +15,8 @@ interface UserToolbarProps {
   onStatusChange: (value: StatusFilter | null) => void
   /** Called to create a user; the button is hidden when undefined. */
   onCreate?: () => void
+  /** What the listed accounts are called; defaults to "user". */
+  noun?: string
 }
 
 /** Search box, status filter and the actions above the user table. */
@@ -24,6 +26,7 @@ export function UserToolbar({
   status,
   onStatusChange,
   onCreate,
+  noun = 'user',
 }: UserToolbarProps) {
   return (
     <Stack
@@ -35,8 +38,8 @@ export function UserToolbar({
       <TextField
         type="search"
         size="small"
-        placeholder="Search users…"
-        aria-label="Search users"
+        placeholder={`Search ${noun}s…`}
+        aria-label={`Search ${noun}s`}
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
         sx={{ flex: '1 1 280px', maxWidth: 400 }}
@@ -64,7 +67,7 @@ export function UserToolbar({
       <Box sx={{ flexGrow: 1 }} />
       {onCreate && (
         <Button variant="contained" onClick={onCreate}>
-          New user
+          New {noun}
         </Button>
       )}
     </Stack>
