@@ -107,6 +107,27 @@ func (s *Store) RevokeCertificate(ctx context.Context, serial, actor string) (ce
 	return c, nil
 }
 
+// RevokeUserCertificates revokes every certificate of the user with userPK
+// that is not revoked yet, recording actor as the revoker, and returns the
+// serials it revoked.
+func (s *Store) RevokeUserCertificates(ctx context.Context, userPK int, actor string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		UPDATE certificates
+		SET revoked_at = now(), revoked_by = $2
+		WHERE user_pk = $1 AND revoked_at IS NULL
+		RETURNING serial`,
+		userPK, actor,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: revoking user certificates: %w", err)
+	}
+	serials, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("store: revoking user certificates: %w", err)
+	}
+	return serials, nil
+}
+
 // ListRevokedCertificates returns the revoked certificates that are still
 // valid at now, for the CRL.
 func (s *Store) ListRevokedCertificates(ctx context.Context, now time.Time) ([]certificate.Revoked, error) {

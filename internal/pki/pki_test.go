@@ -164,18 +164,23 @@ func TestCA_Issue(t *testing.T) {
 	tests := []struct {
 		name      string
 		pub       crypto.PublicKey
-		email     string
-		wantEmail []string
+		uuid      string
+		wantURIs  string
 		wantUsage x509.KeyUsage
 	}{
-		{name: "ecdsa with email", pub: ecKey(t).Public(), email: "ann@example.com", wantEmail: []string{"ann@example.com"}, wantUsage: x509.KeyUsageDigitalSignature},
-		{name: "rsa without email", pub: rsaKey(t, 2048).Public(), wantUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment},
-		{name: "non-ascii email dropped", pub: ecKey(t).Public(), email: "änn@example.com", wantUsage: x509.KeyUsageDigitalSignature},
+		{
+			name:      "ecdsa with uuid",
+			pub:       ecKey(t).Public(),
+			uuid:      "6F1C2A9E-3B4D-4E5F-8A9B-0C1D2E3F4A5B",
+			wantURIs:  "urn:uuid:6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
+			wantUsage: x509.KeyUsageDigitalSignature,
+		},
+		{name: "rsa without uuid", pub: rsaKey(t, 2048).Public(), wantUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cert, err := loaded.Issue(tt.pub, pki.Subject{Username: "ann", Email: tt.email}, now)
+			cert, err := loaded.Issue(tt.pub, pki.Subject{Username: "ann", UUID: tt.uuid}, now)
 			if err != nil {
 				t.Fatalf("Issue: %v", err)
 			}
@@ -185,9 +190,7 @@ func TestCA_Issue(t *testing.T) {
 			if cert.Subject.CommonName != "ann" || cert.IsCA || cert.KeyUsage != tt.wantUsage {
 				t.Errorf("cert subject %q, CA %v, usage %v", cert.Subject.CommonName, cert.IsCA, cert.KeyUsage)
 			}
-			if strings.Join(cert.EmailAddresses, ",") != strings.Join(tt.wantEmail, ",") {
-				t.Errorf("EmailAddresses = %v, want %v", cert.EmailAddresses, tt.wantEmail)
-			}
+			checkSANs(t, cert, tt.wantURIs)
 			if !cert.NotAfter.Equal(ca.cert.NotAfter) {
 				t.Errorf("NotAfter = %v, want it clamped to the CA's %v", cert.NotAfter, ca.cert.NotAfter)
 			}
@@ -201,6 +204,21 @@ func TestCA_Issue(t *testing.T) {
 	}
 }
 
+// checkSANs checks that the only SANs of cert are the comma-separated wantURIs.
+func checkSANs(t *testing.T, cert *x509.Certificate, wantURIs string) {
+	t.Helper()
+	var uris []string
+	for _, u := range cert.URIs {
+		uris = append(uris, u.String())
+	}
+	if got := strings.Join(uris, ","); got != wantURIs {
+		t.Errorf("URIs = %q, want %q", got, wantURIs)
+	}
+	if len(cert.EmailAddresses) != 0 || len(cert.DNSNames) != 0 || len(cert.IPAddresses) != 0 {
+		t.Errorf("unexpected SANs: email %v, DNS %v, IP %v", cert.EmailAddresses, cert.DNSNames, cert.IPAddresses)
+	}
+}
+
 func TestCA_Issue_errors(t *testing.T) {
 	t.Parallel()
 	ca := loadCA(t, newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour), defaultOpts)
@@ -209,6 +227,11 @@ func TestCA_Issue_errors(t *testing.T) {
 	}
 	if _, err := ca.Issue(ecKey(t).Public(), pki.Subject{}, time.Now()); err == nil {
 		t.Error("Issue without a username succeeded")
+	}
+	for _, uuid := range []string{"not-a-uuid", "6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5", "6f1c2a9e/3b4d-4e5f-8a9b-0c1d2e3f4a5b", "6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5g"} {
+		if _, err := ca.Issue(ecKey(t).Public(), pki.Subject{Username: "ann", UUID: uuid}, time.Now()); err == nil {
+			t.Errorf("Issue with uuid %q succeeded", uuid)
+		}
 	}
 	if _, err := ca.Issue(ecKey(t).Public(), pki.Subject{Username: "ann"}, time.Now().Add(48*time.Hour)); !errors.Is(err, pki.ErrCAExpired) {
 		t.Errorf("Issue after the CA expired = %v, want ErrCAExpired", err)

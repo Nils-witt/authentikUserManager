@@ -57,8 +57,10 @@ email to every user they may manage.
 When `CA_CERT_FILE` and `CA_KEY_FILE` are set, every signed-in internal user can issue X.509
 client certificates for their own account under **My certificates**. The CA certificate must
 be a CA allowed to sign certificates and CRLs (key usages `keyCertSign` and `cRLSign`).
-Certificates have the username as common name, the user's email address as SAN, and the
-`clientAuth` extended key usage.
+Certificates have the username as common name, the user's authentik UUID as a
+`urn:uuid:<uuid>` URI SAN, and the `clientAuth` extended key usage. Usernames can be reused
+after a user is deleted or renamed, so relying parties should identify users by the UUID. The
+email address is not included, since users and operators can change it without verification.
 
 - **Generate key**: the server generates an ECDSA P-256 key and bundles it with the
   certificate and the CA chain, as a password-protected PKCS#12 file (`.p12`) or as PEM. The
@@ -69,7 +71,10 @@ Certificates have the username as common name, the user's email address as SAN, 
 
 Nobody can issue certificates for other users, not even access administrators. Operators who
 may change a user (see [primary groups](#primary-groups)) can list the user's certificates
-(the shield icon in the user list) and revoke them; users can revoke their own. Revoked
+(the shield icon in the user list) and revoke them; users can revoke their own. Deleting,
+deactivating or renaming a user through this application revokes all of their certificates;
+reactivating the user does not restore them. Changes made directly in authentik bypass this,
+so revoke the certificates here as well. Revoked
 certificates are listed in the CRL at `/pki/crl` until they expire, and the CA chain is at
 `/pki/ca.pem`. Both are public, so relying parties can fetch them without a login.
 

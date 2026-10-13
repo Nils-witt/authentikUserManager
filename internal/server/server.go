@@ -122,6 +122,8 @@ type CertificateStore interface {
 	ListCertificates(ctx context.Context, userPK int) ([]certificate.Certificate, error)
 	// RevokeCertificate returns certificate.ErrRevoked when the certificate is already revoked.
 	RevokeCertificate(ctx context.Context, serial, actor string) (certificate.Certificate, error)
+	// RevokeUserCertificates revokes every unrevoked certificate of a user and returns their serials.
+	RevokeUserCertificates(ctx context.Context, userPK int, actor string) ([]string, error)
 	// ListRevokedCertificates returns the revoked certificates still valid at now.
 	ListRevokedCertificates(ctx context.Context, now time.Time) ([]certificate.Revoked, error)
 }
@@ -142,9 +144,11 @@ type Deps struct {
 	// recovery emails. When empty, sending them is disabled.
 	RecoveryEmailStage string
 	// CA issues user certificates. When nil, certificates are disabled and
-	// Certificates and KeyDownloads are not used.
+	// KeyDownloads is not used.
 	CA *pki.CA
-	// Certificates keeps the records of the issued certificates.
+	// Certificates keeps the records of the issued certificates. When set, a
+	// user's certificates are revoked when the user is deleted, deactivated or
+	// renamed, even while CA is nil.
 	Certificates CertificateStore
 	// KeyDownloads holds generated keys until their single download.
 	KeyDownloads *pki.Pending

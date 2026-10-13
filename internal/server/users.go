@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -473,7 +475,35 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		details["is_active"] = strconv.FormatBool(*req.IsActive)
 	}
 	s.recordUser(r, audit.ActionUserUpdated, user, details)
+
+	if reason := certificateRevocationReason(target, req); reason != "" {
+		// The user is changed already, so finish revoking even when the client goes away.
+		if err := s.revokeUserCertificates(context.WithoutCancel(r.Context()), r, target, reason); err != nil {
+			s.logger.ErrorContext(r.Context(), "revoking user certificates",
+				slog.Int("user_id", target.PK),
+				slog.String("reason", reason),
+				slog.Any("error", err),
+			)
+			writeError(w, http.StatusInternalServerError,
+				"the user was updated, but revoking their certificates failed; revoke them manually", nil)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, newUserView(user, scope))
+}
+
+// certificateRevocationReason returns why req ends the certificates of
+// target, or "" when it does not: deactivating the user, or renaming them,
+// since their certificates name the old username, which another user may get.
+func certificateRevocationReason(target *authentik.User, req authentik.UpdateUserRequest) string {
+	switch {
+	case req.IsActive != nil && !*req.IsActive:
+		return "user deactivated"
+	case req.Username != nil && *req.Username != target.Username:
+		return "user renamed"
+	default:
+		return ""
+	}
 }
 
 // userGroupsInput is the body of PUT /api/users/{id}/groups.
@@ -657,6 +687,17 @@ func (s *Server) setPrimaryGroup(w http.ResponseWriter, r *http.Request, user *a
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	target, _, ok := s.changeableUser(w, r)
 	if !ok {
+		return
+	}
+	// Revoke first: once the user is deleted, nobody can list or revoke their certificates.
+	if err := s.revokeUserCertificates(r.Context(), r, target, "user deleted"); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.ErrorContext(r.Context(), "revoking user certificates",
+				slog.Int("user_id", target.PK),
+				slog.Any("error", err),
+			)
+		}
+		writeError(w, http.StatusInternalServerError, "revoking the user's certificates failed; the user was not deleted", nil)
 		return
 	}
 	if err := s.users.DeleteUser(r.Context(), target.PK); err != nil {

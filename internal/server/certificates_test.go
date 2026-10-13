@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -90,6 +91,21 @@ func (f *fakeCertificates) RevokeCertificate(_ context.Context, serial, actor st
 	now := time.Now()
 	f.certs[i].RevokedAt, f.certs[i].RevokedBy = &now, actor
 	return f.certs[i], nil
+}
+
+func (f *fakeCertificates) RevokeUserCertificates(_ context.Context, userPK int, actor string) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	serials := []string{}
+	now := time.Now()
+	for i, c := range f.certs {
+		if c.UserPK == userPK && c.RevokedAt == nil {
+			f.certs[i].RevokedAt, f.certs[i].RevokedBy = &now, actor
+			serials = append(serials, c.Serial)
+		}
+	}
+	return serials, nil
 }
 
 func (f *fakeCertificates) ListRevokedCertificates(_ context.Context, now time.Time) ([]certificate.Revoked, error) {
@@ -207,7 +223,12 @@ func newCertServer(t *testing.T, users server.UserService, groups ...string) *ce
 // the signed-in test operator "admin", with primary key 7.
 func ownAccountUsers() *fakeUsers {
 	return &fakeUsers{listed: []authentik.User{{
-		PK: 7, Username: "admin", Email: "admin@example.com", Type: authentik.UserTypeInternal, IsActive: true,
+		PK:       7,
+		UUID:     "6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
+		Username: "admin",
+		Email:    "admin@example.com",
+		Type:     authentik.UserTypeInternal,
+		IsActive: true,
 	}}}
 }
 
@@ -293,9 +314,12 @@ func checkPKCS12Download(t *testing.T, env *certEnv, url, serial string) {
 	if err != nil {
 		t.Fatalf("DecodeChain: %v", err)
 	}
-	if pki.SerialText(cert.SerialNumber) != serial || cert.Subject.CommonName != "admin" ||
-		!slices.Equal(cert.EmailAddresses, []string{"admin@example.com"}) || len(chain) != 1 || !chain[0].Equal(env.caCert) {
+	if pki.SerialText(cert.SerialNumber) != serial || cert.Subject.CommonName != "admin" || len(chain) != 1 || !chain[0].Equal(env.caCert) {
 		t.Errorf("downloaded certificate %v for %q, chain of %d", cert.SerialNumber, cert.Subject.CommonName, len(chain))
+	}
+	// The unverified email address is left out; the immutable user ID identifies the user.
+	if len(cert.EmailAddresses) != 0 || len(cert.URIs) != 1 || cert.URIs[0].String() != "urn:uuid:6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b" {
+		t.Errorf("SANs: email %v, URIs %v, want only the user's urn:uuid", cert.EmailAddresses, cert.URIs)
 	}
 }
 
@@ -564,33 +588,145 @@ func TestCertificates_revokeOwn(t *testing.T) {
 	}
 }
 
+func TestCertificates_revokedWithUser(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		method     string
+		body       string
+		wantStatus int
+		wantReason string
+	}{
+		{name: "deleted", method: http.MethodDelete, wantStatus: http.StatusNoContent, wantReason: "user deleted"},
+		{name: "deactivated", method: http.MethodPatch, body: `{"is_active":false}`, wantStatus: http.StatusOK, wantReason: "user deactivated"},
+		{name: "renamed", method: http.MethodPatch, body: `{"username":"robert"}`, wantStatus: http.StatusOK, wantReason: "user renamed"},
+		{name: "other change", method: http.MethodPatch, body: `{"name":"Bob","username":"bob","is_active":true}`, wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := newCertServer(t, staffUser("staff"), "admins")
+			addCertificates(env)
+			if err := put(env.downloads, "ab", "bob"); err != nil {
+				t.Fatal(err)
+			}
+
+			if rec := do(t, env.srv, tt.method, "/api/users/5", tt.body); rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d %s, want %d", rec.Code, rec.Body, tt.wantStatus)
+			}
+			bob, cat := env.certs.certs[0], env.certs.certs[1]
+			if cat.RevokedAt != nil {
+				t.Error("another user's certificate was revoked")
+			}
+			if tt.wantReason == "" {
+				if bob.RevokedAt != nil || !env.downloads.Has("ab", "bob") {
+					t.Error("the certificate was revoked")
+				}
+				return
+			}
+			checkBobRevoked(t, env, tt.wantReason)
+		})
+	}
+}
+
+// checkBobRevoked checks that bob's certificate ab is revoked by admin for
+// reason: recorded, listed in the CRL, and its key no longer downloadable.
+func checkBobRevoked(t *testing.T, env *certEnv, reason string) {
+	t.Helper()
+	if bob := env.certs.certs[0]; bob.RevokedAt == nil || bob.RevokedBy != "admin" {
+		t.Fatalf("bob's certificate = %+v, want it revoked by admin", bob)
+	}
+	if env.downloads.Has("ab", "bob") {
+		t.Error("the key of the revoked certificate can still be downloaded")
+	}
+	i := slices.IndexFunc(env.log.recorded, func(e audit.Entry) bool { return e.Action == audit.ActionCertificateRevoked })
+	if i < 0 || env.log.recorded[i].Details["serial"] != "ab" || env.log.recorded[i].Details["reason"] != reason ||
+		env.log.recorded[i].Target != "bob" {
+		t.Errorf("audit = %+v, want the revocation of ab for %q", env.log.recorded, reason)
+	}
+	crl := fetchCRL(t, env)
+	if len(crl.RevokedCertificateEntries) != 1 || crl.RevokedCertificateEntries[0].SerialNumber.Int64() != 0xab {
+		t.Errorf("CRL = %v, want serial ab", crl.RevokedCertificateEntries)
+	}
+}
+
+func TestCertificates_revokeFailureKeepsUser(t *testing.T) {
+	t.Parallel()
+	users := staffUser("staff")
+	env := newCertServer(t, users, "admins")
+	addCertificates(env)
+	env.certs.err = errors.New("database down")
+
+	rec := do(t, env.srv, http.MethodDelete, "/api/users/5", "")
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "not deleted") {
+		t.Errorf("delete = %d %s, want 500", rec.Code, rec.Body)
+	}
+	if users.mutated {
+		t.Error("the user was deleted although their certificates could not be revoked")
+	}
+
+	rec = do(t, env.srv, http.MethodPatch, "/api/users/5", `{"is_active":false}`)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "revoke them manually") {
+		t.Errorf("deactivate = %d %s, want 500", rec.Code, rec.Body)
+	}
+}
+
+func TestCertificates_revokedWithUserWithoutCA(t *testing.T) {
+	t.Parallel()
+	// Certificates issued while a CA was configured are revoked even after it is removed.
+	certs := &fakeCertificates{}
+	certs.certs = append(certs.certs, certificate.Certificate{Serial: "ab", UserPK: 5, Username: "bob"})
+	rules := newFakeRules()
+	policy, err := access.NewPolicy([]string{"admins"}, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := server.New(server.Deps{
+		Users:        staffUser("staff"),
+		Auth:         fakeAuth{groups: []string{"admins"}},
+		Policy:       policy,
+		Rules:        rules,
+		Audit:        &fakeAudit{},
+		Logger:       slog.New(slog.DiscardHandler),
+		Certificates: certs,
+	})
+	if rec := do(t, srv, http.MethodDelete, "/api/users/5", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", rec.Code, rec.Body)
+	}
+	if certs.certs[0].RevokedAt == nil {
+		t.Error("the certificate was not revoked")
+	}
+}
+
+// fetchCRL fetches the CRL from env and checks its signature.
+func fetchCRL(t *testing.T, env *certEnv) *x509.RevocationList {
+	t.Helper()
+	rec := do(t, env.srv, http.MethodGet, "/pki/crl", "")
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/pkix-crl" {
+		t.Fatalf("crl = %d %v", rec.Code, rec.Header())
+	}
+	crl, err := x509.ParseRevocationList(rec.Body.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := crl.CheckSignatureFrom(env.caCert); err != nil {
+		t.Fatal(err)
+	}
+	return crl
+}
+
 func TestCertificates_crl(t *testing.T) {
 	t.Parallel()
 	env := newCertServer(t, staffUser("staff"), "helpdesk")
 	addCertificates(env)
 
-	fetch := func() *x509.RevocationList {
-		t.Helper()
-		rec := do(t, env.srv, http.MethodGet, "/pki/crl", "")
-		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/pkix-crl" {
-			t.Fatalf("crl = %d %v", rec.Code, rec.Header())
-		}
-		crl, err := x509.ParseRevocationList(rec.Body.Bytes())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := crl.CheckSignatureFrom(env.caCert); err != nil {
-			t.Fatal(err)
-		}
-		return crl
-	}
-	if crl := fetch(); len(crl.RevokedCertificateEntries) != 0 {
+	if crl := fetchCRL(t, env); len(crl.RevokedCertificateEntries) != 0 {
 		t.Errorf("revoked = %v, want none", crl.RevokedCertificateEntries)
 	}
 	if rec := do(t, env.srv, http.MethodPost, "/api/users/5/certificates/ab/revoke", ""); rec.Code != http.StatusOK {
 		t.Fatalf("revoke = %d", rec.Code)
 	}
-	crl := fetch()
+	crl := fetchCRL(t, env)
 	if len(crl.RevokedCertificateEntries) != 1 || crl.RevokedCertificateEntries[0].SerialNumber.Int64() != 0xab {
 		t.Errorf("revoked = %v, want serial ab right after revoking", crl.RevokedCertificateEntries)
 	}

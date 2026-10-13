@@ -115,3 +115,53 @@ func TestStore_revokeCertificate(t *testing.T) {
 		t.Errorf("ListRevokedCertificates = %+v, want the valid revoked certificate only", list)
 	}
 }
+
+func TestStore_revokeUserCertificates(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+	userPK := uniqueUserPK()
+
+	first := createTestCertificate(t, s, userPK, time.Now().Add(time.Hour))
+	second := createTestCertificate(t, s, userPK, time.Now().Add(time.Hour))
+	already := createTestCertificate(t, s, userPK, time.Now().Add(time.Hour))
+	other := createTestCertificate(t, s, userPK+1, time.Now().Add(time.Hour))
+	if _, err := s.RevokeCertificate(ctx, already.Serial, "ann"); err != nil {
+		t.Fatalf("RevokeCertificate: %v", err)
+	}
+
+	serials, err := s.RevokeUserCertificates(ctx, userPK, "admin")
+	if err != nil {
+		t.Fatalf("RevokeUserCertificates: %v", err)
+	}
+	slices.Sort(serials)
+	want := []string{first.Serial, second.Serial}
+	slices.Sort(want)
+	if !slices.Equal(serials, want) {
+		t.Errorf("RevokeUserCertificates = %v, want %v", serials, want)
+	}
+	for _, c := range []certificate.Certificate{first, second, already, other} {
+		got, err := s.GetCertificate(ctx, c.Serial)
+		if err != nil {
+			t.Fatalf("GetCertificate: %v", err)
+		}
+		switch c.Serial {
+		case other.Serial:
+			if got.RevokedAt != nil {
+				t.Error("another user's certificate was revoked")
+			}
+		case already.Serial:
+			if got.RevokedBy != "ann" {
+				t.Errorf("already revoked certificate now revoked by %q, want ann", got.RevokedBy)
+			}
+		default:
+			if got.RevokedAt == nil || got.RevokedBy != "admin" {
+				t.Errorf("certificate %s = %+v, want it revoked by admin", c.Serial, got)
+			}
+		}
+	}
+
+	none, err := s.RevokeUserCertificates(ctx, userPK, "admin")
+	if err != nil || len(none) != 0 {
+		t.Errorf("second RevokeUserCertificates = %v, %v, want an empty list", none, err)
+	}
+}

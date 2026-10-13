@@ -205,7 +205,7 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 		pub = key.Public()
 	}
 
-	cert, err := s.ca.Issue(pub, pki.Subject{Username: user.Username, Email: user.Email}, time.Now())
+	cert, err := s.ca.Issue(pub, pki.Subject{Username: user.Username, UUID: user.UUID}, time.Now())
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "issuing certificate", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "issuing the certificate failed", nil)
@@ -344,6 +344,32 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 	s.invalidateCRL()
 	s.recordUser(r, audit.ActionCertificateRevoked, user, map[string]string{"serial": serial})
 	writeJSON(w, http.StatusOK, c)
+}
+
+// revokeUserCertificates revokes every certificate of user and discards their
+// keys waiting for download, recording reason in the audit log. It is called
+// when the user is deleted, deactivated or renamed, since relying parties
+// identify certificates by the username alone. It also runs while no CA is
+// configured, so that certificates issued earlier stay revoked.
+func (s *Server) revokeUserCertificates(ctx context.Context, r *http.Request, user *authentik.User, reason string) error {
+	if s.certificates == nil {
+		return nil
+	}
+	serials, err := s.certificates.RevokeUserCertificates(ctx, user.PK, actorName(r))
+	if err != nil {
+		return err
+	}
+	if len(serials) == 0 {
+		return nil
+	}
+	for _, serial := range serials {
+		if s.keyDownloads != nil {
+			s.keyDownloads.Delete(serial)
+		}
+		s.recordUser(r, audit.ActionCertificateRevoked, user, map[string]string{"serial": serial, "reason": reason})
+	}
+	s.invalidateCRL()
+	return nil
 }
 
 // getCRL serves the CA's DER certificate revocation list. It is public, so

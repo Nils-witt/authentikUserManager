@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
 	"strings"
 	"time"
 
@@ -164,11 +165,14 @@ func (ca *CA) ChainPEM() []byte {
 	return bytes.Clone(ca.chainPEM)
 }
 
-// Subject identifies the user a certificate is issued to.
+// Subject identifies the user a certificate is issued to. The user's email
+// address is deliberately not part of it: users and their operators can set
+// it to any address without verification.
 type Subject struct {
 	Username string
-	// Email, when a valid ASCII address, is added as an email address SAN.
-	Email string
+	// UUID, when set, is the user's immutable ID, added as a urn:uuid URI SAN,
+	// so relying parties can tell apart users who held the same username.
+	UUID string
 }
 
 // Issue signs a client certificate for pub, which must pass ValidatePublicKey.
@@ -181,6 +185,9 @@ func (ca *CA) Issue(pub crypto.PublicKey, s Subject, now time.Time) (*x509.Certi
 	}
 	if s.Username == "" {
 		return nil, errors.New("pki: username is required")
+	}
+	if s.UUID != "" && !isUUID(s.UUID) {
+		return nil, fmt.Errorf("pki: invalid user uuid %q", s.UUID)
 	}
 	notAfter := now.Add(ca.opts.Validity)
 	if ca.cert.NotAfter.Before(notAfter) {
@@ -206,8 +213,8 @@ func (ca *CA) Issue(pub crypto.PublicKey, s Subject, now time.Time) (*x509.Certi
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 	}
-	if isASCIIEmail(s.Email) {
-		tmpl.EmailAddresses = []string{s.Email}
+	if s.UUID != "" {
+		tmpl.URIs = []*url.URL{{Scheme: "urn", Opaque: "uuid:" + strings.ToLower(s.UUID)}}
 	}
 	if ca.opts.CRLURL != "" {
 		tmpl.CRLDistributionPoints = []string{ca.opts.CRLURL}
@@ -237,15 +244,22 @@ func newSerial() (*big.Int, error) {
 	}
 }
 
-// isASCIIEmail reports whether email can be encoded as an rfc822Name SAN.
-func isASCIIEmail(email string) bool {
-	local, domain, ok := strings.Cut(email, "@")
-	if !ok || local == "" || domain == "" || strings.Contains(domain, "@") {
+// isUUID reports whether s is a UUID in its 8-4-4-4-12 hex form.
+func isUUID(s string) bool {
+	if len(s) != 36 {
 		return false
 	}
-	for _, c := range []byte(email) {
-		if c <= ' ' || c >= 0x7f {
-			return false
+	for i, c := range []byte(s) {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+			if !isHex {
+				return false
+			}
 		}
 	}
 	return true
