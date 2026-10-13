@@ -30,9 +30,9 @@ interface AppHeaderProps {
   showJoinRequests: boolean
   /** Number of pending join requests, shown on the join requests tab. */
   joinRequestCount: number
-  /** Show the tab of the signed-in user's own certificates. */
+  /** Show the tab of the signed-in user's own certificates, and the issued certificates tab to administrators. */
   showCertificates: boolean
-  /** Show the access rules and audit log tabs. */
+  /** Show the access rules, audit log and issued certificates tabs. */
   showAdmin: boolean
 }
 
@@ -68,6 +68,11 @@ export function AppHeader({
     showCertificates && { path: pagePaths.certificates, label: 'My certificates' },
     showAdmin && { path: pagePaths.accessRules, label: 'Access rules' },
     showAdmin && { path: pagePaths.audit, label: 'Audit log' },
+    showAdmin &&
+      showCertificates && {
+        path: pagePaths.issuedCertificates,
+        label: 'Issued certificates',
+      },
   ].filter((tab) => tab !== false)
   // The user list's dialogs have their own paths; they belong to the users tab.
   const current = tabs.find((tab) => tab.path === pathname)?.path ?? pagePaths.users

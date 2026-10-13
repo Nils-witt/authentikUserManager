@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate } from 'react-router'
 import App from './App'
 import { AccessRulesPage } from './components/access-rules/AccessRulesPage'
 import { AuditLogPage } from './components/audit/AuditLogPage'
+import { IssuedCertificatesPage } from './components/certificates/IssuedCertificatesPage'
 import { MyCertificatesPage } from './components/certificates/MyCertificatesPage'
 import { GroupsPage } from './components/groups/GroupsPage'
 import { JoinRequestsPage } from './components/groups/JoinRequestsPage'
@@ -25,6 +26,7 @@ export const router = createBrowserRouter([
       { path: pagePaths.certificates, element: <MyCertificatesPage /> },
       { path: pagePaths.accessRules, element: <AccessRulesPage /> },
       { path: pagePaths.audit, element: <AuditLogPage /> },
+      { path: pagePaths.issuedCertificates, element: <IssuedCertificatesPage /> },
       { path: '*', element: <Navigate to={pagePaths.users} replace /> },
     ],
   },

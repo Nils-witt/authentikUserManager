@@ -118,8 +118,14 @@ type CertificateStore interface {
 	CreateCertificate(ctx context.Context, c certificate.Certificate) (certificate.Certificate, error)
 	// GetCertificate returns certificate.ErrNotFound when there is no certificate.
 	GetCertificate(ctx context.Context, serial string) (certificate.Certificate, error)
+	// GetCertificateDER returns the encoded certificate, certificate.ErrNotFound
+	// when there is none, or certificate.ErrNotStored when it was not stored.
+	GetCertificateDER(ctx context.Context, serial string) ([]byte, error)
 	// ListCertificates returns the certificates of a user, newest first.
 	ListCertificates(ctx context.Context, userPK int) ([]certificate.Certificate, error)
+	// ListAllCertificates returns a page of the certificates of all users
+	// matching a normalized query, newest first, and how many match in total.
+	ListAllCertificates(ctx context.Context, q certificate.Query, now time.Time) ([]certificate.Certificate, int, error)
 	// RevokeCertificate returns certificate.ErrRevoked when the certificate is already revoked.
 	RevokeCertificate(ctx context.Context, serial, actor string) (certificate.Certificate, error)
 	// RevokeUserCertificates revokes every unrevoked certificate of a user and returns their serials.
@@ -235,6 +241,11 @@ func New(d Deps) *Server {
 	api.Handle("GET /api/certificates/mine/{serial}/download", s.requireCertificates(s.downloadCertificateKey))
 	api.Handle("GET /api/users/{id}/certificates", s.requireCertificates(s.listUserCertificates))
 	api.Handle("POST /api/users/{id}/certificates/{serial}/revoke", s.requireCertificates(s.revokeCertificate))
+	// Access administrators may list, download and revoke the certificates of
+	// all users, including deleted ones.
+	api.Handle("GET /api/certificates", s.requireCertificates(s.requireAdmin(s.listCertificates).ServeHTTP))
+	api.Handle("GET /api/certificates/{serial}/pem", s.requireCertificates(s.requireAdmin(s.downloadCertificate).ServeHTTP))
+	api.Handle("POST /api/certificates/{serial}/revoke", s.requireCertificates(s.requireAdmin(s.revokeAnyCertificate).ServeHTTP))
 	api.HandleFunc("GET /api/version", getVersion)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)

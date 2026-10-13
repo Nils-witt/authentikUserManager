@@ -174,7 +174,12 @@ export interface Certificate {
   revoked_at: string | null
   /** Username of the revoking user; empty while not revoked. */
   revoked_by: string
+  /** The certificate itself is stored and can be downloaded; not for those issued before it was stored. */
+  stored: boolean
 }
+
+/** The state of a certificate: usable, revoked, or expired without being revoked. */
+export type CertificateStatus = 'active' | 'revoked' | 'expired'
 
 /** A certificate of the signed-in user. */
 export interface OwnCertificate extends Certificate {
@@ -444,6 +449,31 @@ export const revokeCertificate = (userId: number, serial: string) =>
     'POST',
     `/api/users/${userId}/certificates/${encodeURIComponent(serial)}/revoke`,
   )
+
+/** Filters the certificates of all users. */
+export interface CertificateListParams {
+  /** Matches the username by substring, or the serial number by prefix. */
+  search: string
+  status: CertificateStatus | null
+  page: number
+  pageSize: number
+}
+
+/** Loads a page of the certificates of all users, newest first; only access administrators may list them. */
+export function listCertificates(params: CertificateListParams) {
+  const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
+  if (params.search) q.set('search', params.search)
+  if (params.status) q.set('status', params.status)
+  return request<Page<Certificate>>('GET', `/api/certificates?${q}`)
+}
+
+/** Downloads a certificate of any user as PEM, without its key; only for access administrators. */
+export const downloadCertificate = (serial: string) =>
+  send('GET', `/api/certificates/${encodeURIComponent(serial)}/pem`).then((res) => res.text())
+
+/** Revokes a certificate of any user, including deleted ones; only for access administrators. */
+export const revokeAnyCertificate = (serial: string) =>
+  request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/revoke`)
 
 export const version = () => request<BuildInfo>('GET', '/api/version')
 

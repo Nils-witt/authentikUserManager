@@ -74,7 +74,10 @@ may change a user (see [primary groups](#primary-groups)) can list the user's ce
 (the shield icon in the user list) and revoke them; users can revoke their own. Deleting,
 deactivating or renaming a user through this application revokes all of their certificates;
 reactivating the user does not restore them. Changes made directly in authentik bypass this,
-so revoke the certificates here as well. Revoked
+so revoke the certificates here as well. Access administrators can review every issued
+certificate under **Issued certificates**, download it (the certificate only, never its key;
+not for certificates issued before this was added) and revoke it, including the certificates of
+deleted users. Revoked
 certificates are listed in the CRL at `/pki/crl` until they expire, and the CA chain is at
 `/pki/ca.pem`. Both are public, so relying parties can fetch them without a login.
 
@@ -278,6 +281,9 @@ the frontend, run `make build` again.
 | GET    | `/api/certificates/mine/{serial}/download` | the generated key bundle, once; 410 afterwards |
 | GET    | `/api/users/{id}/certificates` | the user's certificates, for the user and the operators who may change them |
 | POST   | `/api/users/{id}/certificates/{serial}/revoke` | revokes a certificate of the user |
+| GET    | `/api/certificates`        | access administrators only; the certificates of all users, newest first, paginated: `?search=` (username substring or serial prefix), `?status=active\|revoked\|expired`, `?page=`, `?page_size=` |
+| GET    | `/api/certificates/{serial}/pem` | access administrators only; the certificate as PEM, without its key; 404 for certificates issued before certificates were stored |
+| POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |
 | GET    | `/pki/crl`                 | DER certificate revocation list; no login required       |
 | GET    | `/pki/ca.pem`              | CA certificate chain; no login required                  |
 | GET    | `/healthz`                 | no login required                                        |

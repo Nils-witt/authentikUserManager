@@ -1,10 +1,14 @@
 package store_test
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,8 +16,14 @@ import (
 	"authentikManager/internal/store"
 )
 
-// createTestCertificate stores a certificate with a fresh serial, since the table is not wiped.
+// createTestCertificate stores a certificate of ann with a fresh serial, since the table is not wiped.
 func createTestCertificate(t *testing.T, s *store.Store, userPK int, notAfter time.Time) certificate.Certificate {
+	t.Helper()
+	return createUserCertificate(t, s, userPK, "ann", notAfter)
+}
+
+// createUserCertificate stores a certificate of username with a fresh serial.
+func createUserCertificate(t *testing.T, s *store.Store, userPK int, username string, notAfter time.Time) certificate.Certificate {
 	t.Helper()
 	serial := make([]byte, 16)
 	if _, err := rand.Read(serial); err != nil {
@@ -22,7 +32,7 @@ func createTestCertificate(t *testing.T, s *store.Store, userPK int, notAfter ti
 	c, err := s.CreateCertificate(t.Context(), certificate.Certificate{
 		Serial:    "f" + hex.EncodeToString(serial),
 		UserPK:    userPK,
-		Username:  "ann",
+		Username:  username,
 		Subject:   "CN=ann",
 		NotBefore: time.Now().Add(-time.Minute),
 		NotAfter:  notAfter,
@@ -57,6 +67,44 @@ func TestStore_createCertificate(t *testing.T) {
 	}
 }
 
+func TestStore_getCertificateDER(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+
+	stored, err := s.CreateCertificate(ctx, certificate.Certificate{
+		Serial:    "e" + strings.Repeat("0", 20) + strconv.Itoa(uniqueUserPK()),
+		UserPK:    uniqueUserPK(),
+		Username:  "ann",
+		Subject:   "CN=ann",
+		NotBefore: time.Now().Add(-time.Minute),
+		NotAfter:  time.Now().Add(time.Hour),
+		IssuedBy:  "ann",
+		KeySource: certificate.KeySourceCSR,
+		DER:       []byte{0x30, 0x03, 0x02, 0x01, 0x01},
+	})
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	if !stored.Stored || stored.DER != nil {
+		t.Errorf("created = %+v, want it marked as stored, without its encoding", stored)
+	}
+	der, err := s.GetCertificateDER(ctx, stored.Serial)
+	if err != nil || !slices.Equal(der, []byte{0x30, 0x03, 0x02, 0x01, 0x01}) {
+		t.Errorf("GetCertificateDER = %x, %v, want the stored encoding", der, err)
+	}
+
+	old := createTestCertificate(t, s, uniqueUserPK(), time.Now().Add(time.Hour))
+	if old.Stored {
+		t.Error("a certificate without encoding is marked as stored")
+	}
+	if _, err := s.GetCertificateDER(ctx, old.Serial); !errors.Is(err, certificate.ErrNotStored) {
+		t.Errorf("GetCertificateDER(without encoding) = %v, want ErrNotStored", err)
+	}
+	if _, err := s.GetCertificateDER(ctx, "0"); !errors.Is(err, certificate.ErrNotFound) {
+		t.Errorf("GetCertificateDER(unknown) = %v, want ErrNotFound", err)
+	}
+}
+
 func TestStore_listCertificates(t *testing.T) {
 	s := openTestStore(t)
 	userPK := uniqueUserPK()
@@ -79,6 +127,55 @@ func TestStore_listCertificates(t *testing.T) {
 	empty, err := s.ListCertificates(t.Context(), -1)
 	if err != nil || empty == nil || len(empty) != 0 {
 		t.Errorf("ListCertificates(unknown) = %v, %v, want an empty list", empty, err)
+	}
+}
+
+func TestStore_listAllCertificates(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+	userPK := uniqueUserPK()
+	// The underscore must match literally, not any character like in LIKE.
+	prefix := fmt.Sprintf("list%d_", userPK)
+	username := prefix + "ann"
+	now := time.Now()
+
+	active := createUserCertificate(t, s, userPK, username, now.Add(time.Hour))
+	expired := createUserCertificate(t, s, userPK, username, now.Add(-time.Second))
+	revoked := createUserCertificate(t, s, userPK, username, now.Add(time.Hour))
+	if _, err := s.RevokeCertificate(ctx, revoked.Serial, "admin"); err != nil {
+		t.Fatalf("RevokeCertificate: %v", err)
+	}
+	createUserCertificate(t, s, userPK+1, fmt.Sprintf("list%dxann", userPK), now.Add(time.Hour))
+
+	tests := []struct {
+		name        string
+		query       certificate.Query
+		wantSerials []string
+		wantTotal   int
+	}{
+		{name: "username", query: certificate.Query{Search: strings.ToUpper(prefix)}, wantSerials: []string{revoked.Serial, expired.Serial, active.Serial}, wantTotal: 3},
+		{name: "serial prefix", query: certificate.Query{Search: strings.ToUpper(active.Serial[:20])}, wantSerials: []string{active.Serial}, wantTotal: 1},
+		{name: "active", query: certificate.Query{Search: prefix, Status: certificate.StatusActive}, wantSerials: []string{active.Serial}, wantTotal: 1},
+		{name: "revoked", query: certificate.Query{Search: prefix, Status: certificate.StatusRevoked}, wantSerials: []string{revoked.Serial}, wantTotal: 1},
+		{name: "expired", query: certificate.Query{Search: prefix, Status: certificate.StatusExpired}, wantSerials: []string{expired.Serial}, wantTotal: 1},
+		{name: "second page", query: certificate.Query{Search: prefix, Page: 2, PageSize: 2}, wantSerials: []string{active.Serial}, wantTotal: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := tt.query
+			q.Page, q.PageSize = max(q.Page, 1), cmp.Or(q.PageSize, 10)
+			list, total, err := s.ListAllCertificates(ctx, q, now)
+			if err != nil {
+				t.Fatalf("ListAllCertificates: %v", err)
+			}
+			serials := []string{}
+			for _, c := range list {
+				serials = append(serials, c.Serial)
+			}
+			if !slices.Equal(serials, tt.wantSerials) || total != tt.wantTotal {
+				t.Errorf("ListAllCertificates = %v of %d, want %v of %d", serials, total, tt.wantSerials, tt.wantTotal)
+			}
+		})
 	}
 }
 

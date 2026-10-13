@@ -34,9 +34,14 @@ interface CertificateTableProps {
   /** Serial of the certificate an action runs for, so its buttons show progress. */
   busy: string | null
   loadFailed: boolean
-  onRevoke: (c: Certificate) => void
+  /** Show whose certificate each one is, for lists of several users. */
+  showUser?: boolean
+  /** Revokes an active certificate; without it, there are no revoke buttons. */
+  onRevoke?: (c: Certificate) => void
   /** Downloads the generated key; only for the user's own certificates. */
   onDownload?: (c: OwnCertificate) => void
+  /** Downloads a stored certificate itself, without its key. */
+  onDownloadCertificate?: (c: Certificate) => void
 }
 
 /** Table of issued certificates with their state, and revoke and download buttons. */
@@ -44,26 +49,33 @@ export function CertificateTable({
   certificates,
   busy,
   loadFailed,
+  showUser = false,
   onRevoke,
   onDownload,
+  onDownloadCertificate,
 }: CertificateTableProps) {
+  const hasActions =
+    onRevoke !== undefined || onDownload !== undefined || onDownloadCertificate !== undefined
+  const columns = 5 + Number(showUser) + Number(hasActions)
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={certificates === null}>
       <Box sx={{ height: 4 }}>{certificates === null && !loadFailed && <LinearProgress />}</Box>
       <Table size="small">
         <TableHead>
           <TableRow>
+            {showUser && <TableCell>User</TableCell>}
             <TableCell>Serial</TableCell>
             <TableCell>Issued</TableCell>
             <TableCell>Expires</TableCell>
             <TableCell>Key</TableCell>
             <TableCell>Status</TableCell>
-            <TableCell aria-label="Actions" />
+            {hasActions && <TableCell aria-label="Actions" />}
           </TableRow>
         </TableHead>
         <TableBody>
           {certificates?.map((c) => (
             <TableRow key={c.serial} hover>
+              {showUser && <TableCell title={`User ID ${c.user_pk}`}>{c.username}</TableCell>}
               <TableCell
                 sx={{
                   fontFamily: 'monospace',
@@ -85,36 +97,48 @@ export function CertificateTable({
               <TableCell>
                 <Status certificate={c} />
               </TableCell>
-              <TableCell align="right">
-                <Stack direction="row" spacing={1} sx={{ justifyContent: 'flex-end' }}>
-                  {onDownload && 'downloadable' in c && c.downloadable && (
-                    <Button
-                      size="small"
-                      variant="contained"
-                      loading={busy === c.serial}
-                      disabled={busy !== null && busy !== c.serial}
-                      onClick={() => onDownload(c)}
-                    >
-                      Download key
-                    </Button>
-                  )}
-                  {isActive(c) && (
-                    <Button
-                      size="small"
-                      color="error"
-                      disabled={busy !== null}
-                      onClick={() => onRevoke(c)}
-                    >
-                      Revoke
-                    </Button>
-                  )}
-                </Stack>
-              </TableCell>
+              {hasActions && (
+                <TableCell align="right">
+                  <Stack direction="row" spacing={1} sx={{ justifyContent: 'flex-end' }}>
+                    {onDownload && 'downloadable' in c && c.downloadable && (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        loading={busy === c.serial}
+                        disabled={busy !== null && busy !== c.serial}
+                        onClick={() => onDownload(c)}
+                      >
+                        Download key
+                      </Button>
+                    )}
+                    {onDownloadCertificate && c.stored && (
+                      <Button
+                        size="small"
+                        loading={busy === c.serial}
+                        disabled={busy !== null && busy !== c.serial}
+                        onClick={() => onDownloadCertificate(c)}
+                      >
+                        Download
+                      </Button>
+                    )}
+                    {onRevoke && isActive(c) && (
+                      <Button
+                        size="small"
+                        color="error"
+                        disabled={busy !== null}
+                        onClick={() => onRevoke(c)}
+                      >
+                        Revoke
+                      </Button>
+                    )}
+                  </Stack>
+                </TableCell>
+              )}
             </TableRow>
           ))}
           {certificates?.length === 0 && (
             <TableRow>
-              <TableCell colSpan={6} align="center" sx={{ color: 'text.secondary', py: 3 }}>
+              <TableCell colSpan={columns} align="center" sx={{ color: 'text.secondary', py: 3 }}>
                 No certificates.
               </TableCell>
             </TableRow>

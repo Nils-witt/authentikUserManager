@@ -33,6 +33,8 @@ import (
 // fakeCertificates is an in-memory certificate store. Each test uses its own instance.
 type fakeCertificates struct {
 	certs []certificate.Certificate
+	// query records the query passed to ListAllCertificates.
+	query certificate.Query
 	err   error
 }
 
@@ -49,8 +51,24 @@ func (f *fakeCertificates) CreateCertificate(_ context.Context, c certificate.Ce
 		return certificate.Certificate{}, f.err
 	}
 	c.IssuedAt = time.Now()
+	c.Stored = c.DER != nil
 	f.certs = append(f.certs, c)
+	c.DER = nil
 	return c, nil
+}
+
+func (f *fakeCertificates) GetCertificateDER(_ context.Context, serial string) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	i, err := f.find(serial)
+	if err != nil {
+		return nil, err
+	}
+	if f.certs[i].DER == nil {
+		return nil, certificate.ErrNotStored
+	}
+	return f.certs[i].DER, nil
 }
 
 func (f *fakeCertificates) GetCertificate(_ context.Context, serial string) (certificate.Certificate, error) {
@@ -75,6 +93,29 @@ func (f *fakeCertificates) ListCertificates(_ context.Context, userPK int) ([]ce
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeCertificates) ListAllCertificates(_ context.Context, q certificate.Query, now time.Time) ([]certificate.Certificate, int, error) {
+	f.query = q
+	if f.err != nil {
+		return nil, 0, f.err
+	}
+	matches := []certificate.Certificate{}
+	for _, c := range slices.Backward(f.certs) {
+		expired := !c.NotAfter.After(now)
+		statusOK := q.Status == "" ||
+			q.Status == certificate.StatusActive && c.RevokedAt == nil && !expired ||
+			q.Status == certificate.StatusRevoked && c.RevokedAt != nil ||
+			q.Status == certificate.StatusExpired && c.RevokedAt == nil && expired
+		searchOK := strings.Contains(strings.ToLower(c.Username), strings.ToLower(q.Search)) ||
+			strings.HasPrefix(c.Serial, strings.ToLower(q.Search))
+		if statusOK && searchOK {
+			matches = append(matches, c)
+		}
+	}
+	start := min(len(matches), (q.Page-1)*q.PageSize)
+	end := min(len(matches), start+q.PageSize)
+	return matches[start:end], len(matches), nil
 }
 
 func (f *fakeCertificates) RevokeCertificate(_ context.Context, serial, actor string) (certificate.Certificate, error) {
@@ -486,6 +527,227 @@ func TestCertificates_listMine(t *testing.T) {
 }
 
 // addCertificates stores certificate "ab" of bob (user 5) and "cd" of cat (user 6).
+func TestCertificates_listAll(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		query       string
+		wantSerials []string
+		wantPage    authentik.Pagination
+	}{
+		{
+			name:        "all, newest first",
+			wantSerials: []string{"cd", "ab"},
+			wantPage:    authentik.Pagination{Count: 2, Current: 1, TotalPages: 1, StartIndex: 1, EndIndex: 2},
+		},
+		{
+			name:        "username",
+			query:       "search=CA",
+			wantSerials: []string{"cd"},
+			wantPage:    authentik.Pagination{Count: 1, Current: 1, TotalPages: 1, StartIndex: 1, EndIndex: 1},
+		},
+		{
+			name:        "serial prefix",
+			query:       "search=AB",
+			wantSerials: []string{"ab"},
+			wantPage:    authentik.Pagination{Count: 1, Current: 1, TotalPages: 1, StartIndex: 1, EndIndex: 1},
+		},
+		{
+			name:        "revoked",
+			query:       "status=revoked",
+			wantSerials: []string{"ab"},
+			wantPage:    authentik.Pagination{Count: 1, Current: 1, TotalPages: 1, StartIndex: 1, EndIndex: 1},
+		},
+		{
+			name:        "second page",
+			query:       "page=2&page_size=1",
+			wantSerials: []string{"ab"},
+			wantPage:    authentik.Pagination{Count: 2, Current: 2, TotalPages: 2, Previous: 1, StartIndex: 2, EndIndex: 2},
+		},
+		{
+			name:        "past the end",
+			query:       "page=3&page_size=1",
+			wantSerials: []string{},
+			wantPage:    authentik.Pagination{Count: 2, Current: 3, TotalPages: 2, Previous: 2},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := newCertServer(t, &fakeUsers{}, "admins")
+			addCertificates(env)
+			now := time.Now()
+			env.certs.certs[0].RevokedAt, env.certs.certs[0].RevokedBy = &now, "admin"
+
+			rec := do(t, env.srv, http.MethodGet, "/api/certificates?"+tt.query, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d %s", rec.Code, rec.Body)
+			}
+			var out struct {
+				Pagination authentik.Pagination      `json:"pagination"`
+				Results    []certificate.Certificate `json:"results"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+			serials := []string{}
+			for _, c := range out.Results {
+				serials = append(serials, c.Serial)
+			}
+			if !slices.Equal(serials, tt.wantSerials) {
+				t.Errorf("serials = %v, want %v", serials, tt.wantSerials)
+			}
+			if out.Pagination != tt.wantPage {
+				t.Errorf("pagination = %+v, want %+v", out.Pagination, tt.wantPage)
+			}
+		})
+	}
+}
+
+func TestCertificates_listAllRejected(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		groups     []string
+		query      string
+		wantStatus int
+	}{
+		{name: "not an administrator", groups: []string{"helpdesk"}, wantStatus: http.StatusForbidden},
+		{name: "unknown status", groups: []string{"admins"}, query: "status=valid", wantStatus: http.StatusBadRequest},
+		{name: "page size too large", groups: []string{"admins"}, query: "page_size=500", wantStatus: http.StatusBadRequest},
+		{name: "search too long", groups: []string{"admins"}, query: "search=" + strings.Repeat("a", 256), wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := newCertServer(t, &fakeUsers{}, tt.groups...)
+			if rec := do(t, env.srv, http.MethodGet, "/api/certificates?"+tt.query, ""); rec.Code != tt.wantStatus {
+				t.Errorf("status = %d %s, want %d", rec.Code, rec.Body, tt.wantStatus)
+			}
+			if env.certs.query != (certificate.Query{}) {
+				t.Errorf("the store was queried with %+v", env.certs.query)
+			}
+		})
+	}
+}
+
+func TestCertificates_downloadCertificate(t *testing.T) {
+	t.Parallel()
+	env := newCertServer(t, ownAccountUsers(), "admins")
+	addCertificates(env)
+	issued := issue(t, env, `{"format":"pem"}`).Certificate
+	if !issued.Stored {
+		t.Error("the issued certificate is not marked as stored")
+	}
+
+	rec := do(t, env.srv, http.MethodGet, "/api/certificates/"+issued.Serial+"/pem", "")
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/x-pem-file" ||
+		rec.Header().Get("Content-Disposition") != "attachment; filename="+issued.Serial+".crt" {
+		t.Fatalf("download = %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	block, rest := pem.Decode(rec.Body.Bytes())
+	if block == nil || block.Type != "CERTIFICATE" || len(rest) != 0 {
+		t.Fatalf("download = %q, want one CERTIFICATE block", rec.Body)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pki.SerialText(cert.SerialNumber) != issued.Serial || cert.Subject.CommonName != "admin" {
+		t.Errorf("downloaded certificate %s for %q, want %s for admin", pki.SerialText(cert.SerialNumber), cert.Subject.CommonName, issued.Serial)
+	}
+
+	tests := []struct {
+		name       string
+		serial     string
+		wantStatus int
+	}{
+		{name: "issued before certificates were stored", serial: "ab", wantStatus: http.StatusNotFound},
+		{name: "unknown", serial: "ef", wantStatus: http.StatusNotFound},
+		{name: "invalid serial", serial: "AB", wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if rec := do(t, env.srv, http.MethodGet, "/api/certificates/"+tt.serial+"/pem", ""); rec.Code != tt.wantStatus {
+				t.Errorf("download = %d %s, want %d", rec.Code, rec.Body, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestCertificates_revokeAny(t *testing.T) {
+	t.Parallel()
+	// bob was deleted: authentik no longer knows him, but his certificate can be revoked.
+	env := newCertServer(t, &fakeUsers{err: authentik.ErrNotFound}, "admins")
+	addCertificates(env)
+	if err := put(env.downloads, "ab", "bob"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, env.srv, http.MethodPost, "/api/certificates/ab/revoke", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"revoked_by":"admin"`) {
+		t.Fatalf("revoke = %d %s", rec.Code, rec.Body)
+	}
+	if env.certs.certs[0].RevokedBy != "admin" || env.certs.certs[1].RevokedAt != nil {
+		t.Errorf("certificates = %+v, want only ab revoked", env.certs.certs)
+	}
+	if env.downloads.Has("ab", "bob") {
+		t.Error("the key of the revoked certificate can still be downloaded")
+	}
+	i := slices.IndexFunc(env.log.recorded, func(e audit.Entry) bool { return e.Action == audit.ActionCertificateRevoked })
+	if i < 0 || env.log.recorded[i].Target != "bob" || env.log.recorded[i].Details["user_id"] != "5" ||
+		env.log.recorded[i].Details["serial"] != "ab" {
+		t.Errorf("audit = %+v, want the revocation of bob's ab", env.log.recorded)
+	}
+	crl := fetchCRL(t, env)
+	if len(crl.RevokedCertificateEntries) != 1 || crl.RevokedCertificateEntries[0].SerialNumber.Int64() != 0xab {
+		t.Errorf("CRL = %v, want serial ab", crl.RevokedCertificateEntries)
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{name: "already revoked", path: "/api/certificates/ab/revoke", wantStatus: http.StatusConflict},
+		{name: "unknown", path: "/api/certificates/ef/revoke", wantStatus: http.StatusNotFound},
+		{name: "invalid serial", path: "/api/certificates/0ab/revoke", wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if rec := do(t, env.srv, http.MethodPost, tt.path, ""); rec.Code != tt.wantStatus {
+				t.Errorf("revoke = %d %s, want %d", rec.Code, rec.Body, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestCertificates_adminOnly(t *testing.T) {
+	t.Parallel()
+	env := newCertServer(t, ownAccountUsers(), "helpdesk")
+	addCertificates(env)
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "list", method: http.MethodGet, path: "/api/certificates"},
+		{name: "download", method: http.MethodGet, path: "/api/certificates/ab/pem"},
+		{name: "revoke", method: http.MethodPost, path: "/api/certificates/ab/revoke"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if rec := do(t, env.srv, tt.method, tt.path, ""); rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d %s, want 403", rec.Code, rec.Body)
+			}
+		})
+	}
+	if env.certs.certs[0].RevokedAt != nil {
+		t.Error("the certificate was revoked")
+	}
+}
+
 func addCertificates(env *certEnv) {
 	env.certs.certs = append(env.certs.certs,
 		certificate.Certificate{Serial: "ab", UserPK: 5, Username: "bob", NotAfter: time.Now().Add(time.Hour)},

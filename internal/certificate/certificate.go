@@ -4,6 +4,8 @@ package certificate
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,6 +28,8 @@ var (
 	ErrNotFound = errors.New("certificate not found")
 	// ErrRevoked is returned when revoking a certificate that is already revoked.
 	ErrRevoked = errors.New("certificate already revoked")
+	// ErrNotStored is returned when a certificate was issued before its encoding was stored.
+	ErrNotStored = errors.New("certificate not stored")
 )
 
 // Certificate is the record of one issued certificate.
@@ -48,6 +52,56 @@ type Certificate struct {
 	RevokedAt *time.Time `json:"revoked_at"`
 	// RevokedBy is the username of the revoking user; empty while not revoked.
 	RevokedBy string `json:"revoked_by"`
+	// DER is the encoded certificate, stored when it is created; lists leave it empty.
+	DER []byte `json:"-"`
+	// Stored is set when DER is stored, so the certificate can be downloaded.
+	// Certificates issued before encodings were stored have none.
+	Stored bool `json:"stored"`
+}
+
+// Status is the state of a certificate, for filtering lists.
+type Status string
+
+// The certificate states.
+const (
+	// StatusActive is a certificate that is neither revoked nor expired.
+	StatusActive Status = "active"
+	// StatusRevoked is a revoked certificate, expired or not.
+	StatusRevoked Status = "revoked"
+	// StatusExpired is a certificate that expired without being revoked.
+	StatusExpired Status = "expired"
+)
+
+// maxSearchLen bounds the search text.
+const maxSearchLen = 255
+
+// Query selects certificates of all users, newest first.
+type Query struct {
+	// Search, when set, matches the username case-insensitively by substring,
+	// or the serial number by prefix.
+	Search string
+	// Status, when set, matches only certificates in this state.
+	Status Status
+	// Page is the 1-based page of PageSize certificates.
+	Page     int
+	PageSize int
+}
+
+// Normalize trims the search text, then validates the query. The returned
+// error is safe to show users.
+func (q Query) Normalize() (Query, error) {
+	q.Search = strings.TrimSpace(q.Search)
+	switch {
+	case len(q.Search) > maxSearchLen:
+		return Query{}, fmt.Errorf("search must be at most %d characters", maxSearchLen)
+	case q.Status != "" && q.Status != StatusActive && q.Status != StatusRevoked && q.Status != StatusExpired:
+		return Query{}, errors.New(`status must be "active", "revoked" or "expired"`)
+	case q.Page < 1:
+		return Query{}, errors.New("page must be a positive integer")
+	case q.PageSize < 1 || q.PageSize > MaxList:
+		return Query{}, fmt.Errorf("page size must be between 1 and %d", MaxList)
+	}
+	return q, nil
 }
 
 // Revoked is a revoked certificate, as listed in the CRL.

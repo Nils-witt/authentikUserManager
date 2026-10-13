@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -132,6 +133,52 @@ func (s *Server) listUserCertificates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, certificateList[certificate.Certificate]{Certificates: list})
 }
 
+// listCertificates returns a page of the certificates of all users, newest
+// first, for access administrators. The query parameters search, status, page
+// and page_size filter and page it (see certificate.Query).
+func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
+	params := r.URL.Query()
+	current, size, ok := parsePaging(w, params)
+	if !ok {
+		return
+	}
+	q, err := certificate.Query{
+		Search:   params.Get("search"),
+		Status:   certificate.Status(params.Get("status")),
+		Page:     current,
+		PageSize: size,
+	}.Normalize()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	list, total, err := s.certificates.ListAllCertificates(r.Context(), q, time.Now())
+	if err != nil {
+		s.writeCertificateError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page[certificate.Certificate]{
+		Pagination: pagination(total, q.Page, q.PageSize, len(list)),
+		Results:    list,
+	})
+}
+
+// pagination describes page number current of size entries, holding n of total entries.
+func pagination(total, current, size, n int) authentik.Pagination {
+	p := authentik.Pagination{Count: total, Current: current, TotalPages: max(1, (total+size-1)/size)}
+	if current < p.TotalPages {
+		p.Next = current + 1
+	}
+	if current > 1 {
+		p.Previous = current - 1
+	}
+	if n > 0 {
+		p.StartIndex = (current-1)*size + 1
+		p.EndIndex = p.StartIndex + n - 1
+	}
+	return p
+}
+
 // issueCertificateInput requests a certificate either for the public key of
 // a CSR or for a generated key, downloaded as format.
 type issueCertificateInput struct {
@@ -225,6 +272,7 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 		NotAfter:  cert.NotAfter,
 		IssuedBy:  actorName(r),
 		KeySource: source,
+		DER:       cert.Raw,
 	})
 	if err != nil {
 		s.writeCertificateError(w, r, err)
@@ -346,6 +394,47 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c)
 }
 
+// downloadCertificate serves the certificate with the {serial} path value as
+// PEM, for access administrators. It holds no private key.
+func (s *Server) downloadCertificate(w http.ResponseWriter, r *http.Request) {
+	serial := r.PathValue("serial")
+	if _, ok := pki.ParseSerial(serial); !ok {
+		writeError(w, http.StatusBadRequest, "invalid serial number", nil)
+		return
+	}
+	der, err := s.certificates.GetCertificateDER(r.Context(), serial)
+	if err != nil {
+		s.writeCertificateError(w, r, err)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/x-pem-file")
+	h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": serial + ".crt"}))
+	// The status line is already sent; a write error here means the client went away.
+	_, _ = w.Write(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// revokeAnyCertificate revokes the certificate with the {serial} path value,
+// for access administrators. Unlike revokeCertificate it does not load the
+// user from authentik, so it also revokes the certificates of deleted users.
+func (s *Server) revokeAnyCertificate(w http.ResponseWriter, r *http.Request) {
+	serial := r.PathValue("serial")
+	if _, ok := pki.ParseSerial(serial); !ok {
+		writeError(w, http.StatusBadRequest, "invalid serial number", nil)
+		return
+	}
+	c, err := s.certificates.RevokeCertificate(r.Context(), serial, actorName(r))
+	if err != nil {
+		s.writeCertificateError(w, r, err)
+		return
+	}
+	s.keyDownloads.Delete(serial)
+	s.invalidateCRL()
+	s.recordUser(r, audit.ActionCertificateRevoked, &authentik.User{PK: c.UserPK, Username: c.Username},
+		map[string]string{"serial": serial})
+	writeJSON(w, http.StatusOK, c)
+}
+
 // revokeUserCertificates revokes every certificate of user and discards their
 // keys waiting for download, recording reason in the audit log. It is called
 // when the user is deleted, deactivated or renamed, since relying parties
@@ -441,6 +530,8 @@ func (s *Server) writeCertificateError(w http.ResponseWriter, r *http.Request, e
 		writeError(w, http.StatusNotFound, "certificate not found", nil)
 	case errors.Is(err, certificate.ErrRevoked):
 		writeError(w, http.StatusConflict, "certificate already revoked", nil)
+	case errors.Is(err, certificate.ErrNotStored):
+		writeError(w, http.StatusNotFound, "the certificate was issued before certificates were stored and cannot be downloaded", nil)
 	case errors.Is(err, context.Canceled):
 	default:
 		s.logger.ErrorContext(r.Context(), "certificate store failed",

@@ -4,6 +4,7 @@ export const pagePaths = {
   groups: '/groups',
   joinRequests: '/join-requests',
   certificates: '/certificates',
+  issuedCertificates: '/issued-certificates',
   accessRules: '/access-rules',
   audit: '/audit',
 } as const
