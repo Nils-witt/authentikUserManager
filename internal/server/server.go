@@ -45,7 +45,6 @@ func contentSecurityPolicy(nonce string) string {
 // UserService is the subset of the authentik client the handlers depend on.
 type UserService interface {
 	ListUsers(ctx context.Context, p authentik.ListUsersParams) (*authentik.UserList, error)
-	ListUserPaths(ctx context.Context) ([]string, error)
 	GetUser(ctx context.Context, id int) (*authentik.User, error)
 	CreateUser(ctx context.Context, req authentik.CreateUserRequest) (*authentik.User, error)
 	UpdateUser(ctx context.Context, id int, req authentik.UpdateUserRequest) (*authentik.User, error)
@@ -211,10 +210,11 @@ func New(d Deps) *Server {
 	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
 	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
-	// Every signed-in user may list the visible groups, without their members.
+	// Every signed-in user may list the visible groups, their own groups and
+	// those of the accounts they may see, without their members.
 	api.HandleFunc("GET /api/groups/visible", s.listVisibleGroups)
 	// Every signed-in user may list the group folders: all of them for access
-	// administrators, those of the visible groups for everyone else.
+	// administrators, those of the groups they may list for everyone else.
 	api.HandleFunc("GET /api/groups/paths", s.listGroupPaths)
 	// Every signed-in user may request to join a visible group.
 	api.HandleFunc("POST /api/groups/{pk}/join-requests", s.requestJoin)

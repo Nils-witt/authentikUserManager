@@ -370,6 +370,50 @@ func (s *Server) changeableAccount(w http.ResponseWriter, r *http.Request, k acc
 	return user, scope, true
 }
 
+// maxVisibleAccountPages bounds the pages of accounts read by visibleAccounts.
+const maxVisibleAccountPages = 50
+
+// visibleAccounts returns the accounts of the given types in scope. It leaves
+// out the operator's own account when it is outside the scope, and reads at
+// most maxVisibleAccountPages pages.
+func (s *Server) visibleAccounts(r *http.Request, scope access.Scope, types ...authentik.UserType) ([]authentik.User, error) {
+	if scope.Empty() {
+		return nil, nil
+	}
+	params := authentik.ListUsersParams{PageSize: maxPageSize, Type: types}
+	if !scope.IncludesHidden {
+		params.WithoutAttributes = []string{access.HiddenAttribute}
+	}
+	if !scope.All {
+		params.GroupsByName = scope.Groups
+		params.IsSuperuser = new(false)
+	}
+	var out []authentik.User
+	for params.Page = 1; ; params.Page++ {
+		list, err := s.users.ListUsers(r.Context(), params)
+		if err != nil {
+			return nil, err
+		}
+		// authentik silently ignores filters it does not know, so check the type and scope too.
+		for i := range list.Results {
+			if u := &list.Results[i]; slices.Contains(types, u.Type) && scope.Allows(u) {
+				out = append(out, *u)
+			}
+		}
+		if list.Pagination.Next == 0 {
+			return out, nil
+		}
+		if params.Page == maxVisibleAccountPages {
+			s.logger.WarnContext(r.Context(), "too many accounts; using only the first ones",
+				slog.Int("accounts", params.Page*params.PageSize))
+			return out, nil
+		}
+	}
+}
+
+// listUserPaths returns every distinct path of the internal users the operator
+// may see, so folders holding only hidden users, users outside the scope or
+// other account types are left out.
 func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 	scope, ok := s.scope(w, r)
 	if !ok {
@@ -380,12 +424,28 @@ func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string][]string{"paths": {}})
 		return
 	}
-	paths, err := s.users.ListUserPaths(r.Context())
+	users, err := s.visibleAccounts(r, scope, userAccounts.typ)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]string{"paths": paths})
+	// Operators see their own account outside their scope too, so its folder must not be empty.
+	self, err := s.ownAccountOutsideScope(r, userAccounts, authentik.ListUsersParams{}, scope)
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	if self != nil {
+		users = append(users, *self)
+	}
+	paths := []string{}
+	for _, u := range users {
+		if u.Path != "" {
+			paths = append(paths, u.Path)
+		}
+	}
+	slices.Sort(paths)
+	writeJSON(w, http.StatusOK, map[string][]string{"paths": slices.Compact(paths)})
 }
 
 // getAccount returns a handler serving the account of kind k with the {id} path value.

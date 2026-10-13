@@ -93,13 +93,6 @@ func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*
 	return &authentik.UserList{Results: []authentik.User{{PK: 1, Username: "ann", Type: authentik.UserTypeInternal}}}, nil
 }
 
-func (f *fakeUsers) ListUserPaths(context.Context) ([]string, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return []string{"users", "users/staff"}, nil
-}
-
 func (f *fakeUsers) GetUser(_ context.Context, id int) (*authentik.User, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -532,18 +525,60 @@ func TestServer_listUsers_internalOnly(t *testing.T) {
 
 func TestServer_listUserPaths(t *testing.T) {
 	t.Parallel()
+	inGroup := func(username, path, group string) authentik.User {
+		return authentik.User{
+			Username: username,
+			Path:     path,
+			Type:     authentik.UserTypeInternal,
+			Groups:   []authentik.UserGroup{{Name: group}},
+		}
+	}
+	hidden := inGroup("hal", "hidden/only", "staff")
+	hidden.Attributes = map[string]any{access.HiddenAttribute: true}
+	service := inGroup("svc", "services", "staff")
+	service.Type = authentik.UserTypeServiceAccount
+	listed := []authentik.User{
+		inGroup("ann", "users/staff", "staff"),
+		inGroup("bob", "users/staff", "students"),
+		inGroup("cat", "users", "staff"),
+		inGroup("dan", "", "staff"),
+		inGroup("eve", "other", "guests"),
+		// The operator's own account, outside the helpdesk scope.
+		inGroup("admin", "own", "guests"),
+		hidden,
+		service,
+	}
 	tests := []struct {
 		name       string
+		groups     []string
 		err        error
 		wantStatus int
+		wantPaths  []string
 	}{
-		{name: "ok", wantStatus: http.StatusOK},
-		{name: "upstream failure", err: &authentik.APIError{StatusCode: 500}, wantStatus: http.StatusBadGateway},
+		{
+			name:       "access administrator sees the folders of every internal user",
+			groups:     []string{"admins"},
+			wantStatus: http.StatusOK,
+			wantPaths:  []string{"hidden/only", "other", "own", "users", "users/staff"},
+		},
+		{
+			name:       "operator sees only the folders of visible users and their own",
+			groups:     []string{"helpdesk"},
+			wantStatus: http.StatusOK,
+			wantPaths:  []string{"own", "users", "users/staff"},
+		},
+		{
+			name:       "upstream failure",
+			groups:     []string{"admins"},
+			err:        &authentik.APIError{StatusCode: 500},
+			wantStatus: http.StatusBadGateway,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			rec := do(t, newServer(t, &fakeUsers{err: tt.err}), http.MethodGet, "/api/users/paths", "")
+			fake := &fakeUsers{listed: listed, err: tt.err}
+			rec := do(t, newScopedServer(t, fake, tt.groups...), http.MethodGet, "/api/users/paths", "")
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
 			}
@@ -556,10 +591,33 @@ func TestServer_listUserPaths(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatalf("decoding body: %v", err)
 			}
-			if len(body.Paths) != 2 || body.Paths[1] != "users/staff" {
-				t.Errorf("paths = %v", body.Paths)
+			if !slices.Equal(body.Paths, tt.wantPaths) {
+				t.Errorf("paths = %v, want %v", body.Paths, tt.wantPaths)
+			}
+			if p := fake.listCalls[0]; !slices.Equal(p.Type, []authentik.UserType{authentik.UserTypeInternal}) {
+				t.Errorf("Type = %v, want [internal]", p.Type)
 			}
 		})
+	}
+}
+
+func TestServer_listUserPaths_scopeFilters(t *testing.T) {
+	t.Parallel()
+	fake := &fakeUsers{}
+	rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodGet, "/api/users/paths", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+	}
+	// Filter upstream too, so that pages stay full of users the operator may see.
+	p := fake.listCalls[0]
+	if !slices.Equal(p.GroupsByName, []string{"staff", "students"}) {
+		t.Errorf("GroupsByName = %v, want [staff students]", p.GroupsByName)
+	}
+	if p.IsSuperuser == nil || *p.IsSuperuser {
+		t.Errorf("IsSuperuser = %v, want false", p.IsSuperuser)
+	}
+	if !slices.Equal(p.WithoutAttributes, []string{access.HiddenAttribute}) {
+		t.Errorf("WithoutAttributes = %v, want [%s]", p.WithoutAttributes, access.HiddenAttribute)
 	}
 }
 

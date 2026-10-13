@@ -54,8 +54,8 @@ const pathAttribute = "authentik_manager_path"
 // maxGroupPathLen bounds group paths.
 const maxGroupPathLen = 255
 
-// maxGroupPathPages bounds the pages of groups read to collect their paths.
-const maxGroupPathPages = 50
+// maxGroupPages bounds the pages of groups read by collectGroups.
+const maxGroupPages = 50
 
 // groupFolder returns the path of g, or "" when it is at the top level.
 func groupFolder(g *authentik.Group) string {
@@ -127,7 +127,7 @@ func newGroupView(g *authentik.Group) groupView {
 	}
 }
 
-// publicGroup is a visible group as every signed-in user sees it.
+// publicGroup is a group as operators who are no access administrators see it.
 type publicGroup struct {
 	PK         string `json:"pk"`
 	Name       string `json:"name"`
@@ -136,6 +136,9 @@ type publicGroup struct {
 	Path string `json:"path"`
 	// Member is set when the signed-in user is a direct member of the group.
 	Member bool `json:"member"`
+	// Joinable is set when the signed-in user may request to join the group
+	// (see requestJoin), unless already a member.
+	Joinable bool `json:"joinable"`
 }
 
 // page is one page of a list response.
@@ -181,84 +184,154 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// listVisibleGroups returns a page of the groups visible to every signed-in
-// user, ordered by name, with their names only. It is open to every operator,
-// including those who may not manage any users. The query parameters search,
-// path, page and page_size filter and page it. Users may request to join them; see
-// requestJoin.
+// collectGroups returns the groups matching params and keep, ignoring the
+// paging of params. It reads at most maxGroupPages pages.
+func (s *Server) collectGroups(r *http.Request, params authentik.ListGroupsParams, keep func(*authentik.Group) bool) ([]authentik.Group, error) {
+	params.PageSize = maxPageSize
+	out := []authentik.Group{}
+	for params.Page = 1; ; params.Page++ {
+		list, err := s.users.ListGroups(r.Context(), params)
+		if err != nil {
+			return nil, err
+		}
+		for i := range list.Results {
+			if g := &list.Results[i]; keep(g) {
+				out = append(out, *g)
+			}
+		}
+		if list.Pagination.Next == 0 {
+			return out, nil
+		}
+		if params.Page == maxGroupPages {
+			s.logger.WarnContext(r.Context(), "too many groups; using only the first ones",
+				slog.Int("groups", params.Page*params.PageSize))
+			return out, nil
+		}
+	}
+}
+
+// listableGroups returns a predicate reporting whether an operator with scope
+// who is no access administrator sees a group in the group list: the visible
+// groups, the operator's own groups and the groups of the accounts the
+// operator may see. It also returns the operator's own account, or nil when
+// it is not found.
+func (s *Server) listableGroups(r *http.Request, scope access.Scope) (func(*authentik.Group) bool, *authentik.User, error) {
+	// The groups read at login miss the ones joined since, by an approved request for example.
+	self, err := s.findRequester(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	accounts, err := s.visibleAccounts(r, scope, userAccounts.typ, serviceAccounts.typ)
+	if err != nil {
+		return nil, nil, err
+	}
+	if self != nil {
+		accounts = append(accounts, *self)
+	}
+	related := map[string]bool{}
+	for _, u := range accounts {
+		for _, g := range u.Groups {
+			related[g.PK] = true
+		}
+	}
+	return func(g *authentik.Group) bool { return isVisible(g) || related[g.PK] }, self, nil
+}
+
+// pageOf returns the page with the given number and size of items, numbered
+// from 1 like authentik's pages.
+func pageOf[T any](items []T, number, size int) ([]T, authentik.Pagination) {
+	start := min((number-1)*size, len(items))
+	end := min(start+size, len(items))
+	p := authentik.Pagination{Count: len(items), Current: number, TotalPages: (len(items) + size - 1) / size}
+	if number < p.TotalPages {
+		p.Next = number + 1
+	}
+	if number > 1 {
+		p.Previous = number - 1
+	}
+	if end > start {
+		p.StartIndex, p.EndIndex = start+1, end
+	}
+	return items[start:end], p
+}
+
+// listVisibleGroups returns a page of the groups an operator who is no access
+// administrator sees (see listableGroups), ordered by name, with their names
+// only. It is open to every operator, including those who may not manage any
+// users. The query parameters search, path, page and page_size filter and page
+// it. Users may request to join the visible ones; see requestJoin.
 func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
 	params, ok := groupListParams(w, r)
 	if !ok {
 		return
 	}
-	if params.Attributes == nil {
-		params.Attributes = map[string]any{}
+	scope, ok := s.scope(w, r)
+	if !ok {
+		return
 	}
-	params.Attributes[visibleAttribute] = true
-	list, err := s.users.ListGroups(r.Context(), params)
+	listable, self, err := s.listableGroups(r, scope)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
-	// The groups read at login miss the ones joined since, by an approved request for example.
-	user, err := s.findRequester(r)
+	// The groups are combined from several sources, so page them here.
+	groups, err := s.collectGroups(r, params, func(g *authentik.Group) bool {
+		// authentik silently ignores filters it does not know, so drop groups
+		// in other folders in case the filter was not applied.
+		return listable(g) && inFolder(g, params)
+	})
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
 	isMember := func(*authentik.Group) bool { return false }
-	if user != nil {
+	if self != nil {
 		isMember = func(g *authentik.Group) bool {
-			return slices.ContainsFunc(user.Groups, func(ug authentik.UserGroup) bool { return ug.PK == g.PK })
+			return slices.ContainsFunc(self.Groups, func(ug authentik.UserGroup) bool { return ug.PK == g.PK })
 		}
 	}
-	out := page[publicGroup]{Pagination: list.Pagination, Results: []publicGroup{}}
-	for i := range list.Results {
-		g := &list.Results[i]
-		// authentik silently ignores filters it does not know, so drop hidden
-		// groups and those in other folders in case the filters were not applied.
-		if isVisible(g) && inFolder(g, params) {
-			out.Results = append(out.Results, publicGroup{
-				PK:         g.PK,
-				Name:       g.Name,
-				ParentName: g.ParentName,
-				Path:       groupFolder(g),
-				Member:     isMember(g),
-			})
+	results, pagination := pageOf(groups, params.Page, params.PageSize)
+	out := page[publicGroup]{Pagination: pagination, Results: make([]publicGroup, len(results))}
+	for i := range results {
+		g := &results[i]
+		out.Results[i] = publicGroup{
+			PK:         g.PK,
+			Name:       g.Name,
+			ParentName: g.ParentName,
+			Path:       groupFolder(g),
+			Member:     isMember(g),
+			Joinable:   isVisible(g) && !g.IsSuperuser,
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // listGroupPaths returns every distinct group path. Access administrators get
-// the paths of all groups, everyone else those of the visible groups.
+// the paths of all groups, everyone else those of the groups they see in the
+// group list (see listableGroups).
 func (s *Server) listGroupPaths(w http.ResponseWriter, r *http.Request) {
-	admin := s.policy.IsAdmin(operatorGroups(r))
-	params := authentik.ListGroupsParams{PageSize: maxPageSize}
-	if !admin {
-		params.Attributes = map[string]any{visibleAttribute: true}
-	}
-	paths := []string{}
-	for params.Page = 1; ; params.Page++ {
-		list, err := s.users.ListGroups(r.Context(), params)
+	keep := func(*authentik.Group) bool { return true }
+	if !s.policy.IsAdmin(operatorGroups(r)) {
+		scope, ok := s.scope(w, r)
+		if !ok {
+			return
+		}
+		listable, _, err := s.listableGroups(r, scope)
 		if err != nil {
 			s.writeUpstreamError(w, r, err)
 			return
 		}
-		for i := range list.Results {
-			g := &list.Results[i]
-			// authentik silently ignores filters it does not know, so check visibility too.
-			if path := groupFolder(g); path != "" && (admin || isVisible(g)) {
-				paths = append(paths, path)
-			}
-		}
-		if list.Pagination.Next == 0 {
-			break
-		}
-		if params.Page == maxGroupPathPages {
-			s.logger.WarnContext(r.Context(), "too many groups; listing only the paths of the first ones",
-				slog.Int("groups", params.Page*params.PageSize))
-			break
+		keep = listable
+	}
+	groups, err := s.collectGroups(r, authentik.ListGroupsParams{}, keep)
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
+	}
+	paths := []string{}
+	for i := range groups {
+		if path := groupFolder(&groups[i]); path != "" {
+			paths = append(paths, path)
 		}
 	}
 	slices.Sort(paths)

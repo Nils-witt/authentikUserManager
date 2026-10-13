@@ -217,20 +217,6 @@ func (c *Client) ListUsers(ctx context.Context, p ListUsersParams) (*UserList, e
 	return &out, nil
 }
 
-// ListUserPaths returns every distinct user path, such as "users" or "users/staff".
-func (c *Client) ListUserPaths(ctx context.Context) ([]string, error) {
-	var out struct {
-		Paths []string `json:"paths"`
-	}
-	if err := c.do(ctx, http.MethodGet, "core/users/paths/", nil, nil, &out); err != nil {
-		return nil, fmt.Errorf("listing user paths: %w", err)
-	}
-	if out.Paths == nil {
-		out.Paths = []string{}
-	}
-	return out.Paths, nil
-}
-
 // GetUser returns the user with primary key id.
 func (c *Client) GetUser(ctx context.Context, id int) (*User, error) {
 	var out User

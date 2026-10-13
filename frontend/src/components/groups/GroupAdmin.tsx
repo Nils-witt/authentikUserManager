@@ -103,6 +103,7 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
 
   function renderJoin(group: PublicGroup) {
     if (group.member) return <Chip size="small" label="Member" />
+    if (!group.joinable) return null
     const request = pending.find((r) => r.group_pk === group.pk)
     if (request) {
       return (
@@ -149,7 +150,7 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
         <Typography variant="body2" color="text.secondary">
           {admin
             ? 'Groups marked visible are listed here for every signed-in user, without their members.'
-            : 'Groups the access administrators made visible to everyone. Their members are not shown. You can request to join one; the operators managing it decide.'}
+            : 'Your groups, the groups of the users you manage, and the groups the access administrators made visible to everyone. Their members are not shown. You can request to join a visible group; the operators managing it decide.'}
         </Typography>
         <TextField
           type="search"

@@ -42,8 +42,10 @@ export interface PublicGroup {
   parent_name: string | null
   /** Folder of the group, e.g. "school/classes"; empty at the top level. */
   path: string
-  /** The signed-in user was a member at login; set in the list of visible groups only. */
+  /** The signed-in user is a direct member; set in the group list of non-administrators only. */
   member?: boolean
+  /** The signed-in user may request to join; set in the group list of non-administrators only. */
+  joinable?: boolean
 }
 
 /** An authentik group, as access administrators see it. */
@@ -393,11 +395,14 @@ function groupListQuery(params: GroupListParams) {
 export const listGroups = (params: GroupListParams) =>
   request<Page<Group>>('GET', `/api/groups?${groupListQuery(params)}`)
 
-/** Loads a page of the groups visible to every signed-in user, ordered by name. */
+/**
+ * Loads a page of the groups a non-administrator sees, ordered by name: those visible to
+ * everyone, their own and those of the users they may see.
+ */
 export const listVisibleGroups = (params: GroupListParams) =>
   request<Page<PublicGroup>>('GET', `/api/groups/visible?${groupListQuery(params)}`)
 
-/** Loads the group folders: of all groups for access administrators, of the visible ones for everyone else. */
+/** Loads the group folders: of all groups for access administrators, of the groups they see for everyone else. */
 export const listGroupPaths = () =>
   request<{ paths: string[] }>('GET', '/api/groups/paths').then((res) => res.paths)
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"authentikManager/internal/access"
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
 )
@@ -96,29 +97,111 @@ func TestServer_listGroups_views(t *testing.T) {
 	}
 }
 
+// listableGroupsFixture returns the groups and accounts of the tests of the
+// group list for operators who are no access administrators.
+func listableGroupsFixture() ([]authentik.Group, []authentik.User) {
+	groups := []authentik.Group{
+		{PK: "g1", Name: "admins", IsSuperuser: true, Attributes: map[string]any{visibleAttribute: true, "secret": "x"}},
+		{PK: "g2", Name: "lab", Attributes: map[string]any{pathAttribute: "school"}},
+		{PK: "g3", Name: "mine", Attributes: map[string]any{pathAttribute: "own"}},
+		{PK: "g4", Name: "open", Attributes: map[string]any{visibleAttribute: true}},
+		{PK: "g5", Name: "secret", Attributes: map[string]any{pathAttribute: "secret"}},
+		{PK: "g6", Name: "staff"},
+	}
+	// The signed-in user joined mine after their login.
+	accounts := requester(authentik.UserGroup{PK: "g3", Name: "mine"})
+	accounts = append(accounts,
+		authentik.User{
+			PK: 8, Username: "bob", Type: authentik.UserTypeInternal,
+			Groups: []authentik.UserGroup{{PK: "g6", Name: "staff"}, {PK: "g2", Name: "lab"}},
+		},
+		// Hidden, so its groups stay hidden from operators who are no access administrators.
+		authentik.User{
+			PK: 9, Username: "hal", Type: authentik.UserTypeInternal,
+			Groups:     []authentik.UserGroup{{PK: "g6", Name: "staff"}, {PK: "g5", Name: "secret"}},
+			Attributes: map[string]any{access.HiddenAttribute: true},
+		},
+	)
+	return groups, accounts
+}
+
 func TestServer_listVisibleGroups(t *testing.T) {
 	t.Parallel()
-	users := &fakeUsers{groupList: []authentik.Group{
-		{PK: "g1", Name: "staff", IsSuperuser: true, Attributes: map[string]any{visibleAttribute: true, "secret": "x"}},
-		// Returned as if authentik ignored the filter; it must be dropped.
-		{PK: "g2", Name: "hidden"},
-	}}
-	// The signed-in user joined staff after their login.
-	users.listed = requester(authentik.UserGroup{PK: "g1", Name: "staff"})
-	// Any signed-in user may list them, even without access to any user.
-	h := newTestServer(t, users, newFakeRules(), fakeAuth{groups: []string{"guests"}})
-	rec := do(t, h, http.MethodGet, "/api/groups/visible?search=st&page=2", "")
+	tests := []struct {
+		name   string
+		groups []string
+		// expected are the names of the listed groups.
+		expected []string
+	}{
+		{
+			// Any signed-in user may list them, even without access to any user.
+			name:     "operator without access sees the visible groups and their own",
+			groups:   []string{"guests"},
+			expected: []string{"admins", "mine", "open"},
+		},
+		{
+			name:     "operator sees the groups of the users they may see too",
+			groups:   []string{"helpdesk"},
+			expected: []string{"admins", "lab", "mine", "open", "staff"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			groups, accounts := listableGroupsFixture()
+			users := &fakeUsers{groupList: groups, listed: accounts}
+			rec := do(t, newScopedServer(t, users, tt.groups...), http.MethodGet, "/api/groups/visible?search=st", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d %s", rec.Code, rec.Body)
+			}
+			if users.groupParams.Search != "st" {
+				t.Errorf("search = %q, want st", users.groupParams.Search)
+			}
+			var body struct {
+				Pagination authentik.Pagination `json:"pagination"`
+				Results    []struct {
+					Name string `json:"name"`
+				} `json:"results"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			var names []string
+			for _, g := range body.Results {
+				names = append(names, g.Name)
+			}
+			if !slices.Equal(names, tt.expected) {
+				t.Errorf("groups = %v, want %v", names, tt.expected)
+			}
+			if body.Pagination.Count != len(tt.expected) {
+				t.Errorf("count = %d, want %d", body.Pagination.Count, len(tt.expected))
+			}
+		})
+	}
+}
+
+func TestServer_listVisibleGroups_details(t *testing.T) {
+	t.Parallel()
+	groups, accounts := listableGroupsFixture()
+	users := &fakeUsers{groupList: groups, listed: accounts}
+	rec := do(t, newScopedServer(t, users, "helpdesk"), http.MethodGet, "/api/groups/visible?page=2&page_size=2", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d %s", rec.Code, rec.Body)
 	}
-	p := users.groupParams
-	if p.Search != "st" || p.Page != 2 || !maps.Equal(p.Attributes, map[string]any{visibleAttribute: true}) {
-		t.Errorf("params = %+v, want the search, paging and visibility filter", p)
-	}
-	expected := `{"pagination":{"count":0,"current":0,"total_pages":0,"next":0,"previous":0,"start_index":0,"end_index":0},` +
-		`"results":[{"pk":"g1","name":"staff","parent_name":"","path":"","member":true}]}`
+	// Only the names are listed; a hidden group can only be joined by the operators managing it.
+	expected := `{"pagination":{"count":5,"current":2,"total_pages":3,"next":3,"previous":1,"start_index":3,"end_index":4},"results":[` +
+		`{"pk":"g3","name":"mine","parent_name":"","path":"own","member":true,"joinable":false},` +
+		`{"pk":"g4","name":"open","parent_name":"","path":"","member":false,"joinable":true}]}`
 	if got := strings.TrimSpace(rec.Body.String()); got != expected {
 		t.Errorf("body = %s, want %s", got, expected)
+	}
+}
+
+func TestServer_listVisibleGroups_pastTheEnd(t *testing.T) {
+	t.Parallel()
+	rec := do(t, newScopedServer(t, &fakeUsers{listed: requester()}, "guests"), http.MethodGet, "/api/groups/visible?page=3", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"results":[]`) {
+		t.Errorf("GET /api/groups/visible?page=3 = %d %s, want no results", rec.Code, rec.Body)
 	}
 }
 
@@ -146,7 +229,7 @@ func TestServer_listGroups_pathFilter(t *testing.T) {
 			name:        "visible groups",
 			authn:       fakeAuth{groups: []string{"guests"}},
 			target:      "/api/groups/visible?path=school",
-			expectAttrs: map[string]any{pathAttribute: "school", visibleAttribute: true},
+			expectAttrs: map[string]any{pathAttribute: "school"},
 		},
 	}
 	for _, tt := range tests {
@@ -177,39 +260,26 @@ func TestServer_listGroups_pathFilter(t *testing.T) {
 
 func TestServer_listGroupPaths(t *testing.T) {
 	t.Parallel()
-	groups := []authentik.Group{
-		{PK: "g1", Name: "staff", Attributes: map[string]any{visibleAttribute: true, pathAttribute: "school"}},
-		{PK: "g2", Name: "teachers", Attributes: map[string]any{visibleAttribute: true, pathAttribute: "school"}},
-		{PK: "g3", Name: "classes", Attributes: map[string]any{pathAttribute: "school/classes"}},
-		{PK: "g4", Name: "top", Attributes: map[string]any{visibleAttribute: true}},
-	}
 	tests := []struct {
-		name        string
-		authn       fakeAuth
-		expected    string
-		expectAttrs map[string]any
+		name     string
+		groups   []string
+		expected string
 	}{
-		{name: "access administrator sees all", authn: adminAuth, expected: `{"paths":["school","school/classes"]}`},
-		{
-			name:        "others see the visible groups",
-			authn:       fakeAuth{groups: []string{"guests"}},
-			expected:    `{"paths":["school"]}`,
-			expectAttrs: map[string]any{visibleAttribute: true},
-		},
+		{name: "access administrator sees all", groups: []string{"admins"}, expected: `{"paths":["own","school","secret"]}`},
+		{name: "operator without access sees those of the visible groups and their own", groups: []string{"guests"}, expected: `{"paths":["own"]}`},
+		{name: "operator sees those of the groups of the users they may see too", groups: []string{"helpdesk"}, expected: `{"paths":["own","school"]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			users := &fakeUsers{groupList: groups}
-			rec := do(t, newTestServer(t, users, newFakeRules(), tt.authn), http.MethodGet, "/api/groups/paths", "")
+			groups, accounts := listableGroupsFixture()
+			users := &fakeUsers{groupList: groups, listed: accounts}
+			rec := do(t, newScopedServer(t, users, tt.groups...), http.MethodGet, "/api/groups/paths", "")
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d %s", rec.Code, rec.Body)
 			}
 			if got := strings.TrimSpace(rec.Body.String()); got != tt.expected {
 				t.Errorf("body = %s, want %s", got, tt.expected)
-			}
-			if !maps.Equal(users.groupParams.Attributes, tt.expectAttrs) {
-				t.Errorf("attributes filter = %v, want %v", users.groupParams.Attributes, tt.expectAttrs)
 			}
 		})
 	}

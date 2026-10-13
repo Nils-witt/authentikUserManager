@@ -235,24 +235,6 @@ func TestClient_ListGroups(t *testing.T) {
 	}
 }
 
-func TestClient_ListUserPaths(t *testing.T) {
-	t.Parallel()
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v3/core/users/paths/" {
-			t.Errorf("request = %s %s", r.Method, r.URL.Path)
-		}
-		_, _ = io.WriteString(w, `{"paths":["users","users/staff"]}`)
-	})
-
-	got, err := c.ListUserPaths(t.Context())
-	if err != nil {
-		t.Fatalf("ListUserPaths: %v", err)
-	}
-	if len(got) != 2 || got[0] != "users" || got[1] != "users/staff" {
-		t.Errorf("ListUserPaths = %v", got)
-	}
-}
-
 func TestClient_UpdateUser_sendsOnlySetFields(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
