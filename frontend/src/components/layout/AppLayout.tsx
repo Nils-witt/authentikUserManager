@@ -31,6 +31,7 @@ export function AppLayout({ me }: { me: Me }) {
         showGroups={access !== null}
         showJoinRequests={canDecideJoins}
         joinRequestCount={joinRequestCount}
+        showCertificates={access?.certificates ?? false}
         showAdmin={access?.admin ?? false}
       />
       <Outlet context={context} />

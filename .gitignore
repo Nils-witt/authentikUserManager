@@ -14,6 +14,8 @@
 # Environment / secrets
 .env
 .env.*
+# Example CA from scripts/example-ca.sh
+/ca/
 
 # Frontend
 /frontend/node_modules/

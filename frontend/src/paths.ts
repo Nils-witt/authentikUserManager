@@ -3,6 +3,7 @@ export const pagePaths = {
   users: '/',
   groups: '/groups',
   joinRequests: '/join-requests',
+  certificates: '/certificates',
   accessRules: '/access-rules',
   audit: '/audit',
 } as const

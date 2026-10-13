@@ -87,3 +87,39 @@ func TestFromEnv_auditRetention(t *testing.T) {
 		})
 	}
 }
+
+func TestFromEnv_certificates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		overrides    map[string]string
+		wantValidity time.Duration
+		wantErr      bool
+	}{
+		{name: "disabled", wantValidity: 365 * 24 * time.Hour},
+		{
+			name:         "enabled",
+			overrides:    map[string]string{"CA_CERT_FILE": "ca.crt", "CA_KEY_FILE": "ca.key", "CERT_VALIDITY_DAYS": "30", "CERT_CRL_URL": "https://am.example.com/pki/crl"},
+			wantValidity: 30 * 24 * time.Hour,
+		},
+		{name: "cert without key", overrides: map[string]string{"CA_CERT_FILE": "ca.crt"}, wantErr: true},
+		{name: "key without cert", overrides: map[string]string{"CA_KEY_FILE": "ca.key"}, wantErr: true},
+		{name: "zero validity", overrides: map[string]string{"CERT_VALIDITY_DAYS": "0"}, wantErr: true},
+		{name: "validity too long", overrides: map[string]string{"CERT_VALIDITY_DAYS": "3651"}, wantErr: true},
+		{name: "relative crl url", overrides: map[string]string{"CERT_CRL_URL": "/pki/crl"}, wantErr: true},
+		{name: "ldap crl url", overrides: map[string]string{"CERT_CRL_URL": "ldap://example.com/crl"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := validEnv(tt.overrides)
+			cfg, err := config.FromEnv(func(k string) string { return env[k] })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FromEnv error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && cfg.CertValidity != tt.wantValidity {
+				t.Errorf("CertValidity = %v, want %v", cfg.CertValidity, tt.wantValidity)
+			}
+		})
+	}
+}

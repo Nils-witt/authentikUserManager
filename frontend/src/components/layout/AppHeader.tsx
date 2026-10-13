@@ -30,6 +30,8 @@ interface AppHeaderProps {
   showJoinRequests: boolean
   /** Number of pending join requests, shown on the join requests tab. */
   joinRequestCount: number
+  /** Show the tab of the signed-in user's own certificates. */
+  showCertificates: boolean
   /** Show the access rules and audit log tabs. */
   showAdmin: boolean
 }
@@ -40,6 +42,7 @@ export function AppHeader({
   showGroups,
   showJoinRequests,
   joinRequestCount,
+  showCertificates,
   showAdmin,
 }: AppHeaderProps) {
   const { pathname, search } = useLocation()
@@ -62,6 +65,7 @@ export function AppHeader({
       ),
       ariaLabel: joinRequestCount > 0 ? `Join requests (${joinRequestCount} pending)` : undefined,
     },
+    showCertificates && { path: pagePaths.certificates, label: 'My certificates' },
     showAdmin && { path: pagePaths.accessRules, label: 'Access rules' },
     showAdmin && { path: pagePaths.audit, label: 'Audit log' },
   ].filter((tab) => tab !== false)

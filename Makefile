@@ -8,7 +8,10 @@ DIST    := internal/web/dist
 TAG     := $(shell git describe --tags --exact-match 2>/dev/null)
 LDFLAGS := -X authentikManager/internal/buildinfo.tag=$(TAG)
 
-.PHONY: all build build-backend build-frontend dev-backend dev-frontend dev-db run test test-integration lint fmt vuln hooks clean
+.PHONY: all build build-backend build-frontend dev-backend dev-frontend dev-db run test test-integration lint fmt vuln hooks example-ca clean
+
+# Directory of the CA created by example-ca.
+CA_DIR := ca
 
 # Throwaway PostgreSQL for test-integration.
 TEST_PG := authentik-manager-test-pg
@@ -70,6 +73,10 @@ vuln: $(DIST)/index.html
 ## Enable the versioned git hooks in .githooks (pre-commit: lint + govulncheck).
 hooks:
 	git config core.hooksPath .githooks
+
+## Create an example CA for client certificates in $(CA_DIR)/ (development only).
+example-ca:
+	scripts/example-ca.sh $(CA_DIR)
 
 clean:
 	rm -rf bin $(DIST)

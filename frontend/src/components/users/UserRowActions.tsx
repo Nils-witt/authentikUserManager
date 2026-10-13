@@ -4,6 +4,7 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import EditIcon from '@mui/icons-material/Edit'
 import LockIcon from '@mui/icons-material/Lock'
 import MailLockIcon from '@mui/icons-material/MailLock'
+import VerifiedUserIcon from '@mui/icons-material/VerifiedUser'
 import IconButton from '@mui/material/IconButton'
 import Tooltip from '@mui/material/Tooltip'
 import type { User } from '../../api'
@@ -12,11 +13,14 @@ export interface UserRowActionsProps {
   user: User
   /** Show the button sending a password recovery email. */
   canSendRecovery: boolean
+  /** Show the button listing the user's certificates. */
+  canManageCertificates: boolean
   /** Show the delete button. */
   canDelete: boolean
   onEdit: (user: User) => void
   onToggleActive: (user: User) => void
   onSendRecovery: (user: User) => void
+  onCertificates: (user: User) => void
   onDelete: (user: User) => void
 }
 
@@ -24,10 +28,12 @@ export interface UserRowActionsProps {
 export function UserRowActions({
   user,
   canSendRecovery,
+  canManageCertificates,
   canDelete,
   onEdit,
   onToggleActive,
   onSendRecovery,
+  onCertificates,
   onDelete,
 }: UserRowActionsProps) {
   if (!user.changeable) {
@@ -63,6 +69,13 @@ export function UserRowActions({
               <MailLockIcon fontSize="small" />
             </IconButton>
           </span>
+        </Tooltip>
+      )}
+      {canManageCertificates && (
+        <Tooltip title="Certificates">
+          <IconButton size="small" onClick={() => onCertificates(user)}>
+            <VerifiedUserIcon fontSize="small" />
+          </IconButton>
         </Tooltip>
       )}
       {canDelete && (

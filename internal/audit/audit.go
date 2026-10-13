@@ -40,6 +40,12 @@ const (
 	ActionJoinApproved Action = "group.join_approved"
 	// ActionJoinRejected is recorded when an operator rejects a request.
 	ActionJoinRejected Action = "group.join_rejected"
+	// ActionCertificateIssued is recorded when a user issues a client certificate for their own account.
+	ActionCertificateIssued Action = "user.certificate_issued"
+	// ActionCertificateKeyDownloaded is recorded when a user downloads the generated key of their certificate.
+	ActionCertificateKeyDownloaded Action = "user.certificate_key_downloaded"
+	// ActionCertificateRevoked is recorded when a user or an operator revokes a certificate.
+	ActionCertificateRevoked Action = "user.certificate_revoked"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -49,7 +55,8 @@ func (a Action) Valid() bool {
 		ActionUserGroupAdded, ActionUserGroupRemoved, ActionUserPrimaryGroupChanged, ActionRecoveryEmailSent,
 		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted,
 		ActionGroupRenamed, ActionGroupVisibilityChanged, ActionGroupPathChanged,
-		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected:
+		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected,
+		ActionCertificateIssued, ActionCertificateKeyDownloaded, ActionCertificateRevoked:
 		return true
 	}
 	return false

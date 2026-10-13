@@ -15,6 +15,7 @@ import { dialogForPath, dialogPaths, pagePaths, type RoutedDialog } from '../../
 import { ListPagination } from '../common/ListPagination'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
 import { FolderTree } from '../folders/FolderTree'
+import { CertificatesDialog } from './CertificatesDialog'
 import { StatusAlerts } from './StatusAlerts'
 import { UserDialog, type UserDialogState } from './UserDialog'
 import { UserTable } from './UserTable'
@@ -35,6 +36,8 @@ export function UserAdmin() {
   const [notice, setNotice] = useState<string | null>(null)
   // Editing needs the user object, so it is kept in state; the other dialogs have a URL.
   const [editing, setEditing] = useState<User | null>(null)
+  // The user whose certificates are listed, if any.
+  const [certificatesOf, setCertificatesOf] = useState<User | null>(null)
   const navigate = useNavigate()
   const { pathname, search } = useLocation()
   const routed = dialogForPath(pathname)
@@ -134,10 +137,12 @@ export function UserAdmin() {
               users={data?.results}
               loading={loading}
               canSendRecovery={access?.recovery_email ?? false}
+              canManageCertificates={access?.certificates ?? false}
               canDelete={isAdmin}
               onEdit={setEditing}
               onToggleActive={(user) => void toggleActive(user)}
               onSendRecovery={(user) => void sendRecovery(user)}
+              onCertificates={setCertificatesOf}
               onDelete={(user) => void remove(user)}
             />
             <ListPagination
@@ -157,6 +162,14 @@ export function UserAdmin() {
 
       <NoticeSnackbar notice={notice} onClose={() => setNotice(null)} />
       {confirmDialog}
+
+      {certificatesOf && (
+        <CertificatesDialog
+          user={certificatesOf}
+          onClose={() => setCertificatesOf(null)}
+          onRevoked={setNotice}
+        />
+      )}
 
       <UserDialog
         dialog={dialog}

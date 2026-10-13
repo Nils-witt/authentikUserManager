@@ -81,6 +81,8 @@ export interface Access {
   admin: boolean
   /** Password recovery emails can be sent. */
   recovery_email: boolean
+  /** Users can issue client certificates for their own account. */
+  certificates: boolean
 }
 
 /** Members of operator_group may manage members of target_groups ('*': all users). */
@@ -110,6 +112,9 @@ export type AuditAction =
   | 'group.join_withdrawn'
   | 'group.join_approved'
   | 'group.join_rejected'
+  | 'user.certificate_issued'
+  | 'user.certificate_key_downloaded'
+  | 'user.certificate_revoked'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -147,6 +152,49 @@ export interface JoinRequest {
   decided_at: string | null
   /** Username of the operator who decided; empty while pending. */
   decided_by: string
+}
+
+/** Where a certificate's private key was created: by the server, or by the user who sent a CSR. */
+export type KeySource = 'generated' | 'csr'
+
+/** A client certificate issued to a user. Its private key is never stored. */
+export interface Certificate {
+  /** Lowercase hex serial number. */
+  serial: string
+  user_pk: number
+  username: string
+  /** Subject distinguished name, e.g. "CN=ann". */
+  subject: string
+  not_before: string
+  not_after: string
+  issued_at: string
+  /** Username of the user who requested the certificate. */
+  issued_by: string
+  key_source: KeySource
+  revoked_at: string | null
+  /** Username of the revoking user; empty while not revoked. */
+  revoked_by: string
+}
+
+/** A certificate of the signed-in user. */
+export interface OwnCertificate extends Certificate {
+  /** The generated key can still be downloaded, once. */
+  downloadable: boolean
+}
+
+/** What to certify: the key of a CSR, or a new key downloaded in a format. */
+export type IssueCertificateInput =
+  { csr: string } | { format: 'pem' } | { format: 'pkcs12'; password: string }
+
+/** The result of issuing a certificate. */
+export interface IssuedCertificate {
+  certificate: Certificate
+  /** The certificate and the CA chain as PEM; set for a CSR. */
+  certificate_pem?: string
+  chain_pem?: string
+  /** Set for a generated key, which can be downloaded once until download_expires_at. */
+  download_url?: string
+  download_expires_at?: string
 }
 
 /** Error returned by the backend; `fields` holds per-field validation messages. */
@@ -188,6 +236,15 @@ export function redirectToLogin(): never {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await send(method, path, body)
+  if (res.status === 204) {
+    return undefined as T
+  }
+  return (await res.json()) as T
+}
+
+/** Sends a request and throws an ApiError unless it succeeded. */
+async function send(method: string, path: string, body?: unknown): Promise<Response> {
   const res = await fetch(path, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -209,10 +266,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
     throw new ApiError(res.status, message, fields)
   }
-  if (res.status === 204) {
-    return undefined as T
-  }
-  return (await res.json()) as T
+  return res
 }
 
 export function listUsers(params: {
@@ -361,6 +415,35 @@ export const sendRecoveryEmail = (id: number) =>
   request<void>('POST', `/api/users/${id}/recovery-email`)
 
 export const deleteUser = (id: number) => request<void>('DELETE', `/api/users/${id}`)
+
+/** The signed-in user's own certificates, newest first. */
+export const listMyCertificates = () =>
+  request<{ certificates: OwnCertificate[] }>('GET', '/api/certificates/mine').then(
+    (res) => res.certificates,
+  )
+
+/** Issues a certificate for the signed-in user's own account. */
+export const issueCertificate = (input: IssueCertificateInput) =>
+  request<IssuedCertificate>('POST', '/api/certificates/mine', input)
+
+/** Downloads the generated key of an own certificate; the server forgets it afterwards. */
+export const downloadCertificateKey = (serial: string) =>
+  send('GET', `/api/certificates/mine/${encodeURIComponent(serial)}/download`).then((res) =>
+    res.blob(),
+  )
+
+/** The certificates of a user the operator may change, without their keys. */
+export const listUserCertificates = (userId: number) =>
+  request<{ certificates: Certificate[] }>('GET', `/api/users/${userId}/certificates`).then(
+    (res) => res.certificates,
+  )
+
+/** Revokes a certificate of the user; it is listed in the CRL from then on. */
+export const revokeCertificate = (userId: number, serial: string) =>
+  request<Certificate>(
+    'POST',
+    `/api/users/${userId}/certificates/${encodeURIComponent(serial)}/revoke`,
+  )
 
 export const version = () => request<BuildInfo>('GET', '/api/version')
 
