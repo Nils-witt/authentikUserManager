@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -40,12 +41,28 @@ type Config struct {
 	// AccessAdminGroups lists the groups whose members have full access and may
 	// edit the access rules.
 	AccessAdminGroups []string
+
+	// CACertFile and CAKeyFile are the PEM files of the CA certificate and its
+	// private key that sign user certificates. Both empty disables certificates.
+	CACertFile string
+	CAKeyFile  string
+	// CertValidity is how long issued user certificates are valid.
+	CertValidity time.Duration
+	// CertCRLURL, when set, is the public URL of the CRL (this app's /pki/crl),
+	// embedded in issued certificates.
+	CertCRLURL string
 }
 
 const defaultListenAddr = "127.0.0.1:8080"
 
 // maxAuditRetentionDays bounds AUDIT_RETENTION_DAYS (100 years).
 const maxAuditRetentionDays = 36500
+
+// Bounds and default of CERT_VALIDITY_DAYS.
+const (
+	defaultCertValidityDays = 365
+	maxCertValidityDays     = 3650
+)
 
 // FromEnv reads the configuration from the environment, using getenv
 // (normally os.Getenv) so it can be tested without touching the process env.
@@ -65,6 +82,10 @@ func FromEnv(getenv func(string) string) (Config, error) {
 
 		DatabaseURL:       getenv("DATABASE_URL"),
 		AccessAdminGroups: splitList(getenv("ACCESS_ADMIN_GROUPS")),
+
+		CACertFile: strings.TrimSpace(getenv("CA_CERT_FILE")),
+		CAKeyFile:  strings.TrimSpace(getenv("CA_KEY_FILE")),
+		CertCRLURL: strings.TrimSpace(getenv("CERT_CRL_URL")),
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListenAddr
@@ -93,6 +114,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.AuditRetention = retention
+	errs = append(errs, cfg.parseCertificates(getenv("CERT_VALIDITY_DAYS"))...)
 	if cfg.StaticDir != "" {
 		if fi, err := os.Stat(cfg.StaticDir); err != nil || !fi.IsDir() {
 			errs = append(errs, fmt.Errorf("STATIC_DIR %q is not a readable directory", cfg.StaticDir))
@@ -106,13 +128,40 @@ func FromEnv(getenv func(string) string) (Config, error) {
 
 // parseRetention parses AUDIT_RETENTION_DAYS; empty means zero, keeping entries forever.
 func parseRetention(v string) (time.Duration, error) {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return 0, nil
+	return parseDays("AUDIT_RETENTION_DAYS", v, 0, maxAuditRetentionDays)
+}
+
+// parseCertificates validates the CA files and the CRL URL, and sets
+// CertValidity from validityDays (CERT_VALIDITY_DAYS).
+func (cfg *Config) parseCertificates(validityDays string) []error {
+	var errs []error
+	if (cfg.CACertFile == "") != (cfg.CAKeyFile == "") {
+		errs = append(errs, errors.New("CA_CERT_FILE and CA_KEY_FILE must be set together"))
 	}
-	days, err := strconv.Atoi(v)
-	if err != nil || days < 1 || days > maxAuditRetentionDays {
-		return 0, fmt.Errorf("AUDIT_RETENTION_DAYS must be a number of days between 1 and %d", maxAuditRetentionDays)
+	validity, err := parseDays("CERT_VALIDITY_DAYS", validityDays, defaultCertValidityDays, maxCertValidityDays)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.CertValidity = validity
+	if cfg.CertCRLURL != "" {
+		u, err := url.Parse(cfg.CertCRLURL)
+		if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
+			errs = append(errs, errors.New("CERT_CRL_URL must be an absolute http or https URL"))
+		}
+	}
+	return errs
+}
+
+// parseDays parses the number of days in the variable name, between 1 and
+// maxDays; empty means defaultDays.
+func parseDays(name, v string, defaultDays, maxDays int) (time.Duration, error) {
+	days := defaultDays
+	if v = strings.TrimSpace(v); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxDays {
+			return 0, fmt.Errorf("%s must be a number of days between 1 and %d", name, maxDays)
+		}
+		days = n
 	}
 	return time.Duration(days) * 24 * time.Hour, nil
 }

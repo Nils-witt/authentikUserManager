@@ -19,6 +19,12 @@
 //	AUDIT_RETENTION_DAYS days to keep audit log entries; they are kept forever when unset (optional)
 //	ACCESS_ADMIN_GROUPS  comma-separated authentik groups with full access that may edit
 //	                     the access rules (required)
+//
+//	CA_CERT_FILE         PEM file of the CA certificate signing user certificates, optionally
+//	                     followed by the certificates above it; certificates are disabled when unset
+//	CA_KEY_FILE          PEM file of the CA's unencrypted private key (required with CA_CERT_FILE)
+//	CERT_VALIDITY_DAYS   days user certificates are valid (default 365)
+//	CERT_CRL_URL         public URL of this app's /pki/crl, embedded in user certificates (optional)
 package main
 
 import (
@@ -39,6 +45,7 @@ import (
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/config"
+	"authentikManager/internal/pki"
 	"authentikManager/internal/server"
 	"authentikManager/internal/store"
 	"authentikManager/internal/web"
@@ -84,6 +91,20 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	ca, err := loadCA(cfg)
+	if err != nil {
+		return err
+	}
+	keyDownloads := pki.NewPending(time.Now)
+	if ca != nil {
+		// Deferred after db.Close like the audit pruning, so it stops before the pool closes.
+		pruneCtx, stopPruning := context.WithCancel(ctx)
+		var pruning sync.WaitGroup
+		defer pruning.Wait()
+		defer stopPruning()
+		pruning.Go(func() { keyDownloads.Run(pruneCtx, pki.PruneInterval) })
+	}
+
 	authn, err := auth.New(ctx, auth.Config{
 		IssuerURL:    cfg.OIDCIssuer,
 		ClientID:     cfg.OIDCClientID,
@@ -117,6 +138,9 @@ func run(logger *slog.Logger) error {
 			Static:       static,
 
 			RecoveryEmailStage: cfg.RecoveryEmailStage,
+			CA:                 ca,
+			Certificates:       db,
+			KeyDownloads:       keyDownloads,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -146,4 +170,25 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutting down http server: %w", err)
 	}
 	return nil
+}
+
+// loadCA reads the CA that signs user certificates, or returns nil when none is configured.
+func loadCA(cfg config.Config) (*pki.CA, error) {
+	if cfg.CACertFile == "" {
+		return nil, nil
+	}
+	certPEM, err := os.ReadFile(cfg.CACertFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA_CERT_FILE: %w", err)
+	}
+	keyPEM, err := os.ReadFile(cfg.CAKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA_KEY_FILE: %w", err)
+	}
+	defer clear(keyPEM)
+	ca, err := pki.LoadCA(certPEM, keyPEM, pki.Options{Validity: cfg.CertValidity, CRLURL: cfg.CertCRLURL})
+	if err != nil {
+		return nil, fmt.Errorf("loading certificate authority: %w", err)
+	}
+	return ca, nil
 }

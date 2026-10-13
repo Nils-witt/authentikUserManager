@@ -15,6 +15,8 @@ import { UserGroupsField } from './UserGroupsField'
 interface UserFormProps {
   /** The user being edited, or undefined to create a new one. */
   user?: User
+  /** What the account is called in the dialog; defaults to "user". */
+  noun?: string
   /** Path for a new user; defaults to "users". */
   defaultPath?: string
   /**
@@ -35,6 +37,7 @@ interface UserFormProps {
 /** Dialog creating a user, or editing one including their groups. */
 export function UserForm({
   user,
+  noun = 'user',
   defaultPath,
   groups,
   groupSuggestions,
@@ -82,7 +85,7 @@ export function UserForm({
   }
 
   return (
-    <Modal title={user ? `Edit ${user.username}` : 'Create user'} onClose={onClose}>
+    <Modal title={user ? `Edit ${user.username}` : `Create ${noun}`} onClose={onClose}>
       <form onSubmit={handleSubmit}>
         <DialogContent sx={{ pt: 0 }}>
           <Stack spacing={2} sx={{ pt: 1 }}>
@@ -131,7 +134,7 @@ export function UserForm({
                 required
                 value={group}
                 onChange={(e) => setGroup(e.target.value)}
-                helperText="Also becomes the user's primary group."
+                helperText={`Also becomes the ${noun}'s primary group.`}
                 {...fieldError('group')}
               >
                 {groups.map((g) => (

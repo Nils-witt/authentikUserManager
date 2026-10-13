@@ -1,5 +1,5 @@
 // Package authentik is a minimal client for the authentik REST API (v3),
-// covering the user management endpoints used by this application.
+// covering the user, group and token endpoints used by this application.
 package authentik
 
 import (

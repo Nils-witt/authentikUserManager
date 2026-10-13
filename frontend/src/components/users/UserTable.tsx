@@ -15,10 +15,12 @@ interface UserTableProps extends Omit<UserRowActionsProps, 'user'> {
   /** The users of the current page, or undefined before the first load. */
   users: User[] | undefined
   loading: boolean
+  /** What the listed accounts are called; defaults to "user". */
+  noun?: string
 }
 
 /** Table of users with per-row actions. */
-export function UserTable({ users, loading, ...actions }: UserTableProps) {
+export function UserTable({ users, loading, noun = 'user', ...actions }: UserTableProps) {
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={loading}>
       <Box sx={{ height: 4 }}>{loading && <LinearProgress />}</Box>
@@ -41,7 +43,7 @@ export function UserTable({ users, loading, ...actions }: UserTableProps) {
           {users?.length === 0 && (
             <TableRow>
               <TableCell colSpan={7} align="center" sx={{ color: 'text.secondary', py: 4 }}>
-                No users found.
+                No {noun}s found.
               </TableCell>
             </TableRow>
           )}

@@ -20,7 +20,9 @@ import (
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/buildinfo"
+	"authentikManager/internal/certificate"
 	"authentikManager/internal/joinrequest"
+	"authentikManager/internal/pki"
 )
 
 // maxRequestBytes bounds JSON request bodies.
@@ -55,6 +57,11 @@ type UserService interface {
 	ListGroups(ctx context.Context, p authentik.ListGroupsParams) (*authentik.GroupList, error)
 	GetGroup(ctx context.Context, pk string) (*authentik.Group, error)
 	UpdateGroup(ctx context.Context, pk string, req authentik.UpdateGroupRequest) (*authentik.Group, error)
+	ListTokens(ctx context.Context, userPK int, username string) ([]authentik.Token, error)
+	GetToken(ctx context.Context, identifier string) (*authentik.Token, error)
+	CreateToken(ctx context.Context, req authentik.CreateTokenRequest) (*authentik.Token, error)
+	TokenKey(ctx context.Context, identifier string) (string, error)
+	DeleteToken(ctx context.Context, identifier string) error
 }
 
 var _ UserService = (*authentik.Client)(nil)
@@ -111,6 +118,27 @@ type JoinRequestStore interface {
 	WithdrawJoinRequest(ctx context.Context, id int64, username string) error
 }
 
+// CertificateStore keeps the records of the certificates issued to users.
+type CertificateStore interface {
+	CreateCertificate(ctx context.Context, c certificate.Certificate) (certificate.Certificate, error)
+	// GetCertificate returns certificate.ErrNotFound when there is no certificate.
+	GetCertificate(ctx context.Context, serial string) (certificate.Certificate, error)
+	// GetCertificateDER returns the encoded certificate, certificate.ErrNotFound
+	// when there is none, or certificate.ErrNotStored when it was not stored.
+	GetCertificateDER(ctx context.Context, serial string) ([]byte, error)
+	// ListCertificates returns the certificates of a user, newest first.
+	ListCertificates(ctx context.Context, userPK int) ([]certificate.Certificate, error)
+	// ListAllCertificates returns a page of the certificates of all users
+	// matching a normalized query, newest first, and how many match in total.
+	ListAllCertificates(ctx context.Context, q certificate.Query, now time.Time) ([]certificate.Certificate, int, error)
+	// RevokeCertificate returns certificate.ErrRevoked when the certificate is already revoked.
+	RevokeCertificate(ctx context.Context, serial, actor string) (certificate.Certificate, error)
+	// RevokeUserCertificates revokes every unrevoked certificate of a user and returns their serials.
+	RevokeUserCertificates(ctx context.Context, userPK int, actor string) ([]string, error)
+	// ListRevokedCertificates returns the revoked certificates still valid at now.
+	ListRevokedCertificates(ctx context.Context, now time.Time) ([]certificate.Revoked, error)
+}
+
 // Deps are the collaborators of the Server.
 type Deps struct {
 	Users  UserService
@@ -126,6 +154,15 @@ type Deps struct {
 	// RecoveryEmailStage is the UUID of the email stage that sends password
 	// recovery emails. When empty, sending them is disabled.
 	RecoveryEmailStage string
+	// CA issues user certificates. When nil, certificates are disabled and
+	// KeyDownloads is not used.
+	CA *pki.CA
+	// Certificates keeps the records of the issued certificates. When set, a
+	// user's certificates are revoked when the user is deleted, deactivated or
+	// renamed, even while CA is nil.
+	Certificates CertificateStore
+	// KeyDownloads holds generated keys until their single download.
+	KeyDownloads *pki.Pending
 }
 
 // Server is the HTTP handler for the application.
@@ -140,6 +177,12 @@ type Server struct {
 	logger       *slog.Logger
 	// recoveryEmailStage is the email stage for recovery emails; empty disables them.
 	recoveryEmailStage string
+	// ca issues user certificates; nil disables them.
+	ca           *pki.CA
+	certificates CertificateStore
+	keyDownloads *pki.Pending
+	// crl caches the signed revocation list.
+	crl crlCache
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
@@ -157,6 +200,9 @@ func New(d Deps) *Server {
 		joinRequests:       d.JoinRequests,
 		logger:             d.Logger,
 		recoveryEmailStage: d.RecoveryEmailStage,
+		ca:                 d.CA,
+		certificates:       d.Certificates,
+		keyDownloads:       d.KeyDownloads,
 	}
 
 	api := http.NewServeMux()
@@ -184,14 +230,43 @@ func New(d Deps) *Server {
 	api.HandleFunc("POST /api/join-requests/{id}/reject", s.rejectJoinRequest)
 	api.HandleFunc("DELETE /api/join-requests/{id}", s.withdrawJoinRequest)
 	api.Handle("GET /api/audit", s.requireAdmin(s.listAudit))
-	api.HandleFunc("GET /api/users", s.listUsers)
-	api.HandleFunc("POST /api/users", s.createUser)
+	api.HandleFunc("GET /api/users", s.listAccounts(userAccounts))
+	api.HandleFunc("POST /api/users", s.createAccount(userAccounts))
 	api.HandleFunc("GET /api/users/paths", s.listUserPaths)
-	api.HandleFunc("GET /api/users/{id}", s.getUser)
-	api.HandleFunc("PATCH /api/users/{id}", s.updateUser)
-	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteUser))
-	api.HandleFunc("PUT /api/users/{id}/groups", s.setUserGroups)
+	api.HandleFunc("GET /api/users/{id}", s.getAccount(userAccounts))
+	api.HandleFunc("PATCH /api/users/{id}", s.updateAccount(userAccounts))
+	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteAccount(userAccounts)))
+	api.HandleFunc("PUT /api/users/{id}/groups", s.setAccountGroups(userAccounts))
 	api.HandleFunc("POST /api/users/{id}/recovery-email", s.sendRecoveryEmail)
+	// Service accounts follow the access rules of users; see serviceaccounts.go.
+	api.HandleFunc("GET /api/service-accounts", s.listAccounts(serviceAccounts))
+	api.HandleFunc("POST /api/service-accounts", s.createAccount(serviceAccounts))
+	api.HandleFunc("GET /api/service-accounts/{id}", s.getAccount(serviceAccounts))
+	api.HandleFunc("PATCH /api/service-accounts/{id}", s.updateAccount(serviceAccounts))
+	api.Handle("DELETE /api/service-accounts/{id}", s.requireAdmin(s.deleteAccount(serviceAccounts)))
+	api.HandleFunc("PUT /api/service-accounts/{id}/groups", s.setAccountGroups(serviceAccounts))
+	api.HandleFunc("GET /api/service-accounts/{id}/tokens", s.listServiceAccountTokens)
+	api.HandleFunc("POST /api/service-accounts/{id}/tokens", s.createServiceAccountToken)
+	api.HandleFunc("DELETE /api/service-accounts/{id}/tokens/{identifier}", s.deleteServiceAccountToken)
+	// Users issue certificates for their own account only and download the
+	// generated key once; see certificates.go. Operators who may change a
+	// user may list and revoke the user's certificates.
+	api.Handle("GET /api/certificates/mine", s.requireCertificates(s.listMyCertificates))
+	api.Handle("POST /api/certificates/mine", s.requireCertificates(s.issueCertificate))
+	api.Handle("GET /api/certificates/mine/{serial}/download", s.requireCertificates(s.downloadCertificateKey))
+	api.Handle("GET /api/users/{id}/certificates", s.requireCertificates(s.listUserCertificates))
+	api.Handle("POST /api/users/{id}/certificates/{serial}/revoke",
+		s.requireCertificates(s.revokeAccountCertificate(userAccounts)))
+	// Operators who may change a service account also issue its certificates.
+	api.Handle("GET /api/service-accounts/{id}/certificates", s.requireCertificates(s.listServiceAccountCertificates))
+	api.Handle("POST /api/service-accounts/{id}/certificates", s.requireCertificates(s.issueServiceAccountCertificate))
+	api.Handle("POST /api/service-accounts/{id}/certificates/{serial}/revoke",
+		s.requireCertificates(s.revokeAccountCertificate(serviceAccounts)))
+	// Access administrators may list, download and revoke the certificates of
+	// all users, including deleted ones.
+	api.Handle("GET /api/certificates", s.requireCertificates(s.requireAdmin(s.listCertificates).ServeHTTP))
+	api.Handle("GET /api/certificates/{serial}/pem", s.requireCertificates(s.requireAdmin(s.downloadCertificate).ServeHTTP))
+	api.Handle("POST /api/certificates/{serial}/revoke", s.requireCertificates(s.requireAdmin(s.revokeAnyCertificate).ServeHTTP))
 	api.HandleFunc("GET /api/version", getVersion)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
@@ -202,6 +277,9 @@ func New(d Deps) *Server {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.Handle("/auth/", d.Auth.Handler())
+	// The CRL and the CA certificate are public, for relying parties.
+	mux.Handle("GET /pki/crl", s.requireCertificates(s.getCRL))
+	mux.Handle("GET /pki/ca.pem", s.requireCertificates(s.getCAChain))
 	mux.Handle("/api/", d.Auth.Require(api))
 	if d.Static != nil {
 		mux.Handle("/", s.spaHandler(d.Static))
@@ -280,10 +358,13 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 		Admin bool `json:"admin"`
 		// RecoveryEmail is set when password recovery emails can be sent.
 		RecoveryEmail bool `json:"recovery_email"`
+		// Certificates is set when users can issue certificates.
+		Certificates bool `json:"certificates"`
 	}{
 		Scope:         scope,
 		Admin:         s.policy.IsAdmin(operatorGroups(r)),
 		RecoveryEmail: s.recoveryEmailStage != "",
+		Certificates:  s.ca != nil,
 	})
 }
 

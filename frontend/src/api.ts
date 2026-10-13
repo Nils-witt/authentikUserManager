@@ -81,6 +81,8 @@ export interface Access {
   admin: boolean
   /** Password recovery emails can be sent. */
   recovery_email: boolean
+  /** Users can issue client certificates for their own account. */
+  certificates: boolean
 }
 
 /** Members of operator_group may manage members of target_groups ('*': all users). */
@@ -110,6 +112,14 @@ export type AuditAction =
   | 'group.join_withdrawn'
   | 'group.join_approved'
   | 'group.join_rejected'
+  | 'user.certificate_issued'
+  | 'user.certificate_key_downloaded'
+  | 'user.certificate_revoked'
+  | 'service_account.created'
+  | 'service_account.updated'
+  | 'service_account.deleted'
+  | 'service_account.token_created'
+  | 'service_account.token_deleted'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -147,6 +157,84 @@ export interface JoinRequest {
   decided_at: string | null
   /** Username of the operator who decided; empty while pending. */
   decided_by: string
+}
+
+/** Where a certificate's private key was created: by the server, or by the user who sent a CSR. */
+export type KeySource = 'generated' | 'csr'
+
+/** A client certificate issued to a user. Its private key is never stored. */
+export interface Certificate {
+  /** Lowercase hex serial number. */
+  serial: string
+  user_pk: number
+  username: string
+  /** Subject distinguished name, e.g. "CN=ann". */
+  subject: string
+  not_before: string
+  not_after: string
+  issued_at: string
+  /** Username of the user who requested the certificate. */
+  issued_by: string
+  key_source: KeySource
+  revoked_at: string | null
+  /** Username of the revoking user; empty while not revoked. */
+  revoked_by: string
+  /** The certificate itself is stored and can be downloaded; not for those issued before it was stored. */
+  stored: boolean
+}
+
+/** The state of a certificate: usable, revoked, or expired without being revoked. */
+export type CertificateStatus = 'active' | 'revoked' | 'expired'
+
+/** A certificate of the signed-in user. */
+export interface OwnCertificate extends Certificate {
+  /** The generated key can still be downloaded, once. */
+  downloadable: boolean
+}
+
+/** What to certify: the key of a CSR, or a new key downloaded in a format. */
+export type IssueCertificateInput =
+  { csr: string } | { format: 'pem' } | { format: 'pkcs12'; password: string }
+
+/** The result of issuing a certificate. */
+export interface IssuedCertificate {
+  certificate: Certificate
+  /** The certificate and the CA chain as PEM; set for a CSR. */
+  certificate_pem?: string
+  chain_pem?: string
+  /** Set for a generated key, which can be downloaded once until download_expires_at. */
+  download_url?: string
+  download_expires_at?: string
+}
+
+/** What a service account token is for: the authentik API, or a password for applications. */
+export type TokenIntent = 'api' | 'app_password'
+
+/** A token of a service account; its key is only shown when it is created. */
+export interface Token {
+  identifier: string
+  intent: TokenIntent
+  description: string
+  /** Primary key of the account the token authenticates as. */
+  user: number
+  /** False for a token that never expires. */
+  expiring: boolean
+  expires: string | null
+  /** Set for tokens authentik manages itself, which cannot be deleted here. */
+  managed: string | null
+}
+
+export interface CreateTokenInput {
+  intent: TokenIntent
+  description: string
+  /** When the token expires (ISO 8601); null for a token that never expires. */
+  expires: string | null
+}
+
+/** A new token with its key, which is not shown again. */
+export interface CreatedToken {
+  token: Token
+  key: string
 }
 
 /** Error returned by the backend; `fields` holds per-field validation messages. */
@@ -188,6 +276,15 @@ export function redirectToLogin(): never {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await send(method, path, body)
+  if (res.status === 204) {
+    return undefined as T
+  }
+  return (await res.json()) as T
+}
+
+/** Sends a request and throws an ApiError unless it succeeded. */
+async function send(method: string, path: string, body?: unknown): Promise<Response> {
   const res = await fetch(path, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -209,21 +306,21 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
     throw new ApiError(res.status, message, fields)
   }
-  if (res.status === 204) {
-    return undefined as T
-  }
-  return (await res.json()) as T
+  return res
 }
 
-export function listUsers(params: {
+/** Filters and pages a list of users or service accounts. */
+export interface AccountListParams {
   search: string
   page: number
   pageSize: number
-  /** Only users in this folder or one of its subfolders. */
+  /** Only accounts in this folder or one of its subfolders. */
   path?: string
-  /** Only active (true) or only inactive (false) users; all when omitted. */
+  /** Only active (true) or only inactive (false) accounts; all when omitted. */
   active?: boolean
-}) {
+}
+
+function accountListQuery(params: AccountListParams) {
   const q = new URLSearchParams({
     page: String(params.page),
     page_size: String(params.pageSize),
@@ -231,8 +328,15 @@ export function listUsers(params: {
   if (params.search) q.set('search', params.search)
   if (params.path) q.set('path_startswith', params.path)
   if (params.active !== undefined) q.set('is_active', String(params.active))
-  return request<UserList>('GET', `/api/users?${q}`)
+  return q
 }
+
+export const listUsers = (params: AccountListParams) =>
+  request<UserList>('GET', `/api/users?${accountListQuery(params)}`)
+
+/** Loads a page of the service accounts the operator may see. */
+export const listServiceAccounts = (params: AccountListParams) =>
+  request<UserList>('GET', `/api/service-accounts?${accountListQuery(params)}`)
 
 /** Every distinct user path (folder), e.g. "users" or "users/staff". */
 export const listUserPaths = () =>
@@ -361,6 +465,110 @@ export const sendRecoveryEmail = (id: number) =>
   request<void>('POST', `/api/users/${id}/recovery-email`)
 
 export const deleteUser = (id: number) => request<void>('DELETE', `/api/users/${id}`)
+
+/** Creates a service account; it has no password, only tokens and certificates. */
+export const createServiceAccount = (input: CreateUserInput) =>
+  request<User>('POST', '/api/service-accounts', input)
+
+export const updateServiceAccount = (id: number, input: Partial<UserInput>) =>
+  request<User>('PATCH', `/api/service-accounts/${id}`, input)
+
+/** Like setUserGroups, for a service account. */
+export const setServiceAccountGroups = (id: number, groups: string[], primaryGroup?: string) =>
+  request<User>('PUT', `/api/service-accounts/${id}/groups`, {
+    groups,
+    primary_group: primaryGroup,
+  })
+
+export const deleteServiceAccount = (id: number) =>
+  request<void>('DELETE', `/api/service-accounts/${id}`)
+
+/** The tokens of a service account, without their keys. */
+export const listTokens = (id: number) =>
+  request<{ tokens: Token[] }>('GET', `/api/service-accounts/${id}/tokens`).then(
+    (res) => res.tokens,
+  )
+
+/** Creates a token for a service account; the result holds its key, which is not shown again. */
+export const createToken = (id: number, input: CreateTokenInput) =>
+  request<CreatedToken>('POST', `/api/service-accounts/${id}/tokens`, input)
+
+export const deleteToken = (id: number, identifier: string) =>
+  request<void>('DELETE', `/api/service-accounts/${id}/tokens/${encodeURIComponent(identifier)}`)
+
+/** The certificates of a service account; `downloadable` while the signed-in operator can download a key. */
+export const listServiceAccountCertificates = (id: number) =>
+  request<{ certificates: OwnCertificate[] }>(
+    'GET',
+    `/api/service-accounts/${id}/certificates`,
+  ).then((res) => res.certificates)
+
+/** Issues a certificate for a service account; the issuing operator downloads a generated key. */
+export const issueServiceAccountCertificate = (id: number, input: IssueCertificateInput) =>
+  request<IssuedCertificate>('POST', `/api/service-accounts/${id}/certificates`, input)
+
+export const revokeServiceAccountCertificate = (id: number, serial: string) =>
+  request<Certificate>(
+    'POST',
+    `/api/service-accounts/${id}/certificates/${encodeURIComponent(serial)}/revoke`,
+  )
+
+/** The signed-in user's own certificates, newest first. */
+export const listMyCertificates = () =>
+  request<{ certificates: OwnCertificate[] }>('GET', '/api/certificates/mine').then(
+    (res) => res.certificates,
+  )
+
+/** Issues a certificate for the signed-in user's own account. */
+export const issueCertificate = (input: IssueCertificateInput) =>
+  request<IssuedCertificate>('POST', '/api/certificates/mine', input)
+
+/**
+ * Downloads the generated key of a certificate the signed-in user requested, for themselves or a
+ * service account; the server forgets it afterwards.
+ */
+export const downloadCertificateKey = (serial: string) =>
+  send('GET', `/api/certificates/mine/${encodeURIComponent(serial)}/download`).then((res) =>
+    res.blob(),
+  )
+
+/** The certificates of a user the operator may change, without their keys. */
+export const listUserCertificates = (userId: number) =>
+  request<{ certificates: Certificate[] }>('GET', `/api/users/${userId}/certificates`).then(
+    (res) => res.certificates,
+  )
+
+/** Revokes a certificate of the user; it is listed in the CRL from then on. */
+export const revokeCertificate = (userId: number, serial: string) =>
+  request<Certificate>(
+    'POST',
+    `/api/users/${userId}/certificates/${encodeURIComponent(serial)}/revoke`,
+  )
+
+/** Filters the certificates of all users. */
+export interface CertificateListParams {
+  /** Matches the username by substring, or the serial number by prefix. */
+  search: string
+  status: CertificateStatus | null
+  page: number
+  pageSize: number
+}
+
+/** Loads a page of the certificates of all users, newest first; only access administrators may list them. */
+export function listCertificates(params: CertificateListParams) {
+  const q = new URLSearchParams({ page: String(params.page), page_size: String(params.pageSize) })
+  if (params.search) q.set('search', params.search)
+  if (params.status) q.set('status', params.status)
+  return request<Page<Certificate>>('GET', `/api/certificates?${q}`)
+}
+
+/** Downloads a certificate of any user as PEM, without its key; only for access administrators. */
+export const downloadCertificate = (serial: string) =>
+  send('GET', `/api/certificates/${encodeURIComponent(serial)}/pem`).then((res) => res.text())
+
+/** Revokes a certificate of any user, including deleted ones; only for access administrators. */
+export const revokeAnyCertificate = (serial: string) =>
+  request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/revoke`)
 
 export const version = () => request<BuildInfo>('GET', '/api/version')
 

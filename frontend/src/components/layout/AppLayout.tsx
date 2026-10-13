@@ -29,8 +29,10 @@ export function AppLayout({ me }: { me: Me }) {
       <AppHeader
         me={me}
         showGroups={access !== null}
+        showServiceAccounts={access !== null && !noAccess}
         showJoinRequests={canDecideJoins}
         joinRequestCount={joinRequestCount}
+        showCertificates={access?.certificates ?? false}
         showAdmin={access?.admin ?? false}
       />
       <Outlet context={context} />
