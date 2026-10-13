@@ -78,7 +78,13 @@ type fakeUsers struct {
 	deletedTokens []string
 	// tokenKeyErr, when set, fails TokenKey only.
 	tokenKeyErr error
-	err         error
+	// apps are returned by ListUserApplications.
+	apps []authentik.Application
+	// appsUserPK records the user passed to ListUserApplications.
+	appsUserPK int
+	// appsErr, when set, fails ListUserApplications only.
+	appsErr error
+	err     error
 }
 
 func (f *fakeUsers) ListUsers(_ context.Context, p authentik.ListUsersParams) (*authentik.UserList, error) {
@@ -212,6 +218,17 @@ func (f *fakeUsers) ListTokens(_ context.Context, userPK int, _ string) ([]authe
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeUsers) ListUserApplications(_ context.Context, userPK int) ([]authentik.Application, error) {
+	if f.appsErr != nil {
+		return nil, f.appsErr
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.appsUserPK = userPK
+	return f.apps, nil
 }
 
 func (f *fakeUsers) GetToken(_ context.Context, identifier string) (*authentik.Token, error) {

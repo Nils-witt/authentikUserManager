@@ -165,6 +165,18 @@ export interface JoinRequest {
   decided_by: string
 }
 
+/** An authentik application a user may access. */
+export interface Application {
+  name: string
+  slug: string
+  /** The group the application is listed under in the user's library; may be empty. */
+  group: string
+  description: string
+  publisher: string
+  /** Absolute http(s) URL opening the application; empty when it has none. */
+  launch_url: string
+}
+
 /** Where a certificate's private key was created: by the server, or by the user who sent a CSR. */
 export type KeySource = 'generated' | 'csr'
 
@@ -545,6 +557,12 @@ export const downloadCertificateKey = (serial: string) =>
 export const listUserCertificates = (userId: number) =>
   request<{ certificates: Certificate[] }>('GET', `/api/users/${userId}/certificates`).then(
     (res) => res.certificates,
+  )
+
+/** Lists the applications the user may access, as the policies bound to them decide. */
+export const listUserApplications = (userId: number) =>
+  request<{ applications: Application[] }>('GET', `/api/users/${userId}/applications`).then(
+    (res) => res.applications,
   )
 
 /** Revokes a certificate of the user; it is listed in the CRL from then on. */

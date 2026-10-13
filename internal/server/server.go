@@ -61,6 +61,7 @@ type UserService interface {
 	CreateToken(ctx context.Context, req authentik.CreateTokenRequest) (*authentik.Token, error)
 	TokenKey(ctx context.Context, identifier string) (string, error)
 	DeleteToken(ctx context.Context, identifier string) error
+	ListUserApplications(ctx context.Context, userPK int) ([]authentik.Application, error)
 }
 
 var _ UserService = (*authentik.Client)(nil)
@@ -238,6 +239,8 @@ func New(d Deps) *Server {
 	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteAccount(userAccounts)))
 	api.HandleFunc("PUT /api/users/{id}/groups", s.setAccountGroups(userAccounts))
 	api.HandleFunc("POST /api/users/{id}/recovery-email", s.sendRecoveryEmail)
+	// Operators who may see a user may list the applications the user may access.
+	api.HandleFunc("GET /api/users/{id}/applications", s.listUserApplications)
 	// Service accounts follow the access rules of users; see serviceaccounts.go.
 	api.HandleFunc("GET /api/service-accounts", s.listAccounts(serviceAccounts))
 	api.HandleFunc("POST /api/service-accounts", s.createAccount(serviceAccounts))

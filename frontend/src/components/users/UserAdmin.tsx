@@ -15,6 +15,7 @@ import { dialogForPath, dialogPaths, pagePaths, type RoutedDialog } from '../../
 import { ListPagination } from '../common/ListPagination'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
 import { FolderTree } from '../folders/FolderTree'
+import { ApplicationsDialog } from './ApplicationsDialog'
 import { CertificatesDialog } from './CertificatesDialog'
 import { StatusAlerts } from './StatusAlerts'
 import { UserDialog, type UserDialogState } from './UserDialog'
@@ -38,6 +39,8 @@ export function UserAdmin() {
   const [editing, setEditing] = useState<User | null>(null)
   // The user whose certificates are listed, if any.
   const [certificatesOf, setCertificatesOf] = useState<User | null>(null)
+  // The user whose applications are listed, if any.
+  const [applicationsOf, setApplicationsOf] = useState<User | null>(null)
   const navigate = useNavigate()
   const { pathname, search } = useLocation()
   const routed = dialogForPath(pathname)
@@ -143,6 +146,7 @@ export function UserAdmin() {
               onToggleActive={(user) => void toggleActive(user)}
               onSendRecovery={(user) => void sendRecovery(user)}
               onCertificates={setCertificatesOf}
+              onApplications={setApplicationsOf}
               onDelete={(user) => void remove(user)}
             />
             <ListPagination
@@ -169,6 +173,10 @@ export function UserAdmin() {
           onClose={() => setCertificatesOf(null)}
           onRevoked={setNotice}
         />
+      )}
+
+      {applicationsOf && (
+        <ApplicationsDialog user={applicationsOf} onClose={() => setApplicationsOf(null)} />
       )}
 
       <UserDialog

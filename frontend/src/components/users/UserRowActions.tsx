@@ -1,3 +1,4 @@
+import AppsIcon from '@mui/icons-material/Apps'
 import BlockIcon from '@mui/icons-material/Block'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import DeleteIcon from '@mui/icons-material/Delete'
@@ -25,6 +26,8 @@ export interface UserRowActionsProps {
   onDelete: (user: User) => void
   /** Lists the tokens of a service account; the button is hidden when undefined. */
   onTokens?: (user: User) => void
+  /** Lists the applications the user may access; the button is hidden when undefined. */
+  onApplications?: (user: User) => void
 }
 
 /** Icon buttons acting on a single user, or a lock when the operator may not change them. */
@@ -39,23 +42,36 @@ export function UserRowActions({
   onCertificates,
   onDelete,
   onTokens,
+  onApplications,
 }: UserRowActionsProps) {
+  // Listing the applications changes nothing, so it is offered for locked users too.
+  const applicationsButton = onApplications && (
+    <Tooltip title="Applications">
+      <IconButton size="small" onClick={() => onApplications(user)}>
+        <AppsIcon fontSize="small" />
+      </IconButton>
+    </Tooltip>
+  )
   if (!user.changeable) {
     return (
-      <Tooltip
-        title={
-          user.primary_group
-            ? `Only the operators managing the primary group "${user.primary_group}" can change this account`
-            : // Without a primary group, only an own account outside the operator's scope is locked.
-              'You can see your own account but not change it'
-        }
-      >
-        <LockIcon fontSize="small" color="disabled" sx={{ verticalAlign: 'middle' }} />
-      </Tooltip>
+      <>
+        {applicationsButton}
+        <Tooltip
+          title={
+            user.primary_group
+              ? `Only the operators managing the primary group "${user.primary_group}" can change this account`
+              : // Without a primary group, only an own account outside the operator's scope is locked.
+                'You can see your own account but not change it'
+          }
+        >
+          <LockIcon fontSize="small" color="disabled" sx={{ verticalAlign: 'middle' }} />
+        </Tooltip>
+      </>
     )
   }
   return (
     <>
+      {applicationsButton}
       <Tooltip title="Edit">
         <IconButton size="small" onClick={() => onEdit(user)}>
           <EditIcon fontSize="small" />
