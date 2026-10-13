@@ -111,6 +111,7 @@ export type AuditAction =
   | 'user.access_denied'
   | 'access_rule.saved'
   | 'access_rule.deleted'
+  | 'group.created'
   | 'group.renamed'
   | 'group.visibility_changed'
   | 'group.path_changed'
@@ -417,6 +418,13 @@ export const listVisibleGroups = (params: GroupListParams) =>
 /** Loads the group folders: of all groups for access administrators, of the groups they see for everyone else. */
 export const listGroupPaths = () =>
   request<{ paths: string[] }>('GET', '/api/groups/paths').then((res) => res.paths)
+
+/**
+ * Creates a group without members; only access administrators may. The name must not be
+ * taken, since access rules match groups by name.
+ */
+export const createGroup = (group: { name: string; visible: boolean; path: string }) =>
+  request<Group>('POST', '/api/groups', group)
 
 /**
  * Renames a group, sets its visibility or moves it to another folder (path);

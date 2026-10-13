@@ -57,6 +57,10 @@ type fakeUsers struct {
 	groupRenames []string
 	// groupAttrs records the attributes passed to UpdateGroup, in order.
 	groupAttrs []map[string]any
+	// createdGroup records the request passed to CreateGroup.
+	createdGroup *authentik.CreateGroupRequest
+	// createGroupErr, when set, fails CreateGroup only.
+	createGroupErr error
 	// groupList, when set, is returned by ListGroups.
 	groupList []authentik.Group
 	// userAttrs records the attributes passed to UpdateUser, in order, when set.
@@ -143,6 +147,15 @@ func (f *fakeUsers) GetGroup(_ context.Context, pk string) (*authentik.Group, er
 		}
 	}
 	return nil, authentik.ErrNotFound
+}
+
+func (f *fakeUsers) CreateGroup(_ context.Context, req authentik.CreateGroupRequest) (*authentik.Group, error) {
+	f.mutated = true
+	f.createdGroup = &req
+	if err := cmp.Or(f.err, f.createGroupErr); err != nil {
+		return nil, err
+	}
+	return &authentik.Group{PK: "g-new", Name: req.Name, Attributes: req.Attributes}, nil
 }
 
 func (f *fakeUsers) UpdateGroup(_ context.Context, pk string, req authentik.UpdateGroupRequest) (*authentik.Group, error) {

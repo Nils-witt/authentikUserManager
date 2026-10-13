@@ -28,6 +28,33 @@ func TestClient_GetGroup(t *testing.T) {
 	}
 }
 
+func TestClient_CreateGroup(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v3/core/groups/" {
+			t.Errorf("request = %s %s", r.Method, r.URL)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding body: %v", err)
+		}
+		attrs, _ := body["attributes"].(map[string]any)
+		if len(body) != 2 || body["name"] != "staff" || attrs["visible"] != true {
+			t.Errorf("body = %v, want the name and attributes", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"pk":"g-1","name":"staff","attributes":{"visible":true}}`)
+	})
+
+	got, err := c.CreateGroup(t.Context(), authentik.CreateGroupRequest{Name: "staff", Attributes: map[string]any{"visible": true}})
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if got.PK != "g-1" || got.Name != "staff" {
+		t.Errorf("CreateGroup = %+v", got)
+	}
+}
+
 func TestClient_ListGroups_attributeFilter(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

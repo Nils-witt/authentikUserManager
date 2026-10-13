@@ -26,6 +26,8 @@ const (
 	ActionAccessDenied Action = "user.access_denied"
 	ActionRuleSaved    Action = "access_rule.saved"
 	ActionRuleDeleted  Action = "access_rule.deleted"
+	// ActionGroupCreated is recorded when an access administrator creates a group.
+	ActionGroupCreated Action = "group.created"
 	// ActionGroupRenamed is recorded when a group is renamed, together with the access rules naming it.
 	ActionGroupRenamed Action = "group.renamed"
 	// ActionGroupVisibilityChanged is recorded when a group is made visible to every signed-in user or hidden again.
@@ -64,7 +66,7 @@ func (a Action) Valid() bool {
 	case ActionUserCreated, ActionUserUpdated, ActionUserDeleted,
 		ActionUserGroupAdded, ActionUserGroupRemoved, ActionUserPrimaryGroupChanged, ActionRecoveryEmailSent,
 		ActionAccessDenied, ActionRuleSaved, ActionRuleDeleted,
-		ActionGroupRenamed, ActionGroupVisibilityChanged, ActionGroupPathChanged,
+		ActionGroupCreated, ActionGroupRenamed, ActionGroupVisibilityChanged, ActionGroupPathChanged,
 		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected,
 		ActionCertificateIssued, ActionCertificateKeyDownloaded, ActionCertificateRevoked,
 		ActionServiceAccountCreated, ActionServiceAccountUpdated, ActionServiceAccountDeleted,

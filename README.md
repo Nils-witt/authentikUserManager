@@ -12,7 +12,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Operators also manage [service accounts](#service-accounts) with their tokens and certificates. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), create and rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Operators also manage [service accounts](#service-accounts) with their tokens and certificates. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -150,8 +150,8 @@ The schema is created and migrated automatically at startup
 ## Groups
 
 Access administrators manage the authentik groups in the UI (**Groups** in the toolbar):
-search and page through them, rename a group, make it visible to everyone, and add or remove
-its direct members. Other operators change the groups of the users they manage in the user
+search and page through them, create a group, rename it, make it visible to everyone, and add or
+remove its direct members. Other operators change the groups of the users they manage in the user
 dialog instead.
 
 Every signed-in user, even one who may not manage any users, can open **Groups** to see the
@@ -169,9 +169,13 @@ attributes or whether it grants superuser rights.
   again before the renamed rule applies to them.
 - Groups named in `ACCESS_ADMIN_GROUPS` cannot be renamed, and no group can be renamed to one of
   those names, to `*`, or to the name of another group.
+- Only access administrators can create groups. A new group has no members and never grants
+  superuser rights. Its name must not be `*` or the name of another group; it may be one named in
+  `ACCESS_ADMIN_GROUPS`, so such a group can be set up from here.
 - Adding a user to a group that grants superuser rights asks for confirmation first.
 
 The API for access administrators is `GET /api/groups` (`search`, `page`, `page_size`),
+`POST /api/groups` (body `{"name": "...", "visible": true, "path": "..."}`, returns 201),
 `GET` and `PATCH /api/groups/{pk}` (body `{"name": "...", "visible": true}`, both optional),
 `GET /api/groups/{pk}/members` (`search`, `page`, `page_size`), and `PUT` and
 `DELETE /api/groups/{pk}/members/{user id}`. Removing a user from their primary group returns 409. Every signed-in user may call

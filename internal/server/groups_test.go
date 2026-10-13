@@ -34,6 +34,7 @@ func TestServer_groups_requireAdmin(t *testing.T) {
 	t.Parallel()
 	requests := []struct{ method, target, body string }{
 		{http.MethodGet, "/api/groups", ""},
+		{http.MethodPost, "/api/groups", `{"name":"new"}`},
 		{http.MethodGet, "/api/groups/g1", ""},
 		{http.MethodPatch, "/api/groups/g1", `{"name":"employees"}`},
 		{http.MethodPatch, "/api/groups/g1", `{"visible":true}`},
@@ -317,6 +318,90 @@ func TestServer_getGroup(t *testing.T) {
 				t.Errorf("GET %s = %d %s, want %d containing %q", tt.target, rec.Code, rec.Body, tt.expected, tt.expectBody)
 			}
 		})
+	}
+}
+
+func TestServer_createGroup(t *testing.T) {
+	t.Parallel()
+	users := &fakeUsers{groups: testGroups()}
+	log := &fakeAudit{}
+	h := newAuditedServer(t, users, newFakeRules(), log, adminAuth)
+
+	rec := do(t, h, http.MethodPost, "/api/groups", `{"name":" class 5a ","visible":true,"path":" /school/classes/ "}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d %s, want 201", rec.Code, rec.Body)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"pk":"g-new","name":"class 5a"`) ||
+		!strings.Contains(body, `"path":"school/classes","visible":true`) {
+		t.Errorf("body = %s, want the new group with its path and visibility", body)
+	}
+	expectedAttrs := map[string]any{visibleAttribute: true, pathAttribute: "school/classes"}
+	if users.createdGroup == nil || users.createdGroup.Name != "class 5a" || !maps.Equal(users.createdGroup.Attributes, expectedAttrs) {
+		t.Errorf("authentik request = %+v, want class 5a with %v", users.createdGroup, expectedAttrs)
+	}
+	expected := audit.Entry{
+		Actor:   "admin",
+		Action:  audit.ActionGroupCreated,
+		Target:  "class 5a",
+		Details: map[string]string{"group_id": "g-new", "visible": "true", "path": "school/classes"},
+	}
+	if len(log.recorded) != 1 || !equalEntry(log.recorded[0], expected) {
+		t.Errorf("audit = %+v, want %+v", log.recorded, expected)
+	}
+}
+
+func TestServer_createGroup_withoutAttributes(t *testing.T) {
+	t.Parallel()
+	users := &fakeUsers{groups: testGroups()}
+	rec := do(t, newServer(t, users), http.MethodPost, "/api/groups", `{"name":"guests"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d %s, want 201", rec.Code, rec.Body)
+	}
+	if users.createdGroup == nil || len(users.createdGroup.Attributes) != 0 {
+		t.Errorf("authentik request = %+v, want no attributes", users.createdGroup)
+	}
+}
+
+func TestServer_createGroup_refused(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		body     string
+		expected int
+		// expectMsg is part of the expected response body.
+		expectMsg string
+	}{
+		{name: "empty name", body: `{"name":"  "}`, expected: http.StatusBadRequest, expectMsg: "Name is required."},
+		{name: "unknown field", body: `{"name":"x","is_superuser":true}`, expected: http.StatusBadRequest, expectMsg: "invalid JSON body"},
+		{name: "wildcard", body: `{"name":"*"}`, expected: http.StatusBadRequest, expectMsg: "reserved for access rules"},
+		{name: "name taken", body: `{"name":"students"}`, expected: http.StatusBadRequest, expectMsg: "already named"},
+		{name: "empty folder", body: `{"name":"x","path":"a//b"}`, expected: http.StatusBadRequest, expectMsg: "must not be empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			users := &fakeUsers{groups: testGroups()}
+			rec := do(t, newServer(t, users), http.MethodPost, "/api/groups", tt.body)
+			if rec.Code != tt.expected || !strings.Contains(rec.Body.String(), tt.expectMsg) {
+				t.Errorf("status = %d %s, want %d containing %q", rec.Code, rec.Body, tt.expected, tt.expectMsg)
+			}
+			if users.mutated {
+				t.Error("authentik was changed")
+			}
+		})
+	}
+}
+
+func TestServer_createGroup_upstreamValidation(t *testing.T) {
+	t.Parallel()
+	users := &fakeUsers{groups: testGroups()}
+	users.createGroupErr = &authentik.APIError{StatusCode: http.StatusBadRequest, Fields: map[string][]string{"name": {"too long"}}}
+	rec := do(t, newServer(t, users), http.MethodPost, "/api/groups", `{"name":"x"}`)
+	if users.createdGroup == nil {
+		t.Fatal("authentik was not asked to create the group")
+	}
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "too long") {
+		t.Errorf("status = %d %s, want 400 with authentik's field error", rec.Code, rec.Body)
 	}
 }
 

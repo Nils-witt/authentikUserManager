@@ -39,6 +39,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'service_account.token_deleted': 'Token deleted',
   'access_rule.saved': 'Access rule saved',
   'access_rule.deleted': 'Access rule deleted',
+  'group.created': 'Group created',
   'group.renamed': 'Group renamed',
   'group.visibility_changed': 'Group visibility changed',
   'group.path_changed': 'Group moved',

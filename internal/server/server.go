@@ -55,6 +55,7 @@ type UserService interface {
 	SendRecoveryEmail(ctx context.Context, id int, emailStage string) error
 	ListGroups(ctx context.Context, p authentik.ListGroupsParams) (*authentik.GroupList, error)
 	GetGroup(ctx context.Context, pk string) (*authentik.Group, error)
+	CreateGroup(ctx context.Context, req authentik.CreateGroupRequest) (*authentik.Group, error)
 	UpdateGroup(ctx context.Context, pk string, req authentik.UpdateGroupRequest) (*authentik.Group, error)
 	ListTokens(ctx context.Context, userPK int, username string) ([]authentik.Token, error)
 	GetToken(ctx context.Context, identifier string) (*authentik.Token, error)
@@ -211,6 +212,7 @@ func New(d Deps) *Server {
 	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
 	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
+	api.Handle("POST /api/groups", s.requireAdmin(s.createGroup))
 	// Every signed-in user may list the visible groups, their own groups and
 	// those of the accounts they may see, without their members.
 	api.HandleFunc("GET /api/groups/visible", s.listVisibleGroups)

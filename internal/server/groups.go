@@ -17,8 +17,8 @@ import (
 )
 
 // The group handlers are restricted to access administrators (see requireAdmin),
-// who have full access, so they do not check the operator's scope. The only
-// exceptions are listVisibleGroups and requestJoin.
+// who have full access, so they do not check the operator's scope. Only they
+// may create groups. The only exceptions are listVisibleGroups and requestJoin.
 
 // visibleAttribute is the authentik group attribute that, when true, lets every
 // signed-in user see the group's name. Its members stay hidden.
@@ -362,6 +362,59 @@ func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newGroupView(group))
 }
 
+// newGroupInput is the body of POST /api/groups.
+type newGroupInput struct {
+	Name    string `json:"name"`
+	Visible bool   `json:"visible"`
+	// Path sorts the group into folders; empty puts it at the top level.
+	Path string `json:"path"`
+}
+
+// createGroup creates a group without members, optionally visible to every
+// signed-in user and in a folder. Its name must not be taken, since the access
+// rules match groups by name.
+func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
+	var in newGroupInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	fields := map[string][]string{}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		fields["name"] = append(fields["name"], "Name is required.")
+	}
+	path, msg := normalizeGroupPath(in.Path)
+	if msg != "" {
+		fields["path"] = append(fields["path"], msg)
+	}
+	if name != "" {
+		msg, ok := s.checkGroupName(w, r, nil, name)
+		if !ok {
+			return
+		}
+		if msg != "" {
+			fields["name"] = append(fields["name"], msg)
+		}
+	}
+	if len(fields) > 0 {
+		writeError(w, http.StatusBadRequest, "validation failed", fields)
+		return
+	}
+
+	attrs := withGroupPath(withVisibility(nil, in.Visible), path)
+	group, err := s.users.CreateGroup(r.Context(), authentik.CreateGroupRequest{Name: name, Attributes: attrs})
+	if err != nil {
+		s.writeGroupError(w, r, err)
+		return
+	}
+	s.record(r, audit.ActionGroupCreated, group.Name, map[string]string{
+		"group_id": group.PK,
+		"visible":  strconv.FormatBool(isVisible(group)),
+		"path":     groupFolder(group),
+	})
+	writeJSON(w, http.StatusCreated, newGroupView(group))
+}
+
 // groupInput is the body of PATCH /api/groups/{pk}; nil fields are left unchanged.
 type groupInput struct {
 	Name    *string `json:"name"`
@@ -479,16 +532,18 @@ func (s *Server) renameInRules(w http.ResponseWriter, r *http.Request, group, up
 	return true
 }
 
-// checkGroupName checks whether group may be renamed to name. It returns a
-// message that is safe to show users when not, and writes the error response
-// and returns false when the check itself fails.
+// checkGroupName checks whether group may be renamed to name, or, when group
+// is nil, whether a new group may be named name. It returns a message that is
+// safe to show users when not, and writes the error response and returns false
+// when the check itself fails.
 func (s *Server) checkGroupName(w http.ResponseWriter, r *http.Request, group *authentik.Group, name string) (string, bool) {
 	// The admin groups are configured by name, so renaming one would lock its
-	// members out, and renaming a group to one would make its members access administrators.
-	if s.policy.IsAdmin([]string{group.Name}) {
+	// members out, and renaming a group to one would make its members access
+	// administrators. A new group has no members, so it may take such a name.
+	if group != nil && s.policy.IsAdmin([]string{group.Name}) {
 		return "Access administrator groups (ACCESS_ADMIN_GROUPS) cannot be renamed here.", true
 	}
-	if s.policy.IsAdmin([]string{name}) {
+	if group != nil && s.policy.IsAdmin([]string{name}) {
 		return "This name is reserved for an access administrator group (ACCESS_ADMIN_GROUPS).", true
 	}
 	if name == access.Wildcard {
@@ -502,7 +557,7 @@ func (s *Server) checkGroupName(w http.ResponseWriter, r *http.Request, group *a
 	case err != nil:
 		s.writeUpstreamError(w, r, err)
 		return "", false
-	case other.PK != group.PK:
+	case group == nil || other.PK != group.PK:
 		return fmt.Sprintf("Another group is already named %q.", name), true
 	}
 	return "", true

@@ -1,3 +1,4 @@
+import AddIcon from '@mui/icons-material/Add'
 import SearchIcon from '@mui/icons-material/Search'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -17,6 +18,7 @@ import { useGroupPaths } from '../../hooks/useGroupPaths'
 import { ListPagination } from '../common/ListPagination'
 import { Modal } from '../common/Modal'
 import { FolderTree } from '../folders/FolderTree'
+import { CreateGroupForm } from './CreateGroupForm'
 import { GroupEditor } from './GroupEditor'
 import { GroupsTable } from './GroupsTable'
 import { JoinGroupForm } from './JoinGroupForm'
@@ -49,6 +51,7 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [editing, setEditing] = useState<Group | null>(null)
+  const [creating, setCreating] = useState(false)
   const [requesting, setRequesting] = useState<PublicGroup | null>(null)
   // The signed-in user's pending join requests; only loaded for non-administrators.
   const [pending, setPending] = useState<JoinRequest[]>([])
@@ -142,9 +145,23 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
   return (
     <Container component="main" maxWidth="lg" sx={{ py: 3 }}>
       <Stack spacing={2}>
-        <Typography variant="h5" component="h2">
-          Groups
-        </Typography>
+        <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
+          <Typography variant="h5" component="h2">
+            Groups
+          </Typography>
+          {admin && (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => {
+                setNotice(null)
+                setCreating(true)
+              }}
+            >
+              New group
+            </Button>
+          )}
+        </Stack>
         {(error ?? pathsError) && <Alert severity="error">{error ?? pathsError}</Alert>}
         {notice && <Alert severity="success">{notice}</Alert>}
         <Typography variant="body2" color="text.secondary">
@@ -205,6 +222,22 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
           </Box>
         </Box>
       </Stack>
+
+      {creating && (
+        <Modal title="New group" onClose={() => setCreating(false)}>
+          <CreateGroupForm
+            initialPath={folder ?? ''}
+            onCreated={(group) => {
+              setNotice(`Created ${group.name}.`)
+              setCreating(false)
+              setVersion((v) => v + 1)
+              // Continue with the new group, to add its members.
+              setEditing(group)
+            }}
+            onBack={() => setCreating(false)}
+          />
+        </Modal>
+      )}
 
       {editing && (
         <Modal title={`Group ${editing.name}`} onClose={closeEditor} wide>

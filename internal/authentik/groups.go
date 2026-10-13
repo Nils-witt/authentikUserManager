@@ -35,6 +35,13 @@ type ListGroupsParams struct {
 	Attributes map[string]any
 }
 
+// CreateGroupRequest is the payload for CreateGroup.
+type CreateGroupRequest struct {
+	Name string `json:"name"`
+	// Attributes are the custom attributes of the new group.
+	Attributes map[string]any `json:"attributes,omitempty"`
+}
+
 // UpdateGroupRequest is a partial update; nil fields are left unchanged.
 type UpdateGroupRequest struct {
 	Name *string `json:"name,omitempty"`
@@ -103,6 +110,15 @@ func (c *Client) GetGroup(ctx context.Context, pk string) (*Group, error) {
 	q := url.Values{"include_users": {"false"}}
 	if err := c.do(ctx, http.MethodGet, groupPath(pk), q, nil, &out); err != nil {
 		return nil, fmt.Errorf("getting group %s: %w", pk, err)
+	}
+	return &out, nil
+}
+
+// CreateGroup creates a group without members.
+func (c *Client) CreateGroup(ctx context.Context, req CreateGroupRequest) (*Group, error) {
+	var out Group
+	if err := c.do(ctx, http.MethodPost, "core/groups/", nil, req, &out); err != nil {
+		return nil, fmt.Errorf("creating group %q: %w", req.Name, err)
 	}
 	return &out, nil
 }
