@@ -73,6 +73,9 @@ func updatedFields(req authentik.UpdateUserRequest) string {
 	if req.Type != nil {
 		fields = append(fields, "type")
 	}
+	if req.Attributes != nil {
+		fields = append(fields, "attributes")
+	}
 	return strings.Join(fields, ",")
 }
 

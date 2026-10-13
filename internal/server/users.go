@@ -106,6 +106,23 @@ func withPrimaryGroup(attrs map[string]any, pk string) map[string]any {
 	return out
 }
 
+// withHidden returns a copy of attrs with the user hidden from operators who
+// are not access administrators, or shown again, leaving the other attributes
+// as they are. It never returns nil, so an update clearing the last attribute
+// is still sent.
+func withHidden(attrs map[string]any, hidden bool) map[string]any {
+	out := maps.Clone(attrs)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if hidden {
+		out[access.HiddenAttribute] = true
+	} else {
+		delete(out, access.HiddenAttribute)
+	}
+	return out
+}
+
 // mayChange reports whether an operator with scope may change u. Only the
 // operators managing the user's primary group may change a user who has one,
 // so the operators of the user's other groups cannot take the user over. Users
@@ -125,10 +142,17 @@ type userView struct {
 	PrimaryGroup string `json:"primary_group"`
 	// Changeable is set when the operator may change the user (see mayChange).
 	Changeable bool `json:"changeable"`
+	// Hidden is set when only access administrators may see the user (see access.IsHidden).
+	Hidden bool `json:"hidden"`
 }
 
 func newUserView(u *authentik.User, scope access.Scope) userView {
-	return userView{User: *u, PrimaryGroup: primaryGroupName(u), Changeable: mayChange(u, scope)}
+	return userView{
+		User:         *u,
+		PrimaryGroup: primaryGroupName(u),
+		Changeable:   mayChange(u, scope),
+		Hidden:       access.IsHidden(u),
+	}
 }
 
 func newUserPage(list *authentik.UserList, scope access.Scope) page[userView] {
@@ -194,37 +218,23 @@ func (s *Server) listAccountsOf(w http.ResponseWriter, r *http.Request, k accoun
 	if !ok {
 		return
 	}
-	if scope.All {
-		list, err := s.users.ListUsers(r.Context(), params)
-		if err != nil {
-			s.writeUpstreamError(w, r, err)
-			return
-		}
-		// Defense in depth: authentik silently ignores filters it does not know,
-		// so drop anything of another type even if the filter was not applied.
-		list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool { return u.Type != k.typ })
-		writeJSON(w, http.StatusOK, newUserPage(list, scope))
-		return
+	if !scope.IncludesHidden {
+		// Leave the hidden users out upstream, so that every page stays full.
+		params.WithoutAttributes = []string{access.HiddenAttribute}
 	}
 
-	// Every user sees their own account, even outside their scope.
-	var self *authentik.User
-	if k.seesOwnAccount() {
-		var err error
-		if self, err = s.findActor(r, params); err != nil {
-			s.writeUpstreamError(w, r, err)
-			return
-		}
-		if self != nil && scope.Allows(self) {
-			self = nil // listed with the others
-		}
+	self, err := s.ownAccountOutsideScope(r, k, params, scope)
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return
 	}
 	list := &authentik.UserList{Results: []authentik.User{}}
 	if !scope.Empty() {
 		scoped := params
-		scoped.GroupsByName = scope.Groups
-		scoped.IsSuperuser = new(false)
-		var err error
+		if !scope.All {
+			scoped.GroupsByName = scope.Groups
+			scoped.IsSuperuser = new(false)
+		}
 		if list, err = s.users.ListUsers(r.Context(), scoped); err != nil {
 			s.writeUpstreamError(w, r, err)
 			return
@@ -239,6 +249,21 @@ func (s *Server) listAccountsOf(w http.ResponseWriter, r *http.Request, k accoun
 		addSelf(list, self, params.Page)
 	}
 	writeJSON(w, http.StatusOK, newUserPage(list, scope))
+}
+
+// ownAccountOutsideScope returns the operator's own account of kind k when it
+// matches the filters of params but is outside scope, or nil otherwise. Every
+// user sees their own account, even outside their scope.
+func (s *Server) ownAccountOutsideScope(r *http.Request, k accountKind, params authentik.ListUsersParams, scope access.Scope) (*authentik.User, error) {
+	// Access administrators see every account anyway.
+	if !k.seesOwnAccount() || scope.All && scope.IncludesHidden {
+		return nil, nil
+	}
+	self, err := s.findActor(r, params)
+	if err != nil || self == nil || scope.Allows(self) {
+		return nil, err // listed with the others, if at all
+	}
+	return self, nil
 }
 
 // addSelf adds the operator's own account, which is outside their scope, to a
@@ -267,6 +292,7 @@ func (s *Server) findActor(r *http.Request, params authentik.ListUsersParams) (*
 	params.Username = username
 	params.Type = []authentik.UserType{authentik.UserTypeInternal}
 	params.GroupsByName, params.GroupsByPK, params.IsSuperuser = nil, nil, nil
+	params.WithoutAttributes = nil
 	params.Page, params.PageSize = 0, 0
 	list, err := s.users.ListUsers(r.Context(), params)
 	if err != nil {
@@ -387,6 +413,9 @@ type createUserInput struct {
 	// primary group. Operators with restricted access must name one of their
 	// target groups.
 	Group string `json:"group"`
+	// Hidden hides the new user from operators who are not access
+	// administrators; only access administrators may set it.
+	Hidden bool `json:"hidden"`
 }
 
 // validate checks the input for an account of kind k against the operator's
@@ -416,6 +445,9 @@ func (in createUserInput) validate(k accountKind, scope access.Scope) (authentik
 		fields["group"] = []string{"Group is required."}
 	case in.Group != "" && !scope.HasGroup(in.Group):
 		fields["group"] = []string{"You may not add users to this group."}
+	}
+	if in.Hidden && !scope.IncludesHidden {
+		fields["hidden"] = []string{"Only access administrators may hide users."}
 	}
 	return req, fields
 }
@@ -455,6 +487,9 @@ func (s *Server) createAccountOf(w http.ResponseWriter, r *http.Request, k accou
 		req.Groups = []string{group.PK}
 		req.Attributes = withPrimaryGroup(nil, group.PK)
 	}
+	if in.Hidden {
+		req.Attributes = withHidden(req.Attributes, true)
+	}
 
 	user, err := s.users.CreateUser(r.Context(), req)
 	if err != nil {
@@ -464,6 +499,9 @@ func (s *Server) createAccountOf(w http.ResponseWriter, r *http.Request, k accou
 	details := map[string]string{}
 	if in.Group != "" {
 		details["group"] = in.Group
+	}
+	if in.Hidden {
+		details["hidden"] = "true"
 	}
 	s.recordUser(r, k.created, user, details)
 	writeJSON(w, http.StatusCreated, newUserView(user, scope))
@@ -501,6 +539,9 @@ type updateUserInput struct {
 	IsActive *bool               `json:"is_active"`
 	Path     *string             `json:"path"`
 	Type     *authentik.UserType `json:"type"`
+	// Hidden hides the user from operators who are not access administrators,
+	// or shows them again; only access administrators may change it.
+	Hidden *bool `json:"hidden"`
 }
 
 func (in updateUserInput) request() authentik.UpdateUserRequest {
@@ -539,6 +580,16 @@ func (s *Server) updateAccountOf(w http.ResponseWriter, r *http.Request, k accou
 	}
 
 	req := in.request()
+	if in.Hidden != nil && *in.Hidden != access.IsHidden(target) {
+		if !scope.IncludesHidden {
+			s.recordUser(r, audit.ActionAccessDenied, target, map[string]string{"hidden": strconv.FormatBool(*in.Hidden)})
+			writeError(w, http.StatusForbidden, "only access administrators may hide or show users", nil)
+			return
+		}
+		// authentik replaces all attributes, so keep the others. A concurrent
+		// change to them elsewhere between loading and saving is lost.
+		req.Attributes = withHidden(target.Attributes, *in.Hidden)
+	}
 	user, err := s.users.UpdateUser(r.Context(), id, req)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
@@ -550,6 +601,9 @@ func (s *Server) updateAccountOf(w http.ResponseWriter, r *http.Request, k accou
 	}
 	if req.IsActive != nil {
 		details["is_active"] = strconv.FormatBool(*req.IsActive)
+	}
+	if req.Attributes != nil {
+		details["hidden"] = strconv.FormatBool(*in.Hidden)
 	}
 	s.recordUser(r, k.updated, user, details)
 

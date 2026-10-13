@@ -2,6 +2,7 @@ package authentik
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -102,9 +103,11 @@ type ListUsersParams struct {
 	IsSuperuser *bool
 	// IsActive, when non-nil, matches only active (true) or only inactive (false) users.
 	IsActive *bool
+	// WithoutAttributes matches users who have none of these custom attributes.
+	WithoutAttributes []string
 }
 
-func (p ListUsersParams) values() url.Values {
+func (p ListUsersParams) values() (url.Values, error) {
 	q := url.Values{}
 	if p.Search != "" {
 		q.Set("search", p.Search)
@@ -142,7 +145,29 @@ func (p ListUsersParams) values() url.Values {
 	if p.IsActive != nil {
 		q.Set("is_active", strconv.FormatBool(*p.IsActive))
 	}
-	return q
+	if len(p.WithoutAttributes) > 0 {
+		attrs, err := missingAttributesFilter(p.WithoutAttributes)
+		if err != nil {
+			return nil, err
+		}
+		q.Set("attributes", attrs)
+	}
+	return q, nil
+}
+
+// missingAttributesFilter returns the attributes filter matching users who
+// have none of keys. authentik turns each key of the filter into a Django
+// lookup on the attributes field, so the isnull lookup matches a missing key.
+func missingAttributesFilter(keys []string) (string, error) {
+	filter := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		filter[key+"__isnull"] = true
+	}
+	attrs, err := json.Marshal(filter)
+	if err != nil {
+		return "", fmt.Errorf("encoding attribute filter: %w", err)
+	}
+	return string(attrs), nil
 }
 
 // CreateUserRequest is the payload for CreateUser.
@@ -178,8 +203,12 @@ func userPath(id int) string {
 
 // ListUsers returns one page of users matching p.
 func (c *Client) ListUsers(ctx context.Context, p ListUsersParams) (*UserList, error) {
+	q, err := p.values()
+	if err != nil {
+		return nil, fmt.Errorf("listing users: %w", err)
+	}
 	var out UserList
-	if err := c.do(ctx, http.MethodGet, "core/users/", p.values(), nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, "core/users/", q, nil, &out); err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
 	}
 	if out.Results == nil {

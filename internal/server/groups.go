@@ -477,7 +477,7 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return !slices.ContainsFunc(u.Groups, func(g authentik.UserGroup) bool { return g.PK == group.PK })
 	})
 	// Only access administrators list the members, and they may change every user.
-	writeJSON(w, http.StatusOK, newUserPage(list, access.Scope{All: true}))
+	writeJSON(w, http.StatusOK, newUserPage(list, access.Scope{All: true, IncludesHidden: true}))
 }
 
 func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request) {

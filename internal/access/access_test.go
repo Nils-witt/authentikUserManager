@@ -104,7 +104,7 @@ func TestPolicy_ScopeFor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ScopeFor: %v", err)
 			}
-			if got.All != tt.wantAll || !slices.Equal(got.Groups, tt.wantGroups) {
+			if got.All != tt.wantAll || !slices.Equal(got.Groups, tt.wantGroups) || got.IncludesHidden != tt.wantAdmin {
 				t.Errorf("ScopeFor(%v) = %+v, want All=%v Groups=%v", tt.groups, got, tt.wantAll, tt.wantGroups)
 			}
 			if got.Empty() != (!tt.wantAll && len(tt.wantGroups) == 0) {
@@ -144,6 +144,14 @@ func TestScope_Allows(t *testing.T) {
 	}
 	superuser := member("staff")
 	superuser.IsSuperuser = true
+	hidden := func(groups ...string) *authentik.User {
+		u := member(groups...)
+		u.Attributes = map[string]any{access.HiddenAttribute: true}
+		return u
+	}
+	notHidden := member("staff")
+	notHidden.Attributes = map[string]any{access.HiddenAttribute: false}
+	admin := access.Scope{All: true, IncludesHidden: true}
 
 	restricted := access.Scope{Groups: []string{"staff"}}
 	tests := []struct {
@@ -158,6 +166,16 @@ func TestScope_Allows(t *testing.T) {
 		{name: "superuser denied for restricted", scope: restricted, user: superuser, want: false},
 		{name: "full access", scope: access.Scope{All: true}, user: superuser, want: true},
 		{name: "empty scope", scope: access.Scope{}, user: member("staff"), want: false},
+		{name: "hidden member denied for restricted", scope: restricted, user: hidden("staff"), want: false},
+		{name: "hidden denied for full access", scope: access.Scope{All: true}, user: hidden("staff"), want: false},
+		{name: "hidden allowed for admin", scope: admin, user: hidden("staff"), want: true},
+		{name: "hidden attribute false", scope: restricted, user: notHidden, want: true},
+		{
+			name:  "hidden non-member denied with hidden access",
+			scope: access.Scope{Groups: []string{"staff"}, IncludesHidden: true},
+			user:  hidden("students"),
+			want:  false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -28,6 +28,7 @@ export function UserRow(props: UserRowActionsProps) {
           <Avatar src={user.avatar || undefined} alt="" sx={{ width: 24, height: 24 }} />
           <span>{user.username}</span>
           {user.is_superuser && <Chip size="small" variant="outlined" label="admin" />}
+          {user.hidden && <Chip size="small" variant="outlined" label="hidden" />}
         </Stack>
       </TableCell>
       <TableCell>{user.name}</TableCell>

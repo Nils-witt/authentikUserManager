@@ -148,6 +148,7 @@ export function ServiceAccounts() {
           noun={NOUN}
           defaultPath="service-accounts"
           groups={groups}
+          canHide={isAdmin}
           onClose={() => setDialog(null)}
           onSubmit={async (input) => {
             const account = await api.createServiceAccount(input)
@@ -161,6 +162,7 @@ export function ServiceAccounts() {
           user={dialog.account}
           groups={groups}
           groupSuggestions={groupNames}
+          canHide={isAdmin}
           onClose={() => setDialog(null)}
           onSubmit={async (input, memberOf, primaryGroup) => {
             const { account } = dialog

@@ -19,6 +19,8 @@ export interface User {
   primary_group: string
   /** Whether the operator may change the user: only the operators managing their primary group may. */
   changeable: boolean
+  /** Only access administrators see the user, whatever the access rules grant. */
+  hidden: boolean
 }
 
 export interface Pagination {
@@ -64,6 +66,8 @@ export interface UserInput {
   email: string
   is_active: boolean
   path: string
+  /** Hides the user from operators who are not access administrators; only they may set it. */
+  hidden?: boolean
 }
 
 export interface CreateUserInput extends UserInput {

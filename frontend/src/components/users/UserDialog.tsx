@@ -28,6 +28,7 @@ export function UserDialog({
 }: UserDialogProps) {
   // Restricted operators may only use the groups they manage.
   const groups = access && !access.all ? access.groups : undefined
+  const canHide = access?.admin ?? false
 
   switch (dialog?.kind) {
     case 'create':
@@ -35,6 +36,7 @@ export function UserDialog({
         <UserForm
           defaultPath={folder ?? undefined}
           groups={groups}
+          canHide={canHide}
           onClose={onClose}
           onSubmit={async (input) => {
             const user = await api.createUser(input)
@@ -49,6 +51,7 @@ export function UserDialog({
           user={user}
           groups={groups}
           groupSuggestions={groupSuggestions}
+          canHide={canHide}
           onClose={onClose}
           onSubmit={async (input, memberOf, primaryGroup) => {
             // Groups first: they are the likelier to be rejected, and then nothing has changed yet.

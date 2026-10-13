@@ -954,6 +954,185 @@ func TestServer_listUsers_self(t *testing.T) {
 	}
 }
 
+// hidden marks u, created by member, as hidden from operators who are not
+// access administrators, next to an attribute of another application.
+func hidden(u *authentik.User) *authentik.User {
+	u.Attributes = map[string]any{"other_app": "kept", access.HiddenAttribute: true}
+	return u
+}
+
+func TestServer_listUsers_hidden(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		groups []string
+		listed []authentik.User
+		// expected are the listed usernames; authentik ignoring the filter is simulated.
+		expected   []string
+		wantFilter bool
+	}{
+		{
+			name:     "access administrator sees hidden users",
+			groups:   []string{"admins"},
+			listed:   []authentik.User{*member("staff"), *hidden(member("staff"))},
+			expected: []string{"target", "target"},
+		},
+		{
+			name:       "wildcard rule hides them",
+			groups:     []string{"superhelp"},
+			listed:     []authentik.User{*member("staff"), *hidden(member("other"))},
+			expected:   []string{"target"},
+			wantFilter: true,
+		},
+		{
+			name:       "restricted operator does not see hidden members",
+			groups:     []string{"helpdesk"},
+			listed:     []authentik.User{*member("staff"), *hidden(member("staff"))},
+			expected:   []string{"target"},
+			wantFilter: true,
+		},
+		{
+			name:       "hidden operator sees their own account",
+			groups:     []string{"superhelp"},
+			listed:     []authentik.User{*member("staff"), *hidden(self("staff"))},
+			expected:   []string{"admin", "target"},
+			wantFilter: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{listed: tt.listed}
+			rec := do(t, newScopedServer(t, fake, tt.groups...), http.MethodGet, "/api/users", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+			}
+			var body authentik.UserList
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			usernames := []string{}
+			for _, u := range body.Results {
+				usernames = append(usernames, u.Username)
+			}
+			if !slices.Equal(usernames, tt.expected) {
+				t.Errorf("usernames = %v, want %v", usernames, tt.expected)
+			}
+			for _, p := range fake.listCalls {
+				// The own account is looked up whether hidden or not.
+				wantFilter := tt.wantFilter && p.Username == ""
+				if got := slices.Equal(p.WithoutAttributes, []string{access.HiddenAttribute}); got != wantFilter {
+					t.Errorf("ListUsers(%+v) filters hidden users = %v, want %v", p, got, wantFilter)
+				}
+			}
+		})
+	}
+}
+
+func TestServer_updateUser_hidden(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		groups     []string
+		target     *authentik.User
+		body       string
+		wantStatus int
+		// expected are the attributes sent to authentik, or nil when none are.
+		expected map[string]any
+	}{
+		{
+			name:       "access administrator hides",
+			groups:     []string{"admins"},
+			target:     withPrimary(member("staff"), "staff"),
+			body:       `{"hidden":true}`,
+			wantStatus: http.StatusOK,
+			expected:   map[string]any{"other_app": "kept", primaryGroupAttribute: "pk-staff", access.HiddenAttribute: true},
+		},
+		{
+			name:       "access administrator shows",
+			groups:     []string{"admins"},
+			target:     hidden(member("staff")),
+			body:       `{"hidden":false}`,
+			wantStatus: http.StatusOK,
+			expected:   map[string]any{"other_app": "kept"},
+		},
+		{
+			name:       "unchanged is not sent",
+			groups:     []string{"admins"},
+			target:     hidden(member("staff")),
+			body:       `{"hidden":true,"name":"x"}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "wildcard rule may not hide",
+			groups:     []string{"superhelp"},
+			target:     member("staff"),
+			body:       `{"hidden":true}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "restricted operator may send the unchanged value",
+			groups:     []string{"helpdesk"},
+			target:     member("staff"),
+			body:       `{"hidden":false,"name":"x"}`,
+			wantStatus: http.StatusOK,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{user: tt.target}
+			log := &fakeAudit{}
+			srv := newAuditedServer(t, fake, newFakeRules(), log, fakeAuth{groups: tt.groups})
+			rec := do(t, srv, http.MethodPatch, "/api/users/4", tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus == http.StatusForbidden && fake.mutated {
+				t.Error("user changed although forbidden")
+			}
+			var sent map[string]any
+			if len(fake.userAttrs) > 0 {
+				sent = fake.userAttrs[0]
+			}
+			if !maps.Equal(sent, tt.expected) {
+				t.Errorf("attributes = %v, want %v", sent, tt.expected)
+			}
+		})
+	}
+}
+
+func TestServer_createUser_hidden(t *testing.T) {
+	t.Parallel()
+	groups := map[string]authentik.Group{"staff": {PK: "pk-staff", Name: "staff"}}
+	body := `{"username":"bob","name":"Bob","group":"staff","hidden":true}`
+
+	t.Run("access administrator", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeUsers{groups: groups}
+		rec := do(t, newServer(t, fake), http.MethodPost, "/api/users", body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+		}
+		expected := map[string]any{primaryGroupAttribute: "pk-staff", access.HiddenAttribute: true}
+		if !maps.Equal(fake.created.Attributes, expected) {
+			t.Errorf("attributes = %v, want %v", fake.created.Attributes, expected)
+		}
+	})
+
+	t.Run("restricted operator", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeUsers{groups: groups}
+		rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodPost, "/api/users", body)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"hidden"`) {
+			t.Errorf("status = %d (body %s), want 400 for hidden", rec.Code, rec.Body)
+		}
+		if fake.created.Username != "" {
+			t.Error("user created although hiding is forbidden")
+		}
+	})
+}
+
 func TestServer_getUser_primaryGroup(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1041,6 +1220,9 @@ func TestServer_userByID_scoped(t *testing.T) {
 		{name: "operator without rule", groups: []string{"guests"}, target: member("staff"), allowed: false},
 		{name: "service account for full access", groups: []string{"admins"}, target: serviceAccount, allowed: false},
 		{name: "external user for full access", groups: []string{"admins"}, target: external, allowed: false},
+		{name: "hidden member for restricted operator", groups: []string{"helpdesk"}, target: hidden(member("students")), allowed: false},
+		{name: "hidden user for wildcard rule", groups: []string{"superhelp"}, target: hidden(member("staff")), allowed: false},
+		{name: "hidden user for access administrator", groups: []string{"admins"}, target: hidden(member("staff")), allowed: true},
 	}
 	for _, tt := range tests {
 		for _, req := range requests {

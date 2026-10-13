@@ -116,6 +116,33 @@ func TestClient_ListUsers_activeFilter(t *testing.T) {
 	}
 }
 
+func TestClient_ListUsers_withoutAttributes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		keys     []string
+		expected string
+	}{
+		{name: "unset", keys: nil, expected: ""},
+		{name: "one key", keys: []string{"hidden"}, expected: `{"hidden__isnull":true}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				if got := q.Get("attributes"); got != tt.expected || q.Has("attributes") != (tt.expected != "") {
+					t.Errorf("attributes = %q, want %q", got, tt.expected)
+				}
+				_, _ = io.WriteString(w, `{"pagination":{},"results":[]}`)
+			})
+			if _, err := c.ListUsers(t.Context(), authentik.ListUsersParams{WithoutAttributes: tt.keys}); err != nil {
+				t.Fatalf("ListUsers: %v", err)
+			}
+		})
+	}
+}
+
 func TestClient_ListUsers_groupFilter(t *testing.T) {
 	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

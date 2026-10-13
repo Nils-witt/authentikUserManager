@@ -26,6 +26,8 @@ interface UserFormProps {
   groups?: string[]
   /** Group names suggested when any group may be chosen. */
   groupSuggestions?: string[]
+  /** The operator may hide the user from operators who are not access administrators. */
+  canHide?: boolean
   /**
    * Receives the user's groups and the name of their primary group ('' for none) too; they are only
    * edited for an existing user.
@@ -41,6 +43,7 @@ export function UserForm({
   defaultPath,
   groups,
   groupSuggestions,
+  canHide = false,
   onSubmit,
   onClose,
 }: UserFormProps) {
@@ -50,6 +53,8 @@ export function UserForm({
     email: user?.email ?? '',
     is_active: user?.is_active ?? true,
     path: user?.path ?? defaultPath ?? 'users',
+    // Only sent when the operator may change it.
+    ...(canHide ? { hidden: user?.hidden ?? false } : {}),
   })
   const [group, setGroup] = useState(groups?.length === 1 ? groups[0] : '')
   const [memberOf, setMemberOf] = useState(() => (user?.groups_obj ?? []).map((g) => g.name))
@@ -183,6 +188,17 @@ export function UserForm({
                 />
               }
             />
+            {canHide && (
+              <FormControlLabel
+                label="Hidden from operators who are not access administrators"
+                control={
+                  <Switch
+                    checked={input.hidden ?? false}
+                    onChange={(e) => set('hidden', e.target.checked)}
+                  />
+                }
+              />
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>

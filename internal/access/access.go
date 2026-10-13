@@ -15,6 +15,17 @@ import (
 // Wildcard as a target group grants access to every user, including superusers.
 const Wildcard = "*"
 
+// HiddenAttribute is the authentik user attribute that, when true, hides the
+// user from every operator but the access administrators, even from operators
+// whose rules grant one of the user's groups or all users.
+const HiddenAttribute = "authentik_manager_hidden"
+
+// IsHidden reports whether u is hidden from operators who are not access administrators.
+func IsHidden(u *authentik.User) bool {
+	hidden, ok := u.Attributes[HiddenAttribute].(bool)
+	return ok && hidden
+}
+
 // maxGroupNameLen bounds group names; authentik's own limit is lower.
 const maxGroupNameLen = 255
 
@@ -67,8 +78,9 @@ type Store interface {
 }
 
 // Policy resolves the scope of operators. Members of the admin groups always
-// have full access and may edit the rules; everyone else is limited by the
-// rules in the store, and has no access without a matching rule.
+// have full access, including to hidden users, and may edit the rules; everyone
+// else is limited by the rules in the store, has no access without a matching
+// rule and never has access to hidden users.
 type Policy struct {
 	adminGroups []string
 	store       Store
@@ -93,7 +105,7 @@ func (p *Policy) IsAdmin(operatorGroups []string) bool {
 // ScopeFor returns the scope of an operator who is a member of operatorGroups.
 func (p *Policy) ScopeFor(ctx context.Context, operatorGroups []string) (Scope, error) {
 	if p.IsAdmin(operatorGroups) {
-		return Scope{All: true, Groups: []string{}}, nil
+		return Scope{All: true, IncludesHidden: true, Groups: []string{}}, nil
 	}
 	if len(operatorGroups) == 0 {
 		return Scope{Groups: []string{}}, nil
@@ -116,6 +128,9 @@ type Scope struct {
 	All bool `json:"all"`
 	// Groups lists the target groups when All is false, sorted and without duplicates.
 	Groups []string `json:"groups"`
+	// IncludesHidden grants access to hidden users (see IsHidden) too, within
+	// All or Groups. Only access administrators have it.
+	IncludesHidden bool `json:"includes_hidden"`
 }
 
 // Empty reports whether the scope grants access to no user at all.
@@ -130,8 +145,12 @@ func (s Scope) HasGroup(group string) bool {
 
 // Allows reports whether the operator may see and manage u. Superusers are
 // only manageable with full access, so a restricted operator cannot take over
-// an administrator account.
+// an administrator account. Hidden users are only manageable with
+// IncludesHidden, whatever their groups.
 func (s Scope) Allows(u *authentik.User) bool {
+	if IsHidden(u) && !s.IncludesHidden {
+		return false
+	}
 	if s.All {
 		return true
 	}

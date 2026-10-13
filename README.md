@@ -130,6 +130,12 @@ they are stored in PostgreSQL.
   Members of inherited (parent) groups are not matched.
 - The target "all users" (`*`) grants access to every user. Superusers are only visible to
   operators with it and to access administrators.
+- Access administrators can mark a user or service account **hidden**. Only access
+  administrators see hidden users, even if a rule grants one of the user's groups or all
+  users (`*`). Users still see their own account. Hidden is stored in authentik as the user
+  attribute `authentik_manager_hidden: true`. Users without the attribute are not hidden.
+  The list leaves hidden users out using authentik's `attributes` filter with an `__isnull`
+  lookup.
 - Operators without a matching rule see no users.
 - Users outside an operator's scope are hidden from the list and return 404 on every
   per-user route.
