@@ -89,6 +89,8 @@ export interface Access {
   recovery_email: boolean
   /** Users can issue client certificates for their own account. */
   certificates: boolean
+  /** Suffixes appended to usernames in the common names of issued certificates, longest first. */
+  certificate_cn_suffixes: string[]
 }
 
 /** Members of operator_group may manage members of target_groups ('*': all users). */

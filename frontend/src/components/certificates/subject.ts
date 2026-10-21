@@ -24,3 +24,14 @@ export function commonName(subject: string): string {
   }
   return inValue && attribute.toUpperCase() === 'CN' ? value : ''
 }
+
+/**
+ * The username a common name names: without the first of `suffixes` (longest first, as the
+ * server lists them) it ends in, unless nothing would be left of it.
+ */
+export function usernameFromCommonName(cn: string, suffixes: readonly string[]): string {
+  for (const suffix of suffixes) {
+    if (cn.endsWith(suffix) && cn.length > suffix.length) return cn.slice(0, -suffix.length)
+  }
+  return cn
+}

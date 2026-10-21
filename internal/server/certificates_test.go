@@ -212,8 +212,11 @@ type certEnv struct {
 	log       *fakeAudit
 }
 
-// newTestCA returns a self-signed CA and its certificate.
-func newTestCA(t *testing.T) (*pki.CA, *x509.Certificate) {
+// testCAOptions are the options of the CAs newTestCA returns by default.
+var testCAOptions = pki.Options{Validity: time.Hour}
+
+// newTestCA returns a self-signed CA with opts and its certificate.
+func newTestCA(t *testing.T, opts pki.Options) (*pki.CA, *x509.Certificate) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -243,7 +246,7 @@ func newTestCA(t *testing.T) (*pki.CA, *x509.Certificate) {
 	ca, err := pki.LoadCA(
 		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
-		pki.Options{Validity: time.Hour},
+		opts,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +258,13 @@ func newTestCA(t *testing.T) (*pki.CA, *x509.Certificate) {
 // operator "admin" in groups.
 func newCertServer(t *testing.T, users server.UserService, groups ...string) *certEnv {
 	t.Helper()
-	ca, caCert := newTestCA(t)
+	return newCertServerWithOptions(t, testCAOptions, users, groups...)
+}
+
+// newCertServerWithOptions is newCertServer with a CA configured by opts.
+func newCertServerWithOptions(t *testing.T, opts pki.Options, users server.UserService, groups ...string) *certEnv {
+	t.Helper()
+	ca, caCert := newTestCA(t, opts)
 	rules := newFakeRules()
 	policy, err := access.NewPolicy([]string{"admins"}, rules)
 	if err != nil {
@@ -334,7 +343,7 @@ func TestCertificates_disabled(t *testing.T) {
 		}
 	}
 	rec := do(t, srv, http.MethodGet, "/api/access", "")
-	if !strings.Contains(rec.Body.String(), `"certificates":false`) {
+	if !strings.Contains(rec.Body.String(), `"certificates":false,"certificate_cn_suffixes":[]`) {
 		t.Errorf("access = %s, want certificates disabled", rec.Body)
 	}
 }
@@ -820,7 +829,7 @@ func importBody(t *testing.T, pemText string) string {
 func TestCertificates_import(t *testing.T) {
 	t.Parallel()
 	env := newCertServer(t, importUsers(), "admins")
-	other, _ := newTestCA(t)
+	other, _ := newTestCA(t, testCAOptions)
 	now := time.Now()
 	annPEM, annCert := signPEM(t, env.ca, pki.Subject{Username: "ann", UUID: "6F1C2A9E-3B4D-4E5F-8A9B-0C1D2E3F4A5B"}, now)
 	svcPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "svc"}, now)
@@ -909,6 +918,57 @@ func checkImportRecorded(t *testing.T, env *certEnv, out importResponse) {
 	if e := env.log.recorded[1]; e.Target != "svc" || e.Details["type"] != string(authentik.UserTypeServiceAccount) {
 		t.Errorf("audit entry = %+v, want svc's import", e)
 	}
+}
+
+// suffixOptions configure a CA with common name suffixes for users and service accounts.
+var suffixOptions = pki.Options{
+	Validity:               time.Hour,
+	UserCNSuffix:           "@example.com",
+	ServiceAccountCNSuffix: "@svc.example.com",
+}
+
+func TestCertificates_accessCNSuffixes(t *testing.T) {
+	t.Parallel()
+	env := newCertServerWithOptions(t, suffixOptions, ownAccountUsers(), "admins")
+	rec := do(t, env.srv, http.MethodGet, "/api/access", "")
+	if !strings.Contains(rec.Body.String(), `"certificate_cn_suffixes":["@svc.example.com","@example.com"]`) {
+		t.Errorf("access = %s, want the suffixes, longest first", rec.Body)
+	}
+}
+
+func TestCertificates_issueWithCNSuffix(t *testing.T) {
+	t.Parallel()
+	env := newCertServerWithOptions(t, suffixOptions, ownAccountUsers())
+
+	c := issue(t, env, `{"format":"pem"}`).Certificate
+	if c.Username != "admin" || c.Subject != "CN=admin@example.com" {
+		t.Errorf("certificate = %+v, want one of admin with the user suffix", c)
+	}
+}
+
+func TestCertificates_importWithCNSuffix(t *testing.T) {
+	t.Parallel()
+	env := newCertServerWithOptions(t, suffixOptions, importUsers(), "admins")
+	now := time.Now()
+	annPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann"}, now)
+	svcPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "svc", ServiceAccount: true}, now)
+
+	rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", importBody(t, annPEM+svcPEM))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d %s", rec.Code, rec.Body)
+	}
+	var out importResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	wantSubjects := []string{"CN=ann@example.com", "CN=svc@svc.example.com"}
+	for i, want := range wantSubjects {
+		got := out.Results[i]
+		if got.Error != "" || got.Certificate == nil || got.Subject != want {
+			t.Errorf("result %d = %+v, want %s imported", i, got, want)
+		}
+	}
+	checkImportRecorded(t, env, out)
 }
 
 func TestCertificates_importUnassigned(t *testing.T) {

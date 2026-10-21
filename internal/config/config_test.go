@@ -88,6 +88,22 @@ func TestFromEnv_auditRetention(t *testing.T) {
 	}
 }
 
+func TestFromEnv_certificateCNSuffixes(t *testing.T) {
+	t.Parallel()
+	env := validEnv(map[string]string{
+		"CERT_USER_CN_SUFFIX":            " @example.com ",
+		"CERT_SERVICE_ACCOUNT_CN_SUFFIX": "@svc.example.com",
+	})
+	cfg, err := config.FromEnv(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CertUserCNSuffix != "@example.com" || cfg.CertServiceAccountCNSuffix != "@svc.example.com" {
+		t.Errorf("suffixes = %q and %q, want @example.com and @svc.example.com",
+			cfg.CertUserCNSuffix, cfg.CertServiceAccountCNSuffix)
+	}
+}
+
 func TestFromEnv_certificates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

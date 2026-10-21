@@ -268,7 +268,11 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		pub = key.Public()
 	}
 
-	cert, err := s.ca.Issue(pub, pki.Subject{Username: user.Username, UUID: user.UUID}, time.Now())
+	cert, err := s.ca.Issue(pub, pki.Subject{
+		Username:       user.Username,
+		UUID:           user.UUID,
+		ServiceAccount: user.Type.IsServiceAccount(),
+	}, time.Now())
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "issuing certificate", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "issuing the certificate failed", nil)
@@ -557,7 +561,7 @@ func (s *Server) importCertificate(
 	if err := s.ca.CheckIssued(cert, now); err != nil {
 		return certificate.Certificate{}, nil, err
 	}
-	user, unassigned, err := s.certificateOwner(r, pki.IssuedSubject(cert), owners)
+	user, unassigned, err := s.certificateOwner(r, s.ca.IssuedSubject(cert), owners)
 	if err != nil {
 		return certificate.Certificate{}, nil, err
 	}

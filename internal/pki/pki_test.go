@@ -129,6 +129,33 @@ func TestLoadCA(t *testing.T) {
 			wantErr: "encrypted",
 		},
 		{name: "zero validity", certPEM: good.certPEM, keyPEM: good.keyPEM, wantErr: "validity"},
+		{
+			name:    "cn suffixes",
+			certPEM: good.certPEM,
+			keyPEM:  good.keyPEM,
+			opts:    pki.Options{Validity: time.Hour, UserCNSuffix: "@example.com", ServiceAccountCNSuffix: "@svc.example.com"},
+		},
+		{
+			name:    "user cn suffix too long",
+			certPEM: good.certPEM,
+			keyPEM:  good.keyPEM,
+			opts:    pki.Options{Validity: time.Hour, UserCNSuffix: "@" + strings.Repeat("a", 64)},
+			wantErr: "suffix",
+		},
+		{
+			name:    "service account cn suffix with control character",
+			certPEM: good.certPEM,
+			keyPEM:  good.keyPEM,
+			opts:    pki.Options{Validity: time.Hour, ServiceAccountCNSuffix: "@svc\n"},
+			wantErr: "control",
+		},
+		{
+			name:    "invalid utf-8 cn suffix",
+			certPEM: good.certPEM,
+			keyPEM:  good.keyPEM,
+			opts:    pki.Options{Validity: time.Hour, UserCNSuffix: "@\xff"},
+			wantErr: "UTF-8",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -323,7 +350,7 @@ func TestCA_CheckIssued(t *testing.T) {
 	}
 }
 
-func TestIssuedSubject(t *testing.T) {
+func TestCA_IssuedSubject(t *testing.T) {
 	t.Parallel()
 	ca := loadCA(t, newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour), defaultOpts)
 	want := pki.Subject{Username: "ann", UUID: "6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b"}
@@ -332,9 +359,75 @@ func TestIssuedSubject(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := pki.IssuedSubject(cert); got != s {
+		if got := ca.IssuedSubject(cert); got != s {
 			t.Errorf("IssuedSubject = %+v, want %+v", got, s)
 		}
+	}
+}
+
+func TestCA_cnSuffixes(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour)
+	plain := loadCA(t, ca, defaultOpts)
+	// The user suffix ends the service account suffix, so stripping must try the longer one first.
+	suffixed := loadCA(t, ca, pki.Options{
+		Validity:               time.Hour,
+		UserCNSuffix:           "@example.com",
+		ServiceAccountCNSuffix: "@svc.example.com",
+	})
+	userOnly := loadCA(t, ca, pki.Options{Validity: time.Hour, UserCNSuffix: "@example.com"})
+	tests := []struct {
+		name         string
+		issuer       *pki.CA
+		subject      pki.Subject
+		wantCN       string
+		wantUsername string
+	}{
+		{name: "user", issuer: suffixed, subject: pki.Subject{Username: "ann"}, wantCN: "ann@example.com", wantUsername: "ann"},
+		{
+			name:         "service account",
+			issuer:       suffixed,
+			subject:      pki.Subject{Username: "backup", ServiceAccount: true},
+			wantCN:       "backup@svc.example.com",
+			wantUsername: "backup",
+		},
+		{
+			name:         "username ending in the suffix",
+			issuer:       suffixed,
+			subject:      pki.Subject{Username: "ann@example.com"},
+			wantCN:       "ann@example.com@example.com",
+			wantUsername: "ann@example.com",
+		},
+		{
+			name:         "service account without its own suffix",
+			issuer:       userOnly,
+			subject:      pki.Subject{Username: "backup", ServiceAccount: true},
+			wantCN:       "backup",
+			wantUsername: "backup",
+		},
+		{name: "issued before suffixes", issuer: plain, subject: pki.Subject{Username: "bob"}, wantCN: "bob", wantUsername: "bob"},
+		{
+			name:         "common name equal to the suffix",
+			issuer:       plain,
+			subject:      pki.Subject{Username: "@example.com"},
+			wantCN:       "@example.com",
+			wantUsername: "@example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cert, err := tt.issuer.Issue(ecKey(t).Public(), tt.subject, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cert.Subject.CommonName != tt.wantCN {
+				t.Errorf("common name = %q, want %q", cert.Subject.CommonName, tt.wantCN)
+			}
+			if got := suffixed.IssuedSubject(cert).Username; got != tt.wantUsername {
+				t.Errorf("IssuedSubject username = %q, want %q", got, tt.wantUsername)
+			}
+		})
 	}
 }
 

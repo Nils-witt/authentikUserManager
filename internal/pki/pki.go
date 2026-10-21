@@ -18,8 +18,11 @@ import (
 	"fmt"
 	"math/big"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"software.sslmate.com/src/go-pkcs12"
 )
@@ -40,6 +43,10 @@ const clockSkew = time.Minute
 // unset; clients fetch a new one after it.
 const DefaultCRLValidity = 30 * 24 * time.Hour
 
+// maxCNSuffixLen bounds the common name suffixes; RFC 5280 limits the whole
+// common name to 64 characters.
+const maxCNSuffixLen = 64
+
 // pkcs12Iterations is the PBKDF2 iteration count of PKCS#12 bundles; the
 // library default of 2048 is too low for user-chosen passwords.
 const pkcs12Iterations = 100_000
@@ -57,6 +64,12 @@ type Options struct {
 	// CRLValidity is how long each CRL is valid, from its signing to its next
 	// update; zero means DefaultCRLValidity.
 	CRLValidity time.Duration
+	// UserCNSuffix is appended to the username in the common name of user
+	// certificates, e.g. "@example.com" for "ann@example.com".
+	UserCNSuffix string
+	// ServiceAccountCNSuffix is appended to the username in the common name of
+	// service account certificates.
+	ServiceAccountCNSuffix string
 }
 
 // CA signs user certificates and revocation lists. It is safe for concurrent use.
@@ -84,6 +97,11 @@ func LoadCA(certPEM, keyPEM []byte, opts Options) (*CA, error) {
 	case opts.CRLValidity == 0:
 		opts.CRLValidity = DefaultCRLValidity
 	}
+	for _, suffix := range []string{opts.UserCNSuffix, opts.ServiceAccountCNSuffix} {
+		if err := validateCNSuffix(suffix); err != nil {
+			return nil, err
+		}
+	}
 	chain, err := parseCertificates(certPEM)
 	if err != nil {
 		return nil, err
@@ -109,6 +127,18 @@ func LoadCA(certPEM, keyPEM []byte, opts Options) (*CA, error) {
 		chainPEM.Write(EncodeCertificate(c))
 	}
 	return &CA{cert: cert, chain: chain, chainPEM: chainPEM.Bytes(), signer: signer, opts: opts}, nil
+}
+
+// validateCNSuffix checks that suffix is valid UTF-8 of at most
+// maxCNSuffixLen characters without control characters.
+func validateCNSuffix(suffix string) error {
+	if !utf8.ValidString(suffix) || utf8.RuneCountInString(suffix) > maxCNSuffixLen {
+		return fmt.Errorf("pki: common name suffix must be valid UTF-8 of at most %d characters", maxCNSuffixLen)
+	}
+	if strings.ContainsFunc(suffix, unicode.IsControl) {
+		return errors.New("pki: common name suffix must not contain control characters")
+	}
+	return nil
 }
 
 // parseCertificates decodes every CERTIFICATE block of data, at least one.
@@ -183,10 +213,23 @@ type Subject struct {
 	// UUID, when set, is the user's immutable ID, added as a urn:uuid URI SAN,
 	// so relying parties can tell apart users who held the same username.
 	UUID string
+	// ServiceAccount is set for service accounts, whose common name gets
+	// Options.ServiceAccountCNSuffix instead of Options.UserCNSuffix.
+	ServiceAccount bool
+}
+
+// commonName returns the common name Issue certifies for s: the username
+// followed by the configured suffix of its kind of account.
+func (ca *CA) commonName(s Subject) string {
+	if s.ServiceAccount {
+		return s.Username + ca.opts.ServiceAccountCNSuffix
+	}
+	return s.Username + ca.opts.UserCNSuffix
 }
 
 // Issue signs a client certificate for pub, which must pass ValidatePublicKey.
-// The subject's common name is the username. The certificate is valid from
+// The subject's common name is the username followed by Options.UserCNSuffix,
+// or Options.ServiceAccountCNSuffix for a service account. The certificate is valid from
 // shortly before now until the configured validity or the CA's expiry,
 // whichever comes first.
 func (ca *CA) Issue(pub crypto.PublicKey, s Subject, now time.Time) (*x509.Certificate, error) {
@@ -216,7 +259,7 @@ func (ca *CA) Issue(pub crypto.PublicKey, s Subject, now time.Time) (*x509.Certi
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: s.Username},
+		Subject:               pkix.Name{CommonName: ca.commonName(s)},
 		NotBefore:             now.Add(-clockSkew),
 		NotAfter:              notAfter,
 		KeyUsage:              usage,
@@ -301,9 +344,12 @@ func (ca *CA) CheckIssued(cert *x509.Certificate, now time.Time) error {
 }
 
 // IssuedSubject returns the subject Issue certified in cert: the common name
-// as username and the urn:uuid URI SAN, if any, as UUID.
-func IssuedSubject(cert *x509.Certificate) Subject {
-	s := Subject{Username: cert.Subject.CommonName}
+// as username, without the longest configured suffix it ends in, and the
+// urn:uuid URI SAN, if any, as UUID. Common names without a suffix, as issued
+// before one was configured, are taken as the username. ServiceAccount is
+// left unset: the suffixes may be equal or empty, so the account tells.
+func (ca *CA) IssuedSubject(cert *x509.Certificate) Subject {
+	s := Subject{Username: ca.username(cert.Subject.CommonName)}
 	for _, u := range cert.URIs {
 		if id, ok := strings.CutPrefix(u.Opaque, "uuid:"); ok && u.Scheme == "urn" && isUUID(id) {
 			s.UUID = strings.ToLower(id)
@@ -311,6 +357,30 @@ func IssuedSubject(cert *x509.Certificate) Subject {
 		}
 	}
 	return s
+}
+
+// CNSuffixes returns the distinct non-empty common name suffixes, longest
+// first, in the order IssuedSubject tries to strip them.
+func (ca *CA) CNSuffixes() []string {
+	suffixes := []string{}
+	for _, suffix := range []string{ca.opts.UserCNSuffix, ca.opts.ServiceAccountCNSuffix} {
+		if suffix != "" && !slices.Contains(suffixes, suffix) {
+			suffixes = append(suffixes, suffix)
+		}
+	}
+	slices.SortStableFunc(suffixes, func(a, b string) int { return len(b) - len(a) })
+	return suffixes
+}
+
+// username strips the first of CNSuffixes the common name cn ends in, unless
+// nothing would be left of it.
+func (ca *CA) username(cn string) string {
+	for _, suffix := range ca.CNSuffixes() {
+		if name, ok := strings.CutSuffix(cn, suffix); ok && name != "" {
+			return name
+		}
+	}
+	return cn
 }
 
 // newSerial returns a random positive 128-bit serial number.

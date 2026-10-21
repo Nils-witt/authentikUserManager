@@ -31,6 +31,11 @@ func (t UserType) Valid() bool {
 	}
 }
 
+// IsServiceAccount reports whether t is a service account type.
+func (t UserType) IsServiceAccount() bool {
+	return t == UserTypeServiceAccount || t == UserTypeInternalServiceAccount
+}
+
 // User is the subset of authentik's User serializer this application uses.
 type User struct {
 	PK          int            `json:"pk"`

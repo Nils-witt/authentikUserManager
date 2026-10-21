@@ -26,6 +26,10 @@
 //	CERT_VALIDITY_DAYS   days user certificates are valid (default 365)
 //	CERT_CRL_URL         public URL of this app's /pki/crl, embedded in user certificates (optional)
 //	CERT_CRL_VALIDITY_DAYS days each CRL is valid until its next update (default 30)
+//	CERT_USER_CN_SUFFIX  appended to the username in the common name of user certificates,
+//	                     e.g. @example.com (optional)
+//	CERT_SERVICE_ACCOUNT_CN_SUFFIX appended to the username in the common name of service
+//	                     account certificates (optional)
 package main
 
 import (
@@ -191,6 +195,9 @@ func loadCA(cfg config.Config) (*pki.CA, error) {
 		Validity:    cfg.CertValidity,
 		CRLURL:      cfg.CertCRLURL,
 		CRLValidity: cfg.CertCRLValidity,
+
+		UserCNSuffix:           cfg.CertUserCNSuffix,
+		ServiceAccountCNSuffix: cfg.CertServiceAccountCNSuffix,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("loading certificate authority: %w", err)

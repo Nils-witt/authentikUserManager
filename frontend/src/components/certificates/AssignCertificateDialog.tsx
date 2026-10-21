@@ -9,8 +9,9 @@ import { useState, type FormEvent } from 'react'
 import * as api from '../../api'
 import { ApiError, type Certificate } from '../../api'
 import { errorMessage } from '../../errors'
+import { useAppContext } from '../../hooks/useAppContext'
 import { Modal } from '../common/Modal'
-import { commonName } from './subject'
+import { commonName, usernameFromCommonName } from './subject'
 
 interface AssignCertificateDialogProps {
   certificate: Certificate
@@ -28,8 +29,10 @@ export function AssignCertificateDialog({
   onClose,
   onAssigned,
 }: AssignCertificateDialogProps) {
+  const { access } = useAppContext()
   const cn = commonName(certificate.subject)
-  const [username, setUsername] = useState(cn)
+  const named = usernameFromCommonName(cn, access?.certificate_cn_suffixes ?? [])
+  const [username, setUsername] = useState(named)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
@@ -50,7 +53,7 @@ export function AssignCertificateDialog({
     }
   }
 
-  const differs = cn !== '' && username.trim() !== '' && username.trim() !== cn
+  const differs = named !== '' && username.trim() !== '' && username.trim() !== named
   return (
     <Modal title="Assign certificate" onClose={onClose}>
       <form onSubmit={(e) => void submit(e)}>

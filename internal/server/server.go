@@ -374,12 +374,25 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 		RecoveryEmail bool `json:"recovery_email"`
 		// Certificates is set when users can issue certificates.
 		Certificates bool `json:"certificates"`
+		// CertificateCNSuffixes are the suffixes appended to usernames in the
+		// common names of issued certificates, longest first.
+		CertificateCNSuffixes []string `json:"certificate_cn_suffixes"`
 	}{
-		Scope:         scope,
-		Admin:         s.policy.IsAdmin(operatorGroups(r)),
-		RecoveryEmail: s.recoveryEmailStage != "",
-		Certificates:  s.ca != nil,
+		Scope:                 scope,
+		Admin:                 s.policy.IsAdmin(operatorGroups(r)),
+		RecoveryEmail:         s.recoveryEmailStage != "",
+		Certificates:          s.ca != nil,
+		CertificateCNSuffixes: s.certificateCNSuffixes(),
 	})
+}
+
+// certificateCNSuffixes returns the CA's common name suffixes, none when
+// certificates are disabled.
+func (s *Server) certificateCNSuffixes() []string {
+	if s.ca == nil {
+		return []string{}
+	}
+	return s.ca.CNSuffixes()
 }
 
 // getVersion reports the repository, commit and tag the server was built from.

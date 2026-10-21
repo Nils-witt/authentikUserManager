@@ -412,6 +412,23 @@ func TestServiceAccounts_certificates(t *testing.T) {
 	}
 }
 
+func TestServiceAccounts_certificateWithCNSuffix(t *testing.T) {
+	t.Parallel()
+	env := newCertServerWithOptions(t, suffixOptions, &fakeUsers{user: serviceAccount("staff")}, "helpdesk")
+
+	rec := do(t, env.srv, http.MethodPost, "/api/service-accounts/5/certificates", `{"format":"pem"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("issue = %d %s", rec.Code, rec.Body)
+	}
+	var out issueResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if c := out.Certificate; c.Username != "svc" || c.Subject != "CN=svc@svc.example.com" {
+		t.Errorf("certificate = %+v, want one of svc with the service account suffix", c)
+	}
+}
+
 func TestServiceAccounts_certificatesRefused(t *testing.T) {
 	t.Parallel()
 	inactive := serviceAccount("staff")

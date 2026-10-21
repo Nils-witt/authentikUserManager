@@ -53,6 +53,12 @@ type Config struct {
 	CertCRLURL string
 	// CertCRLValidity is how long each signed CRL is valid until its next update.
 	CertCRLValidity time.Duration
+	// CertUserCNSuffix is appended to the username in the common name of user
+	// certificates, e.g. "@example.com".
+	CertUserCNSuffix string
+	// CertServiceAccountCNSuffix is appended to the username in the common
+	// name of service account certificates.
+	CertServiceAccountCNSuffix string
 }
 
 const defaultListenAddr = "127.0.0.1:8080"
@@ -94,6 +100,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		CACertFile: strings.TrimSpace(getenv("CA_CERT_FILE")),
 		CAKeyFile:  strings.TrimSpace(getenv("CA_KEY_FILE")),
 		CertCRLURL: strings.TrimSpace(getenv("CERT_CRL_URL")),
+
+		CertUserCNSuffix:           strings.TrimSpace(getenv("CERT_USER_CN_SUFFIX")),
+		CertServiceAccountCNSuffix: strings.TrimSpace(getenv("CERT_SERVICE_ACCOUNT_CN_SUFFIX")),
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListenAddr

@@ -37,6 +37,8 @@ Set these environment variables (see `.env.example`):
 | `CERT_VALIDITY_DAYS` | no    | `365`            | Days client certificates are valid (at most 3650, and never beyond the CA's expiry) |
 | `CERT_CRL_URL`    | no       |                  | Public URL of `/pki/crl`, embedded in client certificates as their CRL distribution point |
 | `CERT_CRL_VALIDITY_DAYS` | no | `30`             | Days each CRL is valid until its next update (at most 365) |
+| `CERT_USER_CN_SUFFIX` | no   |                  | Appended to the username in the common name of user certificates, e.g. `@example.com` for `ann@example.com` |
+| `CERT_SERVICE_ACCOUNT_CN_SUFFIX` | no |         | Appended to the username in the common name of service account certificates |
 
 The token's user needs permission to view, add, change and delete users, to view and change groups, and to add users to groups and remove them. To manage the tokens of [service accounts](#service-accounts) it must be a superuser: authentik assigns tokens created by other users to themselves.
 
@@ -58,7 +60,8 @@ email to every user they may manage.
 When `CA_CERT_FILE` and `CA_KEY_FILE` are set, every signed-in internal user can issue X.509
 client certificates for their own account under **My certificates**. The CA certificate must
 be a CA allowed to sign certificates and CRLs (key usages `keyCertSign` and `cRLSign`).
-Certificates have the username as common name, the user's authentik UUID as a
+Certificates have the username as common name, followed by `CERT_USER_CN_SUFFIX` (or
+`CERT_SERVICE_ACCOUNT_CN_SUFFIX` for service accounts) when set, the user's authentik UUID as a
 `urn:uuid:<uuid>` URI SAN, and the `clientAuth` extended key usage. Usernames can be reused
 after a user is deleted or renamed, so relying parties should identify users by the UUID. The
 email address is not included, since users and operators can change it without verification.
@@ -86,7 +89,8 @@ CRL is valid for `CERT_CRL_VALIDITY_DAYS` (30 by default). The CA chain is at
 Access administrators can also **import** certificates the CA signed outside this application
 (for example with openssl, before it was used), under **Issued certificates → Import**, so they
 are listed and can be revoked through the CRL. Paste or load PEM certificates, up to 100 at once;
-each is assigned to the active internal user or service account named by its common name, and a
+each is assigned to the active internal user or service account named by its common name (without
+`CERT_USER_CN_SUFFIX` or `CERT_SERVICE_ACCOUNT_CN_SUFFIX`, when it ends in one), and a
 certificate holding a `urn:uuid:` URI SAN must match that account's UUID. Expired certificates,
 certificates of other CAs and already recorded serial numbers are rejected, CA certificates are
 skipped and private keys ignored. With **Import certificates without a matching account**
