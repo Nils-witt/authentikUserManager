@@ -135,6 +135,9 @@ type CertificateStore interface {
 	ListAllCertificates(ctx context.Context, q certificate.Query, now time.Time) ([]certificate.Certificate, int, error)
 	// RevokeCertificate returns certificate.ErrRevoked when the certificate is already revoked.
 	RevokeCertificate(ctx context.Context, serial, actor string) (certificate.Certificate, error)
+	// AssignCertificate assigns an unassigned certificate to a user. It returns
+	// certificate.ErrAssigned when the certificate already belongs to one.
+	AssignCertificate(ctx context.Context, serial string, userPK int, username string) (certificate.Certificate, error)
 	// RevokeUserCertificates revokes every unrevoked certificate of a user and returns their serials.
 	RevokeUserCertificates(ctx context.Context, userPK int, actor string) ([]string, error)
 	// ListRevokedCertificates returns the revoked certificates still valid at now.
@@ -275,6 +278,8 @@ func New(d Deps) *Server {
 	api.Handle("POST /api/certificates/{serial}/revoke", s.requireCertificates(s.requireAdmin(s.revokeAnyCertificate).ServeHTTP))
 	// Access administrators may import certificates the CA signed elsewhere, so they can be revoked.
 	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.importCertificates).ServeHTTP))
+	// They may assign an imported certificate to its account once the account exists.
+	api.Handle("POST /api/certificates/{serial}/assign", s.requireCertificates(s.requireAdmin(s.assignCertificate).ServeHTTP))
 	api.HandleFunc("GET /api/version", getVersion)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)

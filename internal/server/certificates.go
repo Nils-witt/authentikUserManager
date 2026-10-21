@@ -635,6 +635,56 @@ func (s *Server) certificateOwner(
 	return user, nil, nil
 }
 
+// assignCertificate assigns the unassigned certificate with the {serial} path
+// value to the account its subject names, for access administrators, e.g.
+// once that account was created or reactivated after the import. The account
+// is resolved as on import (see certificateOwner) and cannot be chosen freely,
+// since relying parties identify certificates by their common name.
+func (s *Server) assignCertificate(w http.ResponseWriter, r *http.Request) {
+	serial := r.PathValue("serial")
+	if _, ok := pki.ParseSerial(serial); !ok {
+		writeError(w, http.StatusBadRequest, "invalid serial number", nil)
+		return
+	}
+	c, err := s.certificates.GetCertificate(r.Context(), serial)
+	if err == nil && c.Assigned() {
+		err = certificate.ErrAssigned
+	}
+	var der []byte
+	if err == nil {
+		der, err = s.certificates.GetCertificateDER(r.Context(), serial)
+	}
+	if err != nil {
+		s.writeCertificateError(w, r, err)
+		return
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		s.logger.ErrorContext(r.Context(), "parsing stored certificate",
+			slog.String("serial", serial),
+			slog.Any("error", err),
+		)
+		writeError(w, http.StatusInternalServerError, "reading the stored certificate failed", nil)
+		return
+	}
+	user, unassigned, err := s.certificateOwner(r, pki.IssuedSubject(cert), map[string]*authentik.User{})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "the certificate cannot be assigned: "+err.Error(), nil)
+		return
+	}
+	if unassigned != nil {
+		writeError(w, http.StatusConflict, "the certificate cannot be assigned: "+unassigned.Error(), nil)
+		return
+	}
+	c, err = s.certificates.AssignCertificate(r.Context(), serial, user.PK, user.Username)
+	if err != nil {
+		s.writeCertificateError(w, r, err)
+		return
+	}
+	s.recordUser(r, audit.ActionCertificateAssigned, user, map[string]string{"serial": serial})
+	writeJSON(w, http.StatusOK, c)
+}
+
 // findCertificateOwner returns the internal user or service account with
 // username, or nil when there is none.
 func (s *Server) findCertificateOwner(r *http.Request, username string) (*authentik.User, error) {
@@ -775,6 +825,8 @@ func (s *Server) writeCertificateError(w http.ResponseWriter, r *http.Request, e
 		writeError(w, http.StatusConflict, "certificate already exists", nil)
 	case errors.Is(err, certificate.ErrRevoked):
 		writeError(w, http.StatusConflict, "certificate already revoked", nil)
+	case errors.Is(err, certificate.ErrAssigned):
+		writeError(w, http.StatusConflict, "certificate already assigned", nil)
 	case errors.Is(err, certificate.ErrNotStored):
 		writeError(w, http.StatusNotFound, "the certificate was issued before certificates were stored and cannot be downloaded", nil)
 	case errors.Is(err, context.Canceled):

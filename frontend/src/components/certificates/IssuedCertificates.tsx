@@ -87,6 +87,20 @@ export function IssuedCertificates() {
     }
   }
 
+  async function assign(c: Certificate) {
+    setBusy(c.serial)
+    setError(null)
+    try {
+      const assigned = await api.assignCertificate(c.serial)
+      setNotice(`Certificate assigned to ${assigned.username}.`)
+      setVersion((v) => v + 1)
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   async function revoke(c: Certificate) {
     const ok = await confirm({
       title: c.username
@@ -126,9 +140,10 @@ export function IssuedCertificates() {
         </Stack>
         <Typography variant="body2" color="text.secondary">
           Every client certificate issued by this application or imported, including those of
-          deleted users and imported ones assigned to no user. Downloads contain the certificate
-          only, never its private key; certificates issued before downloads were added cannot be
-          downloaded.
+          deleted users and imported ones assigned to no user. An unassigned certificate can be
+          assigned once the active account named by its common name exists. Downloads contain the
+          certificate only, never its private key; certificates issued before downloads were added
+          cannot be downloaded.
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
         <Stack direction="row" spacing={1.5} useFlexGap sx={{ flexWrap: 'wrap' }}>
@@ -180,6 +195,7 @@ export function IssuedCertificates() {
           showCommonName
           onRevoke={(c) => void revoke(c)}
           onDownloadCertificate={(c) => void download(c)}
+          onAssign={(c) => void assign(c)}
         />
         <ListPagination
           pagination={list?.data.pagination}

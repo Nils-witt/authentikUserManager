@@ -114,6 +114,36 @@ func TestStore_createUnassignedCertificate(t *testing.T) {
 	}
 }
 
+func TestStore_assignCertificate(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+	c, err := s.CreateCertificate(ctx, certificate.Certificate{
+		Serial:    "a" + strings.Repeat("0", 20) + strconv.Itoa(uniqueUserPK()),
+		Subject:   "CN=zoe",
+		NotBefore: time.Now().Add(-time.Minute),
+		NotAfter:  time.Now().Add(time.Hour),
+		IssuedBy:  "admin",
+		KeySource: certificate.KeySourceImported,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPK := uniqueUserPK()
+	assigned, err := s.AssignCertificate(ctx, c.Serial, userPK, "zoe")
+	if err != nil || assigned.UserPK != userPK || assigned.Username != "zoe" || !assigned.Assigned() {
+		t.Fatalf("AssignCertificate = %+v, %v, want the certificate of zoe", assigned, err)
+	}
+	if list, err := s.ListCertificates(ctx, userPK); err != nil || len(list) != 1 || list[0].Serial != c.Serial {
+		t.Errorf("ListCertificates = %+v, %v, want the assigned certificate", list, err)
+	}
+	if _, err := s.AssignCertificate(ctx, c.Serial, uniqueUserPK(), "bob"); !errors.Is(err, certificate.ErrAssigned) {
+		t.Errorf("AssignCertificate(assigned) = %v, want ErrAssigned", err)
+	}
+	if _, err := s.AssignCertificate(ctx, "0", userPK, "zoe"); !errors.Is(err, certificate.ErrNotFound) {
+		t.Errorf("AssignCertificate(unknown) = %v, want ErrNotFound", err)
+	}
+}
+
 func TestStore_getCertificateDER(t *testing.T) {
 	s := openTestStore(t)
 	ctx := t.Context()

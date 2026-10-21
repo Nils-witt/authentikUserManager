@@ -50,6 +50,9 @@ const (
 	ActionCertificateRevoked Action = "user.certificate_revoked"
 	// ActionCertificateImported is recorded when an access administrator imports a certificate the CA signed elsewhere.
 	ActionCertificateImported Action = "user.certificate_imported"
+	// ActionCertificateAssigned is recorded when an access administrator assigns an imported certificate
+	// that was assigned to no user to the account its subject names.
+	ActionCertificateAssigned Action = "user.certificate_assigned"
 	// ActionServiceAccountCreated is recorded when an operator creates a service account.
 	ActionServiceAccountCreated Action = "service_account.created"
 	// ActionServiceAccountUpdated is recorded when an operator changes a service account.
@@ -71,6 +74,7 @@ func (a Action) Valid() bool {
 		ActionGroupCreated, ActionGroupRenamed, ActionGroupVisibilityChanged, ActionGroupPathChanged,
 		ActionJoinRequested, ActionJoinWithdrawn, ActionJoinApproved, ActionJoinRejected,
 		ActionCertificateIssued, ActionCertificateKeyDownloaded, ActionCertificateRevoked, ActionCertificateImported,
+		ActionCertificateAssigned,
 		ActionServiceAccountCreated, ActionServiceAccountUpdated, ActionServiceAccountDeleted,
 		ActionTokenCreated, ActionTokenDeleted:
 		return true

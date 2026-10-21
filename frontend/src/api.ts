@@ -123,6 +123,7 @@ export type AuditAction =
   | 'user.certificate_key_downloaded'
   | 'user.certificate_revoked'
   | 'user.certificate_imported'
+  | 'user.certificate_assigned'
   | 'service_account.created'
   | 'service_account.updated'
   | 'service_account.deleted'
@@ -609,6 +610,13 @@ export const downloadCertificate = (serial: string) =>
 /** Revokes a certificate of any user, including deleted ones; only for access administrators. */
 export const revokeAnyCertificate = (serial: string) =>
   request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/revoke`)
+
+/**
+ * Assigns an imported certificate that belongs to no user to the account its common name names,
+ * e.g. once that account exists; only for access administrators.
+ */
+export const assignCertificate = (serial: string) =>
+  request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/assign`)
 
 /** The outcome of importing one certificate. */
 export interface ImportResult {

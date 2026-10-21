@@ -35,6 +35,8 @@ var (
 	ErrNotStored = errors.New("certificate not stored")
 	// ErrExists is returned when creating a certificate whose serial is already recorded.
 	ErrExists = errors.New("certificate already exists")
+	// ErrAssigned is returned when assigning a certificate that already belongs to a user.
+	ErrAssigned = errors.New("certificate already assigned")
 )
 
 // Certificate is the record of one issued certificate.

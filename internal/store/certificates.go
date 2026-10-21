@@ -174,6 +174,34 @@ func (s *Store) RevokeCertificate(ctx context.Context, serial, actor string) (ce
 	return c, nil
 }
 
+// AssignCertificate assigns the unassigned certificate with serial to the
+// user with userPK and username, and returns it. It returns
+// certificate.ErrNotFound when there is no such certificate and
+// certificate.ErrAssigned when it already belongs to a user.
+func (s *Store) AssignCertificate(ctx context.Context, serial string, userPK int, username string) (certificate.Certificate, error) {
+	rows, err := s.pool.Query(ctx, `
+		UPDATE certificates
+		SET user_pk = $2, username = $3
+		WHERE serial = $1 AND user_pk IS NULL
+		RETURNING `+certificateColumns,
+		serial, userPK, username,
+	)
+	if err != nil {
+		return certificate.Certificate{}, fmt.Errorf("store: assigning certificate: %w", err)
+	}
+	c, err := pgx.CollectExactlyOneRow(rows, scanCertificate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err := s.GetCertificate(ctx, serial); err != nil {
+			return certificate.Certificate{}, err
+		}
+		return certificate.Certificate{}, certificate.ErrAssigned
+	}
+	if err != nil {
+		return certificate.Certificate{}, fmt.Errorf("store: assigning certificate: %w", err)
+	}
+	return c, nil
+}
+
 // RevokeUserCertificates revokes every certificate of the user with userPK
 // that is not revoked yet, recording actor as the revoker, and returns the
 // serials it revoked.

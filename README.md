@@ -92,7 +92,10 @@ certificates of other CAs and already recorded serial numbers are rejected, CA c
 skipped and private keys ignored. With **Import certificates without a matching account**
 checked, certificates whose account is missing, inactive or has another UUID, or that have no
 common name, are imported **assigned to no user** instead; they are listed as *Unassigned* and
-can only be downloaded and revoked by access administrators. Imported certificates show the
+can only be downloaded and revoked by access administrators. Once the account named by its common
+name exists and is active (with the matching UUID, when the certificate holds one), **Assign**
+assigns such a certificate to that account; it cannot be assigned to any other one, since relying
+parties identify certificates by their common name. Imported certificates show the
 importing administrator as issuer, are revoked with their user like issued ones, and can be
 downloaded.
 
@@ -246,7 +249,7 @@ The API is `POST /api/groups/{pk}/join-requests` (body `{"message": "..."}`) and
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
-creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing, importing and revoking certificates and downloading their keys, creating and deleting service account tokens (never their keys),
+creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing, importing, assigning and revoking certificates and downloading their keys, creating and deleting service account tokens (never their keys),
 saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
@@ -340,6 +343,7 @@ the frontend, run `make build` again.
 | GET    | `/api/certificates/{serial}/pem` | access administrators only; the certificate as PEM, without its key; 404 for certificates issued before certificates were stored |
 | POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |
 | POST   | `/api/certificates/import` | access administrators only; imports certificates the CA signed elsewhere: `{pem, allow_unassigned}`; returns `{results}`, each `{serial, subject}` with `certificate` when imported (and `unassigned`, the reason, when assigned to no user; its `user_pk` is 0 and `username` empty) or `error` otherwise |
+| POST   | `/api/certificates/{serial}/assign` | access administrators only; assigns an unassigned imported certificate to the active account its common name (and `urn:uuid` SAN) names; returns the certificate; 409 when it is already assigned or there is no such account |
 | GET    | `/pki/crl`                 | DER certificate revocation list; no login required       |
 | GET    | `/pki/crl.pem`             | The same revocation list as PEM; no login required       |
 | GET    | `/pki/ca.pem`              | CA certificate chain; no login required                  |

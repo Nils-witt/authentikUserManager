@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -135,6 +136,21 @@ func (f *fakeCertificates) RevokeCertificate(_ context.Context, serial, actor st
 	}
 	now := time.Now()
 	f.certs[i].RevokedAt, f.certs[i].RevokedBy = &now, actor
+	return f.certs[i], nil
+}
+
+func (f *fakeCertificates) AssignCertificate(_ context.Context, serial string, userPK int, username string) (certificate.Certificate, error) {
+	if f.err != nil {
+		return certificate.Certificate{}, f.err
+	}
+	i, err := f.find(serial)
+	if err != nil {
+		return certificate.Certificate{}, err
+	}
+	if f.certs[i].Assigned() {
+		return certificate.Certificate{}, certificate.ErrAssigned
+	}
+	f.certs[i].UserPK, f.certs[i].Username = userPK, username
 	return f.certs[i], nil
 }
 
@@ -742,6 +758,7 @@ func TestCertificates_adminOnly(t *testing.T) {
 		{name: "download", method: http.MethodGet, path: "/api/certificates/ab/pem"},
 		{name: "revoke", method: http.MethodPost, path: "/api/certificates/ab/revoke"},
 		{name: "import", method: http.MethodPost, path: "/api/certificates/import"},
+		{name: "assign", method: http.MethodPost, path: "/api/certificates/ab/assign"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1034,6 +1051,101 @@ func TestCertificates_importFailures(t *testing.T) {
 				t.Errorf("audit = %+v, want nothing recorded", env.log.recorded)
 			}
 		})
+	}
+}
+
+// importUnassigned imports certificates the CA signed for each username,
+// allowing unassigned ones, and returns their serials.
+func importUnassigned(t *testing.T, env *certEnv, usernames ...string) []string {
+	t.Helper()
+	var pemText strings.Builder
+	serials := make([]string, 0, len(usernames))
+	for _, username := range usernames {
+		p, cert := signPEM(t, env.ca, pki.Subject{Username: username}, time.Now())
+		pemText.WriteString(p)
+		serials = append(serials, pki.SerialText(cert.SerialNumber))
+	}
+	body, err := json.Marshal(map[string]any{"pem": pemText.String(), "allow_unassigned": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", string(body)); rec.Code != http.StatusOK {
+		t.Fatalf("import = %d %s", rec.Code, rec.Body)
+	}
+	return serials
+}
+
+func assignCertificate(t *testing.T, env *certEnv, serial string) *httptest.ResponseRecorder {
+	t.Helper()
+	return do(t, env.srv, http.MethodPost, "/api/certificates/"+serial+"/assign", "")
+}
+
+func TestCertificates_assign(t *testing.T) {
+	t.Parallel()
+	users := importUsers()
+	env := newCertServer(t, users, "admins")
+	zoe := importUnassigned(t, env, "zoe")[0]
+
+	// The certificate stays unassigned while its account does not exist.
+	rec := assignCertificate(t, env, zoe)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `no user or service account named \"zoe\"`) {
+		t.Errorf("assign before the account exists = %d %s, want 409", rec.Code, rec.Body)
+	}
+
+	users.listed = append(users.listed,
+		authentik.User{PK: 8, Username: "zoe", Type: authentik.UserTypeInternal, IsActive: true})
+	rec = assignCertificate(t, env, zoe)
+	var got certificate.Certificate
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("assign = %d %s", rec.Code, rec.Body)
+	}
+	if got.Serial != zoe || got.UserPK != 8 || got.Username != "zoe" {
+		t.Errorf("assigned = %+v, want the certificate of zoe", got)
+	}
+	last := env.log.recorded[len(env.log.recorded)-1]
+	if last.Action != audit.ActionCertificateAssigned || last.Target != "zoe" || last.Details["serial"] != zoe ||
+		last.Details["user_id"] != "8" {
+		t.Errorf("audit entry = %+v, want the assignment to zoe", last)
+	}
+}
+
+func TestCertificates_assignRejected(t *testing.T) {
+	t.Parallel()
+	users := importUsers()
+	env := newCertServer(t, users, "admins")
+	addCertificates(env)
+	ian := importUnassigned(t, env, "ian")[0]
+	tests := []struct {
+		name       string
+		serial     string
+		usersErr   error
+		wantStatus int
+		wantError  string
+	}{
+		{name: "already assigned", serial: "ab", wantStatus: http.StatusConflict, wantError: "already assigned"},
+		{name: "inactive account", serial: ian, wantStatus: http.StatusConflict, wantError: `the account \"ian\" is inactive`},
+		{name: "unknown", serial: "ef", wantStatus: http.StatusNotFound, wantError: "not found"},
+		{name: "invalid serial", serial: "0ab", wantStatus: http.StatusBadRequest, wantError: "invalid serial"},
+		// A failed lookup is not taken for a missing account.
+		{
+			name:       "authentik down",
+			serial:     ian,
+			usersErr:   errors.New("boom"),
+			wantStatus: http.StatusBadGateway,
+			wantError:  "looking up its user in authentik failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users.err = tt.usersErr
+			rec := assignCertificate(t, env, tt.serial)
+			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantError) {
+				t.Errorf("assign = %d %s, want %d with %q", rec.Code, rec.Body, tt.wantStatus, tt.wantError)
+			}
+		})
+	}
+	if got := actions(env.log); !slices.Equal(got, []audit.Action{audit.ActionCertificateImported}) {
+		t.Errorf("audit = %v, want only the import", got)
 	}
 }
 

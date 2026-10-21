@@ -77,6 +77,8 @@ interface CertificateTableProps {
   onDownload?: (c: OwnCertificate) => void
   /** Downloads a stored certificate itself, without its key. */
   onDownloadCertificate?: (c: Certificate) => void
+  /** Assigns an unassigned imported certificate to the account its common name names. */
+  onAssign?: (c: Certificate) => void
 }
 
 /** Table of issued certificates with their state, and revoke and download buttons. */
@@ -89,9 +91,13 @@ export function CertificateTable({
   onRevoke,
   onDownload,
   onDownloadCertificate,
+  onAssign,
 }: CertificateTableProps) {
   const hasActions =
-    onRevoke !== undefined || onDownload !== undefined || onDownloadCertificate !== undefined
+    onRevoke !== undefined ||
+    onDownload !== undefined ||
+    onDownloadCertificate !== undefined ||
+    onAssign !== undefined
   const columns = 5 + Number(showUser) + Number(showCommonName) + Number(hasActions)
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={certificates === null}>
@@ -164,6 +170,16 @@ export function CertificateTable({
                         onClick={() => onDownloadCertificate(c)}
                       >
                         Download
+                      </Button>
+                    )}
+                    {onAssign && !c.username && isActive(c) && (
+                      <Button
+                        size="small"
+                        loading={busy === c.serial}
+                        disabled={busy !== null && busy !== c.serial}
+                        onClick={() => onAssign(c)}
+                      >
+                        Assign
                       </Button>
                     )}
                     {onRevoke && isActive(c) && (
