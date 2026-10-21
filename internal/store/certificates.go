@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"authentikManager/internal/certificate"
 )
@@ -23,8 +24,9 @@ func scanCertificate(row pgx.CollectableRow) (certificate.Certificate, error) {
 	return c, err
 }
 
-// CreateCertificate stores the record of a newly issued certificate, with its
-// DER encoding when set, and returns it with its issue time set.
+// CreateCertificate stores the record of a newly issued or imported
+// certificate, with its DER encoding when set, and returns it with its issue
+// time set. It returns certificate.ErrExists when the serial is already recorded.
 func (s *Store) CreateCertificate(ctx context.Context, c certificate.Certificate) (certificate.Certificate, error) {
 	rows, err := s.pool.Query(ctx, `
 		INSERT INTO certificates (serial, user_pk, username, subject, not_before, not_after, issued_by, key_source, der)
@@ -36,6 +38,9 @@ func (s *Store) CreateCertificate(ctx context.Context, c certificate.Certificate
 		return certificate.Certificate{}, fmt.Errorf("store: creating certificate: %w", err)
 	}
 	created, err := pgx.CollectExactlyOneRow(rows, scanCertificate)
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == uniqueViolation {
+		return certificate.Certificate{}, certificate.ErrExists
+	}
 	if err != nil {
 		return certificate.Certificate{}, fmt.Errorf("store: creating certificate: %w", err)
 	}

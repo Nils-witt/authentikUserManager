@@ -31,6 +31,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'user.certificate_issued': 'Certificate issued',
   'user.certificate_key_downloaded': 'Certificate key downloaded',
   'user.certificate_revoked': 'Certificate revoked',
+  'user.certificate_imported': 'Certificate imported',
   'user.access_denied': 'Access denied',
   'service_account.created': 'Service account created',
   'service_account.updated': 'Service account updated',

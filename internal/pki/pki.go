@@ -230,6 +230,79 @@ func (ca *CA) Issue(pub crypto.PublicKey, s Subject, now time.Time) (*x509.Certi
 	return cert, nil
 }
 
+// ParseCertificatesPEM decodes the CERTIFICATE blocks of data, at most limit
+// of them, for importing. Other blocks, such as private keys, are ignored.
+// The error is safe to show users.
+func ParseCertificatesPEM(data string, limit int) ([]*x509.Certificate, error) {
+	rest := []byte(data)
+	var certs []*x509.Certificate
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		if len(certs) == limit {
+			return nil, fmt.Errorf("at most %d certificates can be imported at once", limit)
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("certificate %d cannot be parsed", len(certs)+1)
+		}
+		certs = append(certs, cert)
+	}
+	if len(certs) == 0 {
+		return nil, errors.New("no PEM CERTIFICATE block found")
+	}
+	return certs, nil
+}
+
+// InChain reports whether cert is the CA certificate or one above it, as
+// found in bundles next to the certificates the CA issued.
+func (ca *CA) InChain(cert *x509.Certificate) bool {
+	for _, c := range ca.chain {
+		if c.Equal(cert) {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckIssued checks that cert is an end-entity certificate the CA signed,
+// identified by a serial number SerialText formats, and still valid at now,
+// so that it can be imported. The error is safe to show users.
+func (ca *CA) CheckIssued(cert *x509.Certificate, now time.Time) error {
+	if cert.IsCA {
+		return errors.New("it is a CA certificate")
+	}
+	if err := cert.CheckSignatureFrom(ca.cert); err != nil {
+		return errors.New("it is not signed by the configured CA")
+	}
+	if _, ok := ParseSerial(SerialText(cert.SerialNumber)); !ok {
+		return errors.New("its serial number is not a positive number of at most 160 bits")
+	}
+	if !now.Before(cert.NotAfter) {
+		return errors.New("it has expired")
+	}
+	return nil
+}
+
+// IssuedSubject returns the subject Issue certified in cert: the common name
+// as username and the urn:uuid URI SAN, if any, as UUID.
+func IssuedSubject(cert *x509.Certificate) Subject {
+	s := Subject{Username: cert.Subject.CommonName}
+	for _, u := range cert.URIs {
+		if id, ok := strings.CutPrefix(u.Opaque, "uuid:"); ok && u.Scheme == "urn" && isUUID(id) {
+			s.UUID = strings.ToLower(id)
+			break
+		}
+	}
+	return s
+}
+
 // newSerial returns a random positive 128-bit serial number.
 func newSerial() (*big.Int, error) {
 	limit := new(big.Int).Lsh(big.NewInt(1), 128)

@@ -1,5 +1,7 @@
+import FileUploadIcon from '@mui/icons-material/FileUpload'
 import SearchIcon from '@mui/icons-material/Search'
 import Alert from '@mui/material/Alert'
+import Button from '@mui/material/Button'
 import Container from '@mui/material/Container'
 import InputAdornment from '@mui/material/InputAdornment'
 import MenuItem from '@mui/material/MenuItem'
@@ -16,6 +18,7 @@ import { useDebounced } from '../../hooks/useDebounced'
 import { ListPagination } from '../common/ListPagination'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
 import { CertificateTable } from './CertificateTable'
+import { ImportCertificatesDialog } from './ImportCertificatesDialog'
 
 const PAGE_SIZE = 20
 
@@ -29,7 +32,8 @@ const STATUSES = Object.keys(STATUS_LABELS) as CertificateStatus[]
 
 /**
  * Lets access administrators review, download and revoke the certificates
- * issued to all users, including users who were deleted since, newest first.
+ * issued to all users, including users who were deleted since, newest first,
+ * and import certificates the CA signed elsewhere.
  */
 export function IssuedCertificates() {
   const [search, setSearch] = useState('')
@@ -42,8 +46,9 @@ export function IssuedCertificates() {
   const [notice, setNotice] = useState<string | null>(null)
   // Serial of the certificate an action runs for.
   const [busy, setBusy] = useState<string | null>(null)
-  // Bumped after every revocation, to reload the list.
+  // Bumped after every revocation and import, to reload the list.
   const [version, setVersion] = useState(0)
+  const [importing, setImporting] = useState(false)
   const [confirm, confirmDialog] = useConfirm()
   const requestKey = `${query}|${status}|${page}|${version}`
   const current = list?.key === requestKey ? list.data : null
@@ -101,13 +106,22 @@ export function IssuedCertificates() {
   return (
     <Container component="main" maxWidth="xl" sx={{ py: 3 }}>
       <Stack spacing={2}>
-        <Typography variant="h5" component="h2">
-          Issued certificates
-        </Typography>
+        <Stack
+          direction="row"
+          spacing={2}
+          sx={{ alignItems: 'center', justifyContent: 'space-between' }}
+        >
+          <Typography variant="h5" component="h2">
+            Issued certificates
+          </Typography>
+          <Button startIcon={<FileUploadIcon />} onClick={() => setImporting(true)}>
+            Import
+          </Button>
+        </Stack>
         <Typography variant="body2" color="text.secondary">
-          Every client certificate issued by this application, including those of deleted users.
-          Downloads contain the certificate only, never its private key; certificates issued before
-          downloads were added cannot be downloaded.
+          Every client certificate issued by this application or imported, including those of
+          deleted users. Downloads contain the certificate only, never its private key; certificates
+          issued before downloads were added cannot be downloaded.
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
         <Stack direction="row" spacing={1.5} useFlexGap sx={{ flexWrap: 'wrap' }}>
@@ -167,6 +181,16 @@ export function IssuedCertificates() {
         />
       </Stack>
       <NoticeSnackbar notice={notice} onClose={() => setNotice(null)} />
+      {importing && (
+        <ImportCertificatesDialog
+          onClose={() => setImporting(false)}
+          onImported={(count) => {
+            setNotice(count === 1 ? '1 certificate imported.' : `${count} certificates imported.`)
+            setPage(1)
+            setVersion((v) => v + 1)
+          }}
+        />
+      )}
       {confirmDialog}
     </Container>
   )

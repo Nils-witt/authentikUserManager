@@ -121,6 +121,7 @@ type JoinRequestStore interface {
 
 // CertificateStore keeps the records of the certificates issued to users.
 type CertificateStore interface {
+	// CreateCertificate returns certificate.ErrExists when the serial is already recorded.
 	CreateCertificate(ctx context.Context, c certificate.Certificate) (certificate.Certificate, error)
 	// GetCertificate returns certificate.ErrNotFound when there is no certificate.
 	GetCertificate(ctx context.Context, serial string) (certificate.Certificate, error)
@@ -268,10 +269,12 @@ func New(d Deps) *Server {
 	api.Handle("POST /api/service-accounts/{id}/certificates/{serial}/revoke",
 		s.requireCertificates(s.revokeAccountCertificate(serviceAccounts)))
 	// Access administrators may list, download and revoke the certificates of
-	// all users, including deleted ones.
+	// all users, including deleted ones; see certificates.go.
 	api.Handle("GET /api/certificates", s.requireCertificates(s.requireAdmin(s.listCertificates).ServeHTTP))
 	api.Handle("GET /api/certificates/{serial}/pem", s.requireCertificates(s.requireAdmin(s.downloadCertificate).ServeHTTP))
 	api.Handle("POST /api/certificates/{serial}/revoke", s.requireCertificates(s.requireAdmin(s.revokeAnyCertificate).ServeHTTP))
+	// Access administrators may import certificates the CA signed elsewhere, so they can be revoked.
+	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.importCertificates).ServeHTTP))
 	api.HandleFunc("GET /api/version", getVersion)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)

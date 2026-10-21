@@ -238,6 +238,106 @@ func TestCA_Issue_errors(t *testing.T) {
 	}
 }
 
+func TestParseCertificatesPEM(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour)
+	two := string(ca.certPEM) + "junk\n" + string(ca.keyPEM) + string(ca.certPEM)
+	broken := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte{1, 2}}))
+
+	tests := []struct {
+		name    string
+		data    string
+		limit   int
+		want    int
+		wantErr string
+	}{
+		{name: "certificates among other blocks", data: two, limit: 2, want: 2},
+		{name: "too many", data: two, limit: 1, wantErr: "at most 1"},
+		{name: "no certificate", data: string(ca.keyPEM), limit: 2, wantErr: "no PEM CERTIFICATE"},
+		{name: "empty", data: "", limit: 2, wantErr: "no PEM CERTIFICATE"},
+		{name: "unparsable", data: string(ca.certPEM) + broken, limit: 2, wantErr: "certificate 2 cannot be parsed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			certs, err := pki.ParseCertificatesPEM(tt.data, tt.limit)
+			switch {
+			case tt.wantErr == "" && (err != nil || len(certs) != tt.want):
+				t.Errorf("ParseCertificatesPEM = %d certificates, %v, want %d", len(certs), err, tt.want)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Errorf("ParseCertificatesPEM = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCA_InChain(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour)
+	loaded := loadCA(t, ca, defaultOpts)
+	if !loaded.InChain(ca.cert) {
+		t.Error("InChain(CA certificate) = false")
+	}
+	other := newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour)
+	if loaded.InChain(other.cert) {
+		t.Error("InChain(other CA certificate) = true")
+	}
+}
+
+func TestCA_CheckIssued(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour)
+	loaded := loadCA(t, ca, pki.Options{Validity: time.Hour})
+	other := loadCA(t, newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour), defaultOpts)
+	now := time.Now()
+	issue := func(ca *pki.CA, at time.Time) *x509.Certificate {
+		t.Helper()
+		cert, err := ca.Issue(ecKey(t).Public(), pki.Subject{Username: "ann"}, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cert
+	}
+
+	tests := []struct {
+		name    string
+		cert    *x509.Certificate
+		wantErr string
+	}{
+		{name: "issued by the ca", cert: issue(loaded, now)},
+		{name: "issued by another ca", cert: issue(other, now), wantErr: "not signed by the configured CA"},
+		{name: "expired", cert: issue(loaded, now.Add(-2*time.Hour)), wantErr: "expired"},
+		{name: "ca certificate", cert: ca.cert, wantErr: "CA certificate"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := loaded.CheckIssued(tt.cert, now)
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Errorf("CheckIssued: %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Errorf("CheckIssued = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestIssuedSubject(t *testing.T) {
+	t.Parallel()
+	ca := loadCA(t, newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour), defaultOpts)
+	want := pki.Subject{Username: "ann", UUID: "6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b"}
+	for _, s := range []pki.Subject{want, {Username: "bob"}} {
+		cert, err := ca.Issue(ecKey(t).Public(), s, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := pki.IssuedSubject(cert); got != s {
+			t.Errorf("IssuedSubject = %+v, want %+v", got, s)
+		}
+	}
+}
+
 func TestParseSerial(t *testing.T) {
 	t.Parallel()
 	serial := new(big.Int).Lsh(big.NewInt(1), 127)

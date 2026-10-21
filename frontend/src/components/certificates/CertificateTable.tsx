@@ -11,7 +11,13 @@ import TableContainer from '@mui/material/TableContainer'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import Tooltip from '@mui/material/Tooltip'
-import type { Certificate, OwnCertificate } from '../../api'
+import type { Certificate, KeySource, OwnCertificate } from '../../api'
+
+const KEY_SOURCE_LABELS: Record<KeySource, string> = {
+  generated: 'Generated',
+  csr: 'Own (CSR)',
+  imported: 'Imported',
+}
 
 /** Whether a certificate can still be used: neither revoked nor expired. */
 const isActive = (c: Certificate) => !c.revoked_at && new Date(c.not_after) > new Date()
@@ -93,7 +99,7 @@ export function CertificateTable({
               <TableCell sx={{ whiteSpace: 'nowrap' }}>
                 {new Date(c.not_after).toLocaleDateString()}
               </TableCell>
-              <TableCell>{c.key_source === 'csr' ? 'Own (CSR)' : 'Generated'}</TableCell>
+              <TableCell>{KEY_SOURCE_LABELS[c.key_source]}</TableCell>
               <TableCell>
                 <Status certificate={c} />
               </TableCell>

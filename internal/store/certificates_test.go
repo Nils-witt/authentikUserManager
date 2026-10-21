@@ -65,6 +65,18 @@ func TestStore_createCertificate(t *testing.T) {
 	if _, err := s.GetCertificate(ctx, "0"); !errors.Is(err, certificate.ErrNotFound) {
 		t.Errorf("GetCertificate(unknown) = %v, want ErrNotFound", err)
 	}
+
+	duplicate := c
+	duplicate.KeySource = certificate.KeySourceImported
+	if _, err := s.CreateCertificate(ctx, duplicate); !errors.Is(err, certificate.ErrExists) {
+		t.Errorf("CreateCertificate(duplicate serial) = %v, want ErrExists", err)
+	}
+	imported := duplicate
+	imported.Serial = "d" + c.Serial[1:]
+	got, err = s.CreateCertificate(ctx, imported)
+	if err != nil || got.KeySource != certificate.KeySourceImported {
+		t.Errorf("CreateCertificate(imported) = %+v, %v, want an imported certificate", got, err)
+	}
 }
 
 func TestStore_getCertificateDER(t *testing.T) {

@@ -11,7 +11,9 @@ import (
 	"math/big"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -464,6 +466,150 @@ func (s *Server) revokeAnyCertificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c)
 }
 
+// maxImport bounds the number of certificates imported by one request.
+const maxImport = 100
+
+// importCertificatesInput holds PEM certificates the CA signed outside this application.
+type importCertificatesInput struct {
+	PEM string `json:"pem"`
+}
+
+// importResult tells whether one certificate of an import request was imported.
+type importResult struct {
+	Serial  string `json:"serial"`
+	Subject string `json:"subject"`
+	// Certificate is the record of the imported certificate; nil when Error is set.
+	Certificate *certificate.Certificate `json:"certificate,omitempty"`
+	// Error tells why the certificate was not imported.
+	Error string `json:"error,omitempty"`
+}
+
+// importCertificates records certificates the CA signed elsewhere, e.g. with
+// openssl before this application was used, so that access administrators can
+// list, download and revoke them. Each certificate is assigned to the user or
+// service account named by its common name, which must be active and, when
+// the certificate holds a urn:uuid SAN, have that UUID. The CA certificates of
+// a bundle are skipped. Every certificate is imported or rejected on its own;
+// the response lists the outcome of each.
+func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
+	var in importCertificatesInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	certs, err := pki.ParseCertificatesPEM(in.PEM, maxImport)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"pem": {err.Error()}})
+		return
+	}
+	now := time.Now()
+	// Owners caches the accounts looked up by username; nil when there is none.
+	owners := map[string]*authentik.User{}
+	results := make([]importResult, 0, len(certs))
+	for _, cert := range certs {
+		if s.ca.InChain(cert) {
+			continue
+		}
+		res := importResult{Serial: pki.SerialText(cert.SerialNumber), Subject: cert.Subject.String()}
+		record, err := s.importCertificate(r, cert, now, owners)
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			res.Certificate = &record
+		}
+		results = append(results, res)
+	}
+	if len(results) == 0 {
+		writeError(w, http.StatusBadRequest, "validation failed",
+			map[string][]string{"pem": {"only CA certificates were found"}})
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Results []importResult `json:"results"`
+	}{Results: results})
+}
+
+// importCertificate records cert for the account its subject names, looking
+// accounts up through owners. The error is safe to show users.
+func (s *Server) importCertificate(
+	r *http.Request,
+	cert *x509.Certificate,
+	now time.Time,
+	owners map[string]*authentik.User,
+) (certificate.Certificate, error) {
+	if err := s.ca.CheckIssued(cert, now); err != nil {
+		return certificate.Certificate{}, err
+	}
+	subject := pki.IssuedSubject(cert)
+	if subject.Username == "" {
+		return certificate.Certificate{}, errors.New("it has no common name naming its user")
+	}
+	user, ok := owners[subject.Username]
+	if !ok {
+		var err error
+		if user, err = s.findCertificateOwner(r, subject.Username); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.ErrorContext(r.Context(), "looking up certificate owner", slog.Any("error", err))
+			}
+			return certificate.Certificate{}, errors.New("looking up its user in authentik failed")
+		}
+		owners[subject.Username] = user
+	}
+	switch {
+	case user == nil:
+		return certificate.Certificate{}, fmt.Errorf("there is no user or service account named %q", subject.Username)
+	case !user.IsActive:
+		return certificate.Certificate{}, fmt.Errorf("the account %q is inactive", subject.Username)
+	case subject.UUID != "" && !strings.EqualFold(subject.UUID, user.UUID):
+		// The username was given to another account since: the certificate was
+		// revoked when the account was renamed or deleted, or must be.
+		return certificate.Certificate{}, fmt.Errorf("it was issued to another account named %q", subject.Username)
+	}
+
+	record, err := s.certificates.CreateCertificate(r.Context(), certificate.Certificate{
+		Serial:    pki.SerialText(cert.SerialNumber),
+		UserPK:    user.PK,
+		Username:  user.Username,
+		Subject:   cert.Subject.String(),
+		NotBefore: cert.NotBefore,
+		NotAfter:  cert.NotAfter,
+		IssuedBy:  actorName(r),
+		KeySource: certificate.KeySourceImported,
+		DER:       cert.Raw,
+	})
+	if errors.Is(err, certificate.ErrExists) {
+		return certificate.Certificate{}, errors.New("it is already recorded")
+	}
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.ErrorContext(r.Context(), "importing certificate", slog.Any("error", err))
+		}
+		return certificate.Certificate{}, errors.New("saving it failed")
+	}
+	s.recordUser(r, audit.ActionCertificateImported, user, map[string]string{
+		"serial":    record.Serial,
+		"not_after": record.NotAfter.UTC().Format(time.RFC3339),
+	})
+	return record, nil
+}
+
+// findCertificateOwner returns the internal user or service account with
+// username, or nil when there is none.
+func (s *Server) findCertificateOwner(r *http.Request, username string) (*authentik.User, error) {
+	types := []authentik.UserType{authentik.UserTypeInternal, authentik.UserTypeServiceAccount}
+	list, err := s.users.ListUsers(r.Context(), authentik.ListUsersParams{Username: username, Type: types})
+	if err != nil {
+		return nil, err
+	}
+	// authentik silently ignores filters it does not know, so match exactly.
+	i := slices.IndexFunc(list.Results, func(u authentik.User) bool {
+		return u.Username == username && slices.Contains(types, u.Type)
+	})
+	if i < 0 {
+		return nil, nil
+	}
+	return &list.Results[i], nil
+}
+
 // revokeUserCertificates revokes every certificate of user and discards their
 // keys waiting for download, recording reason in the audit log. It is called
 // when the user is deleted, deactivated or renamed, since relying parties
@@ -557,6 +703,8 @@ func (s *Server) writeCertificateError(w http.ResponseWriter, r *http.Request, e
 	switch {
 	case errors.Is(err, certificate.ErrNotFound):
 		writeError(w, http.StatusNotFound, "certificate not found", nil)
+	case errors.Is(err, certificate.ErrExists):
+		writeError(w, http.StatusConflict, "certificate already exists", nil)
 	case errors.Is(err, certificate.ErrRevoked):
 		writeError(w, http.StatusConflict, "certificate already revoked", nil)
 	case errors.Is(err, certificate.ErrNotStored):

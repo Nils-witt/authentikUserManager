@@ -122,6 +122,7 @@ export type AuditAction =
   | 'user.certificate_issued'
   | 'user.certificate_key_downloaded'
   | 'user.certificate_revoked'
+  | 'user.certificate_imported'
   | 'service_account.created'
   | 'service_account.updated'
   | 'service_account.deleted'
@@ -178,8 +179,11 @@ export interface Application {
   launch_url: string
 }
 
-/** Where a certificate's private key was created: by the server, or by the user who sent a CSR. */
-export type KeySource = 'generated' | 'csr'
+/**
+ * Where a certificate's private key was created: by the server, by the user who sent a CSR, or
+ * unknown for a certificate the CA signed elsewhere that an access administrator imported.
+ */
+export type KeySource = 'generated' | 'csr' | 'imported'
 
 /** A client certificate issued to a user. Its private key is never stored. */
 export interface Certificate {
@@ -192,7 +196,7 @@ export interface Certificate {
   not_before: string
   not_after: string
   issued_at: string
-  /** Username of the user who requested the certificate. */
+  /** Username of the user who requested the certificate, or of the administrator who imported it. */
   issued_by: string
   key_source: KeySource
   revoked_at: string | null
@@ -604,6 +608,25 @@ export const downloadCertificate = (serial: string) =>
 /** Revokes a certificate of any user, including deleted ones; only for access administrators. */
 export const revokeAnyCertificate = (serial: string) =>
   request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/revoke`)
+
+/** The outcome of importing one certificate. */
+export interface ImportResult {
+  serial: string
+  subject: string
+  /** The record of the imported certificate; absent when `error` is set. */
+  certificate?: Certificate
+  /** Why the certificate was not imported. */
+  error?: string
+}
+
+/**
+ * Imports PEM certificates the CA signed elsewhere, so they can be listed and revoked; only for
+ * access administrators. Each is assigned to the account its common name names.
+ */
+export const importCertificates = (pem: string) =>
+  request<{ results: ImportResult[] }>('POST', '/api/certificates/import', { pem }).then(
+    (res) => res.results,
+  )
 
 export const version = () => request<BuildInfo>('GET', '/api/version')
 

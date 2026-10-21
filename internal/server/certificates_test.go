@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -49,6 +50,9 @@ func (f *fakeCertificates) find(serial string) (int, error) {
 func (f *fakeCertificates) CreateCertificate(_ context.Context, c certificate.Certificate) (certificate.Certificate, error) {
 	if f.err != nil {
 		return certificate.Certificate{}, f.err
+	}
+	if _, err := f.find(c.Serial); err == nil {
+		return certificate.Certificate{}, certificate.ErrExists
 	}
 	c.IssuedAt = time.Now()
 	c.Stored = c.DER != nil
@@ -183,6 +187,7 @@ func (c *testClock) Advance(d time.Duration) {
 // certEnv is a server with certificates enabled and its collaborators.
 type certEnv struct {
 	srv       *server.Server
+	ca        *pki.CA
 	caCert    *x509.Certificate
 	certs     *fakeCertificates
 	downloads *pki.Pending
@@ -240,6 +245,7 @@ func newCertServer(t *testing.T, users server.UserService, groups ...string) *ce
 		t.Fatal(err)
 	}
 	env := &certEnv{
+		ca:     ca,
 		caCert: caCert,
 		certs:  &fakeCertificates{},
 		clock:  &testClock{t: time.Now()},
@@ -735,6 +741,7 @@ func TestCertificates_adminOnly(t *testing.T) {
 		{name: "list", method: http.MethodGet, path: "/api/certificates"},
 		{name: "download", method: http.MethodGet, path: "/api/certificates/ab/pem"},
 		{name: "revoke", method: http.MethodPost, path: "/api/certificates/ab/revoke"},
+		{name: "import", method: http.MethodPost, path: "/api/certificates/import"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -745,6 +752,210 @@ func TestCertificates_adminOnly(t *testing.T) {
 	}
 	if env.certs.certs[0].RevokedAt != nil {
 		t.Error("the certificate was revoked")
+	}
+}
+
+// importUsers returns a UserService knowing the active user ann, the inactive
+// user ian and the service account svc.
+func importUsers() *fakeUsers {
+	return &fakeUsers{listed: []authentik.User{
+		{PK: 1, UUID: "6f1c2a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b", Username: "ann", Type: authentik.UserTypeInternal, IsActive: true},
+		{PK: 2, Username: "ian", Type: authentik.UserTypeInternal},
+		{PK: 3, Username: "svc", Type: authentik.UserTypeServiceAccount, IsActive: true},
+		{PK: 4, Username: "ext", Type: authentik.UserTypeExternal, IsActive: true},
+	}}
+}
+
+// signPEM returns a certificate ca signed for s at now, as PEM.
+func signPEM(t *testing.T, ca *pki.CA, s pki.Subject, now time.Time) (string, *x509.Certificate) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := ca.Issue(key.Public(), s, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pki.EncodeCertificate(cert)), cert
+}
+
+type importResponse struct {
+	Results []struct {
+		Serial      string                   `json:"serial"`
+		Subject     string                   `json:"subject"`
+		Certificate *certificate.Certificate `json:"certificate"`
+		Error       string                   `json:"error"`
+	} `json:"results"`
+}
+
+func importBody(t *testing.T, pemText string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"pem": pemText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func TestCertificates_import(t *testing.T) {
+	t.Parallel()
+	env := newCertServer(t, importUsers(), "admins")
+	other, _ := newTestCA(t)
+	now := time.Now()
+	annPEM, annCert := signPEM(t, env.ca, pki.Subject{Username: "ann", UUID: "6F1C2A9E-3B4D-4E5F-8A9B-0C1D2E3F4A5B"}, now)
+	svcPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "svc"}, now)
+	renamedPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann", UUID: "00000000-0000-4000-8000-000000000000"}, now)
+	inactivePEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ian"}, now)
+	unknownPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "zoe"}, now)
+	externalPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ext"}, now)
+	expiredPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann"}, now.Add(-2*time.Hour))
+	foreignPEM, _ := signPEM(t, other, pki.Subject{Username: "ann"}, now)
+	chainPEM := string(env.ca.ChainPEM())
+
+	rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", importBody(t, annPEM+chainPEM+svcPEM+
+		renamedPEM+inactivePEM+unknownPEM+externalPEM+expiredPEM+foreignPEM+annPEM))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d %s", rec.Code, rec.Body)
+	}
+	var out importResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	wantErrors := []string{
+		"",
+		"",
+		`it was issued to another account named "ann"`,
+		`the account "ian" is inactive`,
+		`there is no user or service account named "zoe"`,
+		`there is no user or service account named "ext"`,
+		"it has expired",
+		"it is not signed by the configured CA",
+		"it is already recorded",
+	}
+	if len(out.Results) != len(wantErrors) {
+		t.Fatalf("results = %+v, want %d of them, without the CA certificate", out.Results, len(wantErrors))
+	}
+	for i, want := range wantErrors {
+		got := out.Results[i]
+		if got.Error != want || (got.Certificate == nil) != (want != "") || got.Serial == "" || got.Subject == "" {
+			t.Errorf("result %d = %+v, want error %q", i, got, want)
+		}
+	}
+
+	ann := out.Results[0].Certificate
+	want := certificate.Certificate{
+		Serial:    pki.SerialText(annCert.SerialNumber),
+		UserPK:    1,
+		Username:  "ann",
+		Subject:   annCert.Subject.String(),
+		NotBefore: annCert.NotBefore,
+		NotAfter:  annCert.NotAfter,
+		IssuedAt:  ann.IssuedAt,
+		IssuedBy:  "admin",
+		KeySource: certificate.KeySourceImported,
+		Stored:    true,
+	}
+	if !reflect.DeepEqual(*ann, want) {
+		t.Errorf("imported = %+v, want %+v", *ann, want)
+	}
+	checkImportRecorded(t, env, out)
+
+	// The imported certificate can be revoked like an issued one.
+	if rec := do(t, env.srv, http.MethodPost, "/api/certificates/"+ann.Serial+"/revoke", ""); rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", rec.Code, rec.Body)
+	}
+	crl := fetchCRL(t, env)
+	if len(crl.RevokedCertificateEntries) != 1 || crl.RevokedCertificateEntries[0].SerialNumber.Cmp(annCert.SerialNumber) != 0 {
+		t.Errorf("CRL = %v, want the imported certificate", crl.RevokedCertificateEntries)
+	}
+}
+
+// checkImportRecorded checks that the certificates of ann and svc, the first
+// results of out, were stored and recorded in the audit log.
+func checkImportRecorded(t *testing.T, env *certEnv, out importResponse) {
+	t.Helper()
+	if svc := out.Results[1].Certificate; svc.UserPK != 3 || svc.Username != "svc" {
+		t.Errorf("imported = %+v, want the certificate of svc", svc)
+	}
+	if len(env.certs.certs) != 2 {
+		t.Errorf("stored %d certificates, want 2", len(env.certs.certs))
+	}
+	if got := actions(env.log); !slices.Equal(got, []audit.Action{audit.ActionCertificateImported, audit.ActionCertificateImported}) {
+		t.Errorf("audit = %v, want two imports", got)
+	}
+	if e := env.log.recorded[0]; e.Target != "ann" || e.Details["serial"] != out.Results[0].Serial || e.Details["user_id"] != "1" {
+		t.Errorf("audit entry = %+v, want ann's import", e)
+	}
+	if e := env.log.recorded[1]; e.Target != "svc" || e.Details["type"] != string(authentik.UserTypeServiceAccount) {
+		t.Errorf("audit entry = %+v, want svc's import", e)
+	}
+}
+
+func TestCertificates_importRejected(t *testing.T) {
+	t.Parallel()
+	env := newCertServer(t, importUsers(), "admins")
+	chainPEM := string(env.ca.ChainPEM())
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantError  string
+	}{
+		{name: "no certificate", body: importBody(t, "hello"), wantStatus: http.StatusBadRequest, wantError: "no PEM CERTIFICATE"},
+		{name: "only the ca", body: importBody(t, chainPEM), wantStatus: http.StatusBadRequest, wantError: "only CA certificates"},
+		{
+			name:       "too many",
+			body:       importBody(t, strings.Repeat(chainPEM, 101)),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "at most 100",
+		},
+		{name: "unknown field", body: `{"pem":"","user":1}`, wantStatus: http.StatusBadRequest, wantError: "invalid JSON"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", tt.body)
+			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantError) {
+				t.Errorf("import = %d %s, want %d with %q", rec.Code, rec.Body, tt.wantStatus, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestCertificates_importFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		usersErr  error
+		storeErr  error
+		wantError string
+	}{
+		{name: "authentik", usersErr: errors.New("boom"), wantError: "looking up its user in authentik failed"},
+		{name: "store", storeErr: errors.New("boom"), wantError: "saving it failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			users := importUsers()
+			users.err = tt.usersErr
+			env := newCertServer(t, users, "admins")
+			env.certs.err = tt.storeErr
+			annPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann"}, time.Now())
+			rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", importBody(t, annPEM+annPEM))
+			var out importResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("import = %d %s", rec.Code, rec.Body)
+			}
+			for _, r := range out.Results {
+				if r.Error != tt.wantError || r.Certificate != nil {
+					t.Errorf("result = %+v, want error %q", r, tt.wantError)
+				}
+			}
+			if len(env.log.recorded) != 0 {
+				t.Errorf("audit = %+v, want nothing recorded", env.log.recorded)
+			}
+		})
 	}
 }
 

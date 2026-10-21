@@ -81,6 +81,15 @@ deleted users. Revoked
 certificates are listed in the CRL at `/pki/crl` until they expire, and the CA chain is at
 `/pki/ca.pem`. Both are public, so relying parties can fetch them without a login.
 
+Access administrators can also **import** certificates the CA signed outside this application
+(for example with openssl, before it was used), under **Issued certificates → Import**, so they
+are listed and can be revoked through the CRL. Paste or load PEM certificates, up to 100 at once;
+each is assigned to the active internal user or service account named by its common name, and a
+certificate holding a `urn:uuid:` URI SAN must match that account's UUID. Expired certificates,
+certificates of other CAs and already recorded serial numbers are rejected, CA certificates are
+skipped and private keys ignored. Imported certificates show the importing administrator as
+issuer, are revoked with their user like issued ones, and can be downloaded.
+
 For development, `make example-ca` (or `scripts/example-ca.sh [dir] [common name] [days]`)
 creates a self-signed ECDSA P-256 CA in `ca/`, which git ignores; then set
 `CA_CERT_FILE=ca/ca.crt` and `CA_KEY_FILE=ca/ca.key`. Use a properly protected CA in production.
@@ -231,7 +240,7 @@ The API is `POST /api/groups/{pk}/join-requests` (body `{"message": "..."}`) and
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
-creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing and revoking certificates and downloading their keys, creating and deleting service account tokens (never their keys),
+creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing, importing and revoking certificates and downloading their keys, creating and deleting service account tokens (never their keys),
 saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
@@ -324,6 +333,7 @@ the frontend, run `make build` again.
 | GET    | `/api/certificates`        | access administrators only; the certificates of all users, newest first, paginated: `?search=` (username substring or serial prefix), `?status=active\|revoked\|expired`, `?page=`, `?page_size=` |
 | GET    | `/api/certificates/{serial}/pem` | access administrators only; the certificate as PEM, without its key; 404 for certificates issued before certificates were stored |
 | POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |
+| POST   | `/api/certificates/import` | access administrators only; imports certificates the CA signed elsewhere: `{pem}`; returns `{results}`, each `{serial, subject}` with `certificate` when imported or `error` otherwise |
 | GET    | `/pki/crl`                 | DER certificate revocation list; no login required       |
 | GET    | `/pki/ca.pem`              | CA certificate chain; no login required                  |
 | GET    | `/healthz`                 | no login required                                        |

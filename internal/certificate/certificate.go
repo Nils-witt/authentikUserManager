@@ -18,6 +18,9 @@ const (
 	KeySourceGenerated KeySource = "generated"
 	// KeySourceCSR is a key kept by the user, who sent a certificate signing request.
 	KeySourceCSR KeySource = "csr"
+	// KeySourceImported is the key of a certificate the CA signed outside this
+	// application, which an access administrator imported so it can be revoked.
+	KeySourceImported KeySource = "imported"
 )
 
 // MaxList bounds the number of certificates one list returns.
@@ -30,6 +33,8 @@ var (
 	ErrRevoked = errors.New("certificate already revoked")
 	// ErrNotStored is returned when a certificate was issued before its encoding was stored.
 	ErrNotStored = errors.New("certificate not stored")
+	// ErrExists is returned when creating a certificate whose serial is already recorded.
+	ErrExists = errors.New("certificate already exists")
 )
 
 // Certificate is the record of one issued certificate.
@@ -43,9 +48,10 @@ type Certificate struct {
 	Subject   string    `json:"subject"`
 	NotBefore time.Time `json:"not_before"`
 	NotAfter  time.Time `json:"not_after"`
-	// IssuedAt is set by the store.
+	// IssuedAt is set by the store; for an imported certificate it is the time of the import.
 	IssuedAt time.Time `json:"issued_at"`
-	// IssuedBy is the username of the user who requested the certificate.
+	// IssuedBy is the username of the user who requested the certificate, or
+	// of the access administrator who imported it.
 	IssuedBy  string    `json:"issued_by"`
 	KeySource KeySource `json:"key_source"`
 	// RevokedAt is nil while the certificate is not revoked.
