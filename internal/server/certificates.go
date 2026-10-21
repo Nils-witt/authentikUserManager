@@ -635,45 +635,57 @@ func (s *Server) certificateOwner(
 	return user, nil, nil
 }
 
+// assignCertificateInput is the body of an assign request.
+type assignCertificateInput struct {
+	// Username names the user or service account to assign the certificate to.
+	Username string `json:"username"`
+}
+
 // assignCertificate assigns the unassigned certificate with the {serial} path
-// value to the account its subject names, for access administrators, e.g.
-// once that account was created or reactivated after the import. The account
-// is resolved as on import (see certificateOwner) and cannot be chosen freely,
-// since relying parties identify certificates by their common name.
+// value to the active user or service account the request names, for access
+// administrators, e.g. once the account named by its common name was created
+// or reactivated after the import. Any active account may be chosen; relying
+// parties that identify certificates by their common name still see the name
+// the certificate holds.
 func (s *Server) assignCertificate(w http.ResponseWriter, r *http.Request) {
 	serial := r.PathValue("serial")
 	if _, ok := pki.ParseSerial(serial); !ok {
 		writeError(w, http.StatusBadRequest, "invalid serial number", nil)
 		return
 	}
+	var in assignCertificateInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	in.Username = strings.TrimSpace(in.Username)
+	if in.Username == "" {
+		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"username": {"is required"}})
+		return
+	}
 	c, err := s.certificates.GetCertificate(r.Context(), serial)
 	if err == nil && c.Assigned() {
 		err = certificate.ErrAssigned
-	}
-	var der []byte
-	if err == nil {
-		der, err = s.certificates.GetCertificateDER(r.Context(), serial)
 	}
 	if err != nil {
 		s.writeCertificateError(w, r, err)
 		return
 	}
-	cert, err := x509.ParseCertificate(der)
+	user, err := s.findCertificateOwner(r, in.Username)
 	if err != nil {
-		s.logger.ErrorContext(r.Context(), "parsing stored certificate",
-			slog.String("serial", serial),
-			slog.Any("error", err),
-		)
-		writeError(w, http.StatusInternalServerError, "reading the stored certificate failed", nil)
+		if !errors.Is(err, context.Canceled) {
+			s.logger.ErrorContext(r.Context(), "looking up certificate owner", slog.Any("error", err))
+		}
+		writeError(w, http.StatusBadGateway, "the certificate cannot be assigned: looking up its user in authentik failed", nil)
 		return
 	}
-	user, unassigned, err := s.certificateOwner(r, pki.IssuedSubject(cert), map[string]*authentik.User{})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "the certificate cannot be assigned: "+err.Error(), nil)
+	switch {
+	case user == nil:
+		writeError(w, http.StatusConflict,
+			fmt.Sprintf("the certificate cannot be assigned: there is no user or service account named %q", in.Username), nil)
 		return
-	}
-	if unassigned != nil {
-		writeError(w, http.StatusConflict, "the certificate cannot be assigned: "+unassigned.Error(), nil)
+	case !user.IsActive:
+		writeError(w, http.StatusConflict,
+			fmt.Sprintf("the certificate cannot be assigned: the account %q is inactive", in.Username), nil)
 		return
 	}
 	c, err = s.certificates.AssignCertificate(r.Context(), serial, user.PK, user.Username)

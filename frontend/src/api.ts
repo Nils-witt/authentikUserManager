@@ -612,11 +612,13 @@ export const revokeAnyCertificate = (serial: string) =>
   request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/revoke`)
 
 /**
- * Assigns an imported certificate that belongs to no user to the account its common name names,
- * e.g. once that account exists; only for access administrators.
+ * Assigns an imported certificate that belongs to no user to the active user or service account
+ * named username; only for access administrators.
  */
-export const assignCertificate = (serial: string) =>
-  request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/assign`)
+export const assignCertificate = (serial: string, username: string) =>
+  request<Certificate>('POST', `/api/certificates/${encodeURIComponent(serial)}/assign`, {
+    username,
+  })
 
 /** The outcome of importing one certificate. */
 export interface ImportResult {

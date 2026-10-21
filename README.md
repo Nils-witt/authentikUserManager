@@ -92,10 +92,10 @@ certificates of other CAs and already recorded serial numbers are rejected, CA c
 skipped and private keys ignored. With **Import certificates without a matching account**
 checked, certificates whose account is missing, inactive or has another UUID, or that have no
 common name, are imported **assigned to no user** instead; they are listed as *Unassigned* and
-can only be downloaded and revoked by access administrators. Once the account named by its common
-name exists and is active (with the matching UUID, when the certificate holds one), **Assign**
-assigns such a certificate to that account; it cannot be assigned to any other one, since relying
-parties identify certificates by their common name. Imported certificates show the
+can only be downloaded and revoked by access administrators. **Assign** assigns such a
+certificate to an active internal user or service account entered by the administrator, by
+default the one named by its common name; the certificate keeps its common name, so relying
+parties that identify certificates by it still see the original name. Imported certificates show the
 importing administrator as issuer, are revoked with their user like issued ones, and can be
 downloaded.
 
@@ -343,7 +343,7 @@ the frontend, run `make build` again.
 | GET    | `/api/certificates/{serial}/pem` | access administrators only; the certificate as PEM, without its key; 404 for certificates issued before certificates were stored |
 | POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |
 | POST   | `/api/certificates/import` | access administrators only; imports certificates the CA signed elsewhere: `{pem, allow_unassigned}`; returns `{results}`, each `{serial, subject}` with `certificate` when imported (and `unassigned`, the reason, when assigned to no user; its `user_pk` is 0 and `username` empty) or `error` otherwise |
-| POST   | `/api/certificates/{serial}/assign` | access administrators only; assigns an unassigned imported certificate to the active account its common name (and `urn:uuid` SAN) names; returns the certificate; 409 when it is already assigned or there is no such account |
+| POST   | `/api/certificates/{serial}/assign` | access administrators only; assigns an unassigned imported certificate to an active user or service account: `{username}`; returns the certificate; 409 when it is already assigned or there is no such active account |
 | GET    | `/pki/crl`                 | DER certificate revocation list; no login required       |
 | GET    | `/pki/crl.pem`             | The same revocation list as PEM; no login required       |
 | GET    | `/pki/ca.pem`              | CA certificate chain; no login required                  |

@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1075,37 +1076,57 @@ func importUnassigned(t *testing.T, env *certEnv, usernames ...string) []string 
 	return serials
 }
 
-func assignCertificate(t *testing.T, env *certEnv, serial string) *httptest.ResponseRecorder {
+func assignCertificate(t *testing.T, env *certEnv, serial, username string) *httptest.ResponseRecorder {
 	t.Helper()
-	return do(t, env.srv, http.MethodPost, "/api/certificates/"+serial+"/assign", "")
+	body, err := json.Marshal(map[string]string{"username": username})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return do(t, env.srv, http.MethodPost, "/api/certificates/"+serial+"/assign", string(body))
 }
 
 func TestCertificates_assign(t *testing.T) {
 	t.Parallel()
 	users := importUsers()
 	env := newCertServer(t, users, "admins")
-	zoe := importUnassigned(t, env, "zoe")[0]
+	serials := importUnassigned(t, env, "zoe", "joe", "bot")
+	zoe, joe, bot := serials[0], serials[1], serials[2]
 
-	// The certificate stays unassigned while its account does not exist.
-	rec := assignCertificate(t, env, zoe)
+	// The certificate stays unassigned while the account does not exist.
+	rec := assignCertificate(t, env, zoe, "zoe")
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `no user or service account named \"zoe\"`) {
 		t.Errorf("assign before the account exists = %d %s, want 409", rec.Code, rec.Body)
 	}
 
 	users.listed = append(users.listed,
 		authentik.User{PK: 8, Username: "zoe", Type: authentik.UserTypeInternal, IsActive: true})
-	rec = assignCertificate(t, env, zoe)
-	var got certificate.Certificate
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
-		t.Fatalf("assign = %d %s", rec.Code, rec.Body)
+	tests := []struct {
+		name     string
+		serial   string
+		username string
+		wantPK   int
+	}{
+		{name: "account of its common name", serial: zoe, username: "zoe", wantPK: 8},
+		{name: "other user", serial: joe, username: " ann ", wantPK: 1},
+		{name: "service account", serial: bot, username: "svc", wantPK: 3},
 	}
-	if got.Serial != zoe || got.UserPK != 8 || got.Username != "zoe" {
-		t.Errorf("assigned = %+v, want the certificate of zoe", got)
-	}
-	last := env.log.recorded[len(env.log.recorded)-1]
-	if last.Action != audit.ActionCertificateAssigned || last.Target != "zoe" || last.Details["serial"] != zoe ||
-		last.Details["user_id"] != "8" {
-		t.Errorf("audit entry = %+v, want the assignment to zoe", last)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := assignCertificate(t, env, tt.serial, tt.username)
+			var got certificate.Certificate
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("assign = %d %s", rec.Code, rec.Body)
+			}
+			want := strings.TrimSpace(tt.username)
+			if got.Serial != tt.serial || got.UserPK != tt.wantPK || got.Username != want {
+				t.Errorf("assigned = %+v, want the certificate of %s", got, want)
+			}
+			last := env.log.recorded[len(env.log.recorded)-1]
+			if last.Action != audit.ActionCertificateAssigned || last.Target != want ||
+				last.Details["serial"] != tt.serial || last.Details["user_id"] != strconv.Itoa(tt.wantPK) {
+				t.Errorf("audit entry = %+v, want the assignment to %s", last, want)
+			}
+		})
 	}
 }
 
@@ -1118,18 +1139,23 @@ func TestCertificates_assignRejected(t *testing.T) {
 	tests := []struct {
 		name       string
 		serial     string
+		body       string
 		usersErr   error
 		wantStatus int
 		wantError  string
 	}{
-		{name: "already assigned", serial: "ab", wantStatus: http.StatusConflict, wantError: "already assigned"},
-		{name: "inactive account", serial: ian, wantStatus: http.StatusConflict, wantError: `the account \"ian\" is inactive`},
-		{name: "unknown", serial: "ef", wantStatus: http.StatusNotFound, wantError: "not found"},
-		{name: "invalid serial", serial: "0ab", wantStatus: http.StatusBadRequest, wantError: "invalid serial"},
+		{name: "already assigned", serial: "ab", body: `{"username":"ann"}`, wantStatus: http.StatusConflict, wantError: "already assigned"},
+		{name: "inactive account", serial: ian, body: `{"username":"ian"}`, wantStatus: http.StatusConflict, wantError: `the account \"ian\" is inactive`},
+		{name: "external account", serial: ian, body: `{"username":"ext"}`, wantStatus: http.StatusConflict, wantError: `no user or service account named \"ext\"`},
+		{name: "no username", serial: ian, body: `{"username":" "}`, wantStatus: http.StatusBadRequest, wantError: "validation failed"},
+		{name: "no body", serial: ian, wantStatus: http.StatusBadRequest, wantError: "invalid JSON"},
+		{name: "unknown", serial: "ef", body: `{"username":"ann"}`, wantStatus: http.StatusNotFound, wantError: "not found"},
+		{name: "invalid serial", serial: "0ab", body: `{"username":"ann"}`, wantStatus: http.StatusBadRequest, wantError: "invalid serial"},
 		// A failed lookup is not taken for a missing account.
 		{
 			name:       "authentik down",
 			serial:     ian,
+			body:       `{"username":"ann"}`,
 			usersErr:   errors.New("boom"),
 			wantStatus: http.StatusBadGateway,
 			wantError:  "looking up its user in authentik failed",
@@ -1138,7 +1164,7 @@ func TestCertificates_assignRejected(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			users.err = tt.usersErr
-			rec := assignCertificate(t, env, tt.serial)
+			rec := do(t, env.srv, http.MethodPost, "/api/certificates/"+tt.serial+"/assign", tt.body)
 			if rec.Code != tt.wantStatus || !strings.Contains(rec.Body.String(), tt.wantError) {
 				t.Errorf("assign = %d %s, want %d with %q", rec.Code, rec.Body, tt.wantStatus, tt.wantError)
 			}

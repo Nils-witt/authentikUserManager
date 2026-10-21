@@ -17,6 +17,7 @@ import { useConfirm } from '../../hooks/useConfirm'
 import { useDebounced } from '../../hooks/useDebounced'
 import { ListPagination } from '../common/ListPagination'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
+import { AssignCertificateDialog } from './AssignCertificateDialog'
 import { CertificateTable } from './CertificateTable'
 import { ImportCertificatesDialog } from './ImportCertificatesDialog'
 
@@ -49,6 +50,8 @@ export function IssuedCertificates() {
   // Bumped after every revocation and import, to reload the list.
   const [version, setVersion] = useState(0)
   const [importing, setImporting] = useState(false)
+  // The certificate being assigned in the dialog.
+  const [assigning, setAssigning] = useState<Certificate | null>(null)
   const [confirm, confirmDialog] = useConfirm()
   const requestKey = `${query}|${status}|${page}|${version}`
   const current = list?.key === requestKey ? list.data : null
@@ -80,20 +83,6 @@ export function IssuedCertificates() {
         c.username ? `${c.username}-${c.serial}.crt` : `${c.serial}.crt`,
         'application/x-pem-file',
       )
-    } catch (err) {
-      setError(errorMessage(err))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  async function assign(c: Certificate) {
-    setBusy(c.serial)
-    setError(null)
-    try {
-      const assigned = await api.assignCertificate(c.serial)
-      setNotice(`Certificate assigned to ${assigned.username}.`)
-      setVersion((v) => v + 1)
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -141,9 +130,9 @@ export function IssuedCertificates() {
         <Typography variant="body2" color="text.secondary">
           Every client certificate issued by this application or imported, including those of
           deleted users and imported ones assigned to no user. An unassigned certificate can be
-          assigned once the active account named by its common name exists. Downloads contain the
-          certificate only, never its private key; certificates issued before downloads were added
-          cannot be downloaded.
+          assigned to an active user or service account, by default the one named by its common
+          name. Downloads contain the certificate only, never its private key; certificates issued
+          before downloads were added cannot be downloaded.
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
         <Stack direction="row" spacing={1.5} useFlexGap sx={{ flexWrap: 'wrap' }}>
@@ -195,7 +184,7 @@ export function IssuedCertificates() {
           showCommonName
           onRevoke={(c) => void revoke(c)}
           onDownloadCertificate={(c) => void download(c)}
-          onAssign={(c) => void assign(c)}
+          onAssign={setAssigning}
         />
         <ListPagination
           pagination={list?.data.pagination}
@@ -211,6 +200,17 @@ export function IssuedCertificates() {
           onImported={(count) => {
             setNotice(count === 1 ? '1 certificate imported.' : `${count} certificates imported.`)
             setPage(1)
+            setVersion((v) => v + 1)
+          }}
+        />
+      )}
+      {assigning && (
+        <AssignCertificateDialog
+          certificate={assigning}
+          onClose={() => setAssigning(null)}
+          onAssigned={(c) => {
+            setAssigning(null)
+            setNotice(`Certificate assigned to ${c.username}.`)
             setVersion((v) => v + 1)
           }}
         />
