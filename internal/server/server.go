@@ -377,12 +377,16 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 		// CertificateCNSuffixes are the suffixes appended to usernames in the
 		// common names of issued certificates, longest first.
 		CertificateCNSuffixes []string `json:"certificate_cn_suffixes"`
+		// CertificateUserCNSuffix is the suffix of user certificates alone,
+		// for previewing their common name.
+		CertificateUserCNSuffix string `json:"certificate_user_cn_suffix"`
 	}{
-		Scope:                 scope,
-		Admin:                 s.policy.IsAdmin(operatorGroups(r)),
-		RecoveryEmail:         s.recoveryEmailStage != "",
-		Certificates:          s.ca != nil,
-		CertificateCNSuffixes: s.certificateCNSuffixes(),
+		Scope:                   scope,
+		Admin:                   s.policy.IsAdmin(operatorGroups(r)),
+		RecoveryEmail:           s.recoveryEmailStage != "",
+		Certificates:            s.ca != nil,
+		CertificateCNSuffixes:   s.certificateCNSuffixes(),
+		CertificateUserCNSuffix: s.certificateUserCNSuffix(),
 	})
 }
 
@@ -393,6 +397,15 @@ func (s *Server) certificateCNSuffixes() []string {
 		return []string{}
 	}
 	return s.ca.CNSuffixes()
+}
+
+// certificateUserCNSuffix returns the CA's user common name suffix, empty
+// when certificates are disabled.
+func (s *Server) certificateUserCNSuffix() string {
+	if s.ca == nil {
+		return ""
+	}
+	return s.ca.UserCNSuffix()
 }
 
 // getVersion reports the repository, commit and tag the server was built from.

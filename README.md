@@ -65,6 +65,11 @@ Certificates have the username as common name, followed by `CERT_USER_CN_SUFFIX`
 `urn:uuid:<uuid>` URI SAN, and the `clientAuth` extended key usage. Usernames can be reused
 after a user is deleted or renamed, so relying parties should identify users by the UUID. The
 email address is not included, since users and operators can change it without verification.
+Users may choose a **common name prefix** for their own certificates (1 to 32 letters, digits,
+dots, hyphens and underscores), giving the common name `prefix+username`, e.g.
+`adm+ann@example.com`. Service account certificates take none, and a prefix is refused when an
+authentik account is named `prefix+username` itself. Since the prefix is chosen freely, relying
+parties should not trust the common name alone either.
 
 - **Generate key**: the server generates an ECDSA P-256 key and bundles it with the
   certificate and the CA chain, as a password-protected PKCS#12 file (`.p12`) or as PEM. The
@@ -90,7 +95,8 @@ Access administrators can also **import** certificates the CA signed outside thi
 (for example with openssl, before it was used), under **Issued certificates → Import**, so they
 are listed and can be revoked through the CRL. Paste or load PEM certificates, up to 100 at once;
 each is assigned to the active internal user or service account named by its common name (without
-`CERT_USER_CN_SUFFIX` or `CERT_SERVICE_ACCOUNT_CN_SUFFIX`, when it ends in one), and a
+`CERT_USER_CN_SUFFIX` or `CERT_SERVICE_ACCOUNT_CN_SUFFIX`, when it ends in one, and without a
+`prefix+` unless an account is named with it), and a
 certificate holding a `urn:uuid:` URI SAN must match that account's UUID. Expired certificates,
 certificates of other CAs and already recorded serial numbers are rejected, CA certificates are
 skipped and private keys ignored. With **Import certificates without a matching account**

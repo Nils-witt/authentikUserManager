@@ -14,6 +14,8 @@ import { useState, type ChangeEvent, type FormEvent } from 'react'
 import * as api from '../../api'
 import { ApiError, type IssueCertificateInput, type IssuedCertificate } from '../../api'
 import { errorMessage } from '../../errors'
+import { useAppContext } from '../../hooks/useAppContext'
+import { CN_PREFIX_PATTERN, CN_PREFIX_SEPARATOR } from './subject'
 
 /** Minimum length of a PKCS#12 password; the server checks it too. */
 const MIN_PASSWORD_LENGTH = 8
@@ -44,13 +46,24 @@ export function IssueCertificateForm({
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
   const [csr, setCsr] = useState('')
+  const [prefix, setPrefix] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [fields, setFields] = useState<Record<string, string[]>>({})
 
   const mismatch = format === 'pkcs12' && confirmation !== '' && password !== confirmation
   const tooShort = format === 'pkcs12' && password.length < MIN_PASSWORD_LENGTH
-  const invalid = mode === 'csr' ? csr.trim() === '' : tooShort || password !== confirmation
+  const { me, access } = useAppContext()
+  // Only users choose a prefix, for their own certificates.
+  const ownCertificate = owner === undefined
+  const trimmedPrefix = ownCertificate ? prefix.trim() : ''
+  const badPrefix = trimmedPrefix !== '' && !CN_PREFIX_PATTERN.test(trimmedPrefix)
+  const commonNamePreview =
+    (trimmedPrefix ? trimmedPrefix + CN_PREFIX_SEPARATOR : '') +
+    me.username +
+    (access?.certificate_user_cn_suffix ?? '')
+  const invalid =
+    badPrefix || (mode === 'csr' ? csr.trim() === '' : tooShort || password !== confirmation)
 
   async function loadFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -70,6 +83,7 @@ export function IssueCertificateForm({
     if (mode === 'csr') input = { csr }
     else if (format === 'pkcs12') input = { format, password }
     else input = { format }
+    if (trimmedPrefix) input.prefix = trimmedPrefix
     setBusy(true)
     setError(null)
     setFields({})
@@ -78,6 +92,7 @@ export function IssueCertificateForm({
       setPassword('')
       setConfirmation('')
       setCsr('')
+      setPrefix('')
       onIssued(issued, mode === 'generate' ? format : null)
     } catch (err) {
       setError(errorMessage(err))
@@ -100,6 +115,20 @@ export function IssueCertificateForm({
           <Tab value="csr" label="Sign CSR" />
         </Tabs>
         {error && <Alert severity="error">{error}</Alert>}
+        {ownCertificate && (
+          <TextField
+            label="Common name prefix (optional)"
+            value={prefix}
+            onChange={(e) => setPrefix(e.target.value)}
+            error={badPrefix || !!fieldError('prefix')}
+            helperText={
+              fieldError('prefix') ??
+              (badPrefix
+                ? 'Up to 32 letters, digits, dots, hyphens and underscores'
+                : `The common name will be ${commonNamePreview}`)
+            }
+          />
+        )}
         {mode === 'generate' ? (
           <>
             <Typography variant="body2" color="text.secondary">

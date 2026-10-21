@@ -239,6 +239,11 @@ func (s *Server) issueServiceAccountCertificate(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "validation failed", fields)
 		return
 	}
+	if in.Prefix != "" {
+		writeError(w, http.StatusBadRequest, "validation failed",
+			map[string][]string{"prefix": {"service account certificates take no prefix"}})
+		return
+	}
 	account, _, ok := s.changeableAccount(w, r, serviceAccounts)
 	if !ok {
 		return

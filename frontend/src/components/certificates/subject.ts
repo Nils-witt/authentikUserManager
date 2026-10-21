@@ -25,13 +25,29 @@ export function commonName(subject: string): string {
   return inValue && attribute.toUpperCase() === 'CN' ? value : ''
 }
 
+/** Joins a user-chosen prefix to the username in a common name. */
+export const CN_PREFIX_SEPARATOR = '+'
+
+/** Prefixes the server accepts: 1 to 32 letters, digits, dots, hyphens and underscores. */
+export const CN_PREFIX_PATTERN = /^[\p{L}\p{N}._-]{1,32}$/u
+
 /**
  * The username a common name names: without the first of `suffixes` (longest first, as the
- * server lists them) it ends in, unless nothing would be left of it.
+ * server lists them) it ends in, unless nothing would be left of it, and without a valid
+ * prefix before the first separator. Usernames may hold the separator too, so the result is a
+ * suggestion only.
  */
 export function usernameFromCommonName(cn: string, suffixes: readonly string[]): string {
+  let name = cn
   for (const suffix of suffixes) {
-    if (cn.endsWith(suffix) && cn.length > suffix.length) return cn.slice(0, -suffix.length)
+    if (name.endsWith(suffix) && name.length > suffix.length) {
+      name = name.slice(0, -suffix.length)
+      break
+    }
   }
-  return cn
+  const i = name.indexOf(CN_PREFIX_SEPARATOR)
+  if (i > 0 && i < name.length - 1 && CN_PREFIX_PATTERN.test(name.slice(0, i))) {
+    return name.slice(i + 1)
+  }
+  return name
 }

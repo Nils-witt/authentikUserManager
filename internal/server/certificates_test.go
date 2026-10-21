@@ -946,6 +946,75 @@ func TestCertificates_issueWithCNSuffix(t *testing.T) {
 	}
 }
 
+func TestCertificates_issueWithCNPrefix(t *testing.T) {
+	t.Parallel()
+	env := newCertServerWithOptions(t, suffixOptions, ownAccountUsers())
+
+	c := issue(t, env, `{"format":"pem","prefix":" adm "}`).Certificate
+	if c.Username != "admin" || c.Subject != `CN=adm\+admin@example.com` {
+		t.Errorf("certificate = %+v, want one of admin with the prefix and the user suffix", c)
+	}
+	if e := env.log.recorded[0]; e.Action != audit.ActionCertificateIssued || e.Details["cn_prefix"] != "adm" {
+		t.Errorf("audit entry = %+v, want the prefix recorded", e)
+	}
+}
+
+func TestCertificates_issueWithCNPrefixRejected(t *testing.T) {
+	t.Parallel()
+	taken := ownAccountUsers()
+	taken.listed = append(taken.listed, authentik.User{PK: 8, Username: "adm+admin", Type: authentik.UserTypeExternal})
+	tests := []struct {
+		name  string
+		users *fakeUsers
+		body  string
+	}{
+		{name: "invalid prefix", users: ownAccountUsers(), body: `{"format":"pem","prefix":"a@b"}`},
+		{name: "common name too long", users: ownAccountUsers(), body: `{"format":"pem","prefix":"` + strings.Repeat("a", 32) + `"}`},
+		{name: "prefixed username taken", users: taken, body: `{"format":"pem","prefix":"adm"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := suffixOptions
+			opts.UserCNSuffix = "@" + strings.Repeat("e", 30) + ".com"
+			env := newCertServerWithOptions(t, opts, tt.users)
+			rec := do(t, env.srv, http.MethodPost, "/api/certificates/mine", tt.body)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"prefix"`) {
+				t.Errorf("issue = %d %s, want 400 for the prefix", rec.Code, rec.Body)
+			}
+			if len(env.certs.certs) != 0 {
+				t.Errorf("stored %d certificates, want none", len(env.certs.certs))
+			}
+		})
+	}
+}
+
+func TestCertificates_importWithCNPrefix(t *testing.T) {
+	t.Parallel()
+	users := importUsers()
+	users.listed = append(users.listed, authentik.User{PK: 5, Username: "x+y", Type: authentik.UserTypeInternal, IsActive: true})
+	env := newCertServerWithOptions(t, suffixOptions, users, "admins")
+	now := time.Now()
+	annPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann", Prefix: "adm"}, now)
+	literalPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "x+y"}, now)
+
+	rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", importBody(t, annPEM+literalPEM))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d %s", rec.Code, rec.Body)
+	}
+	var out importResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	wantUsers := []string{"ann", "x+y"}
+	for i, want := range wantUsers {
+		got := out.Results[i]
+		if got.Error != "" || got.Certificate == nil || got.Certificate.Username != want {
+			t.Errorf("result %d = %+v, want it assigned to %s", i, got, want)
+		}
+	}
+}
+
 func TestCertificates_importWithCNSuffix(t *testing.T) {
 	t.Parallel()
 	env := newCertServerWithOptions(t, suffixOptions, importUsers(), "admins")

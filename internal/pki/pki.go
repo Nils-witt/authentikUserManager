@@ -47,12 +47,25 @@ const DefaultCRLValidity = 30 * 24 * time.Hour
 // common name to 64 characters.
 const maxCNSuffixLen = 64
 
+// maxCNLen is the longest common name RFC 5280 allows.
+const maxCNLen = 64
+
+// CNPrefixSeparator joins a user-chosen prefix to the username in a common name.
+const CNPrefixSeparator = "+"
+
+// maxCNPrefixLen bounds user-chosen common name prefixes.
+const maxCNPrefixLen = 32
+
 // pkcs12Iterations is the PBKDF2 iteration count of PKCS#12 bundles; the
 // library default of 2048 is too low for user-chosen passwords.
 const pkcs12Iterations = 100_000
 
 // ErrCAExpired is returned when issuing with a CA certificate that is no longer valid.
 var ErrCAExpired = errors.New("pki: ca certificate has expired")
+
+// ErrCommonNameTooLong is returned when a prefixed common name would exceed
+// the 64 characters RFC 5280 allows.
+var ErrCommonNameTooLong = errors.New("pki: the common name would exceed 64 characters")
 
 // Options configure a CA.
 type Options struct {
@@ -216,31 +229,54 @@ type Subject struct {
 	// ServiceAccount is set for service accounts, whose common name gets
 	// Options.ServiceAccountCNSuffix instead of Options.UserCNSuffix.
 	ServiceAccount bool
+	// Prefix, when set, is a prefix the user chose, which must pass
+	// ValidateCNPrefix. It precedes the username, joined by
+	// CNPrefixSeparator. Service accounts take none.
+	Prefix string
 }
 
-// commonName returns the common name Issue certifies for s: the username
-// followed by the configured suffix of its kind of account.
+// ValidateCNPrefix accepts prefixes of 1 to 32 letters, digits, dots, hyphens
+// and underscores. Without CNPrefixSeparator in it, the first separator of a
+// common name ends the prefix. The error is safe to show users.
+func ValidateCNPrefix(prefix string) error {
+	if prefix == "" || utf8.RuneCountInString(prefix) > maxCNPrefixLen {
+		return fmt.Errorf("the prefix must have between 1 and %d characters", maxCNPrefixLen)
+	}
+	for _, r := range prefix {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune(".-_", r) {
+			return errors.New("the prefix may only contain letters, digits, dots, hyphens and underscores")
+		}
+	}
+	return nil
+}
+
+// commonName returns the common name Issue certifies for s: the prefix and
+// separator, if any, the username, and the configured suffix of its kind of
+// account.
 func (ca *CA) commonName(s Subject) string {
 	if s.ServiceAccount {
 		return s.Username + ca.opts.ServiceAccountCNSuffix
 	}
-	return s.Username + ca.opts.UserCNSuffix
+	cn := s.Username + ca.opts.UserCNSuffix
+	if s.Prefix != "" {
+		cn = s.Prefix + CNPrefixSeparator + cn
+	}
+	return cn
 }
 
 // Issue signs a client certificate for pub, which must pass ValidatePublicKey.
 // The subject's common name is the username followed by Options.UserCNSuffix,
-// or Options.ServiceAccountCNSuffix for a service account. The certificate is valid from
+// or Options.ServiceAccountCNSuffix for a service account. A user's chosen
+// prefix precedes it, joined by CNPrefixSeparator; a prefixed common name
+// must fit RFC 5280's 64 characters. The certificate is valid from
 // shortly before now until the configured validity or the CA's expiry,
 // whichever comes first.
 func (ca *CA) Issue(pub crypto.PublicKey, s Subject, now time.Time) (*x509.Certificate, error) {
 	if err := ValidatePublicKey(pub); err != nil {
 		return nil, err
 	}
-	if s.Username == "" {
-		return nil, errors.New("pki: username is required")
-	}
-	if s.UUID != "" && !isUUID(s.UUID) {
-		return nil, fmt.Errorf("pki: invalid user uuid %q", s.UUID)
+	if err := ca.checkSubject(s); err != nil {
+		return nil, err
 	}
 	notAfter := now.Add(ca.opts.Validity)
 	if ca.cert.NotAfter.Before(notAfter) {
@@ -281,6 +317,30 @@ func (ca *CA) Issue(pub crypto.PublicKey, s Subject, now time.Time) (*x509.Certi
 		return nil, fmt.Errorf("pki: parsing issued certificate: %w", err)
 	}
 	return cert, nil
+}
+
+// checkSubject checks that s names a user, with a valid UUID and prefix, if
+// any, for a common name of at most maxCNLen characters.
+func (ca *CA) checkSubject(s Subject) error {
+	if s.Username == "" {
+		return errors.New("pki: username is required")
+	}
+	if s.UUID != "" && !isUUID(s.UUID) {
+		return fmt.Errorf("pki: invalid user uuid %q", s.UUID)
+	}
+	if s.Prefix == "" {
+		return nil
+	}
+	if s.ServiceAccount {
+		return errors.New("pki: service account certificates take no prefix")
+	}
+	if err := ValidateCNPrefix(s.Prefix); err != nil {
+		return fmt.Errorf("pki: %w", err)
+	}
+	if utf8.RuneCountInString(ca.commonName(s)) > maxCNLen {
+		return ErrCommonNameTooLong
+	}
+	return nil
 }
 
 // ParseCertificatesPEM decodes the CERTIFICATE blocks of data, at most limit
@@ -346,10 +406,16 @@ func (ca *CA) CheckIssued(cert *x509.Certificate, now time.Time) error {
 // IssuedSubject returns the subject Issue certified in cert: the common name
 // as username, without the longest configured suffix it ends in, and the
 // urn:uuid URI SAN, if any, as UUID. Common names without a suffix, as issued
-// before one was configured, are taken as the username. ServiceAccount is
-// left unset: the suffixes may be equal or empty, so the account tells.
+// before one was configured, are taken as the username. A valid prefix
+// followed by CNPrefixSeparator is split off as Prefix; since usernames may
+// hold the separator too, callers should first look for an account named by
+// both. ServiceAccount is left unset: the suffixes may be equal or empty, so
+// the account tells.
 func (ca *CA) IssuedSubject(cert *x509.Certificate) Subject {
 	s := Subject{Username: ca.username(cert.Subject.CommonName)}
+	if prefix, name, ok := strings.Cut(s.Username, CNPrefixSeparator); ok && name != "" && ValidateCNPrefix(prefix) == nil {
+		s.Prefix, s.Username = prefix, name
+	}
 	for _, u := range cert.URIs {
 		if id, ok := strings.CutPrefix(u.Opaque, "uuid:"); ok && u.Scheme == "urn" && isUUID(id) {
 			s.UUID = strings.ToLower(id)
@@ -357,6 +423,11 @@ func (ca *CA) IssuedSubject(cert *x509.Certificate) Subject {
 		}
 	}
 	return s
+}
+
+// UserCNSuffix returns Options.UserCNSuffix.
+func (ca *CA) UserCNSuffix() string {
+	return ca.opts.UserCNSuffix
 }
 
 // CNSuffixes returns the distinct non-empty common name suffixes, longest

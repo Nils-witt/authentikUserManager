@@ -431,6 +431,104 @@ func TestCA_cnSuffixes(t *testing.T) {
 	}
 }
 
+func TestValidateCNPrefix(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		prefix  string
+		wantErr bool
+	}{
+		{name: "letters", prefix: "adm"},
+		{name: "punctuation", prefix: "a.b-c_d"},
+		{name: "umlaut", prefix: "prüf"},
+		{name: "longest", prefix: strings.Repeat("a", 32)},
+		{name: "empty", prefix: "", wantErr: true},
+		{name: "too long", prefix: strings.Repeat("a", 33), wantErr: true},
+		{name: "separator", prefix: "a+b", wantErr: true},
+		{name: "at sign", prefix: "a@b", wantErr: true},
+		{name: "space", prefix: "a b", wantErr: true},
+		{name: "control character", prefix: "a\tb", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := pki.ValidateCNPrefix(tt.prefix); (err != nil) != tt.wantErr {
+				t.Errorf("ValidateCNPrefix(%q) = %v, wantErr %v", tt.prefix, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCA_cnPrefix(t *testing.T) {
+	t.Parallel()
+	ca := loadCA(t, newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour), pki.Options{
+		Validity:               time.Hour,
+		UserCNSuffix:           "@example.com",
+		ServiceAccountCNSuffix: "@svc.example.com",
+	})
+	tests := []struct {
+		name       string
+		subject    pki.Subject
+		wantCN     string
+		wantIssued pki.Subject
+		wantErr    error
+		wantAnyErr bool
+	}{
+		{
+			name:       "prefixed user",
+			subject:    pki.Subject{Username: "ann", Prefix: "adm"},
+			wantCN:     "adm+ann@example.com",
+			wantIssued: pki.Subject{Username: "ann", Prefix: "adm"},
+		},
+		{
+			// Without the account named a+b, the server falls back to b.
+			name:       "username holding the separator",
+			subject:    pki.Subject{Username: "a+b"},
+			wantCN:     "a+b@example.com",
+			wantIssued: pki.Subject{Username: "b", Prefix: "a"},
+		},
+		{
+			name:       "separator without a valid prefix",
+			subject:    pki.Subject{Username: "a b+c"},
+			wantCN:     "a b+c@example.com",
+			wantIssued: pki.Subject{Username: "a b+c"},
+		},
+		{name: "service account", subject: pki.Subject{Username: "svc", ServiceAccount: true, Prefix: "adm"}, wantAnyErr: true},
+		{name: "invalid prefix", subject: pki.Subject{Username: "ann", Prefix: "a+b"}, wantAnyErr: true},
+		{
+			name:    "common name too long",
+			subject: pki.Subject{Username: strings.Repeat("a", 50), Prefix: "adm"},
+			wantErr: pki.ErrCommonNameTooLong,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cert, err := ca.Issue(ecKey(t).Public(), tt.subject, time.Now())
+			switch {
+			case tt.wantErr != nil:
+				if !errors.Is(err, tt.wantErr) {
+					t.Errorf("Issue = %v, want %v", err, tt.wantErr)
+				}
+				return
+			case tt.wantAnyErr:
+				if err == nil {
+					t.Error("Issue succeeded, want an error")
+				}
+				return
+			case err != nil:
+				t.Fatal(err)
+			}
+			if cert.Subject.CommonName != tt.wantCN {
+				t.Errorf("common name = %q, want %q", cert.Subject.CommonName, tt.wantCN)
+			}
+			if got := ca.IssuedSubject(cert); got != tt.wantIssued {
+				t.Errorf("IssuedSubject = %+v, want %+v", got, tt.wantIssued)
+			}
+		})
+	}
+}
+
 func TestParseSerial(t *testing.T) {
 	t.Parallel()
 	serial := new(big.Int).Lsh(big.NewInt(1), 127)

@@ -429,6 +429,16 @@ func TestServiceAccounts_certificateWithCNSuffix(t *testing.T) {
 	}
 }
 
+func TestServiceAccounts_certificateWithCNPrefix(t *testing.T) {
+	t.Parallel()
+	env := newCertServerWithOptions(t, suffixOptions, &fakeUsers{user: serviceAccount("staff")}, "helpdesk")
+
+	rec := do(t, env.srv, http.MethodPost, "/api/service-accounts/5/certificates", `{"format":"pem","prefix":"adm"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "take no prefix") {
+		t.Errorf("issue = %d %s, want 400 for the prefix", rec.Code, rec.Body)
+	}
+}
+
 func TestServiceAccounts_certificatesRefused(t *testing.T) {
 	t.Parallel()
 	inactive := serviceAccount("staff")

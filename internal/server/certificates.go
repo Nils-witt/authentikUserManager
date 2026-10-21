@@ -194,11 +194,21 @@ type issueCertificateInput struct {
 	CSR      string `json:"csr"`
 	Format   string `json:"format"`
 	Password string `json:"password"`
+	// Prefix, when set, precedes the username in the common name of a user's
+	// own certificate (see pki.Subject).
+	Prefix string `json:"prefix"`
 }
 
-// validate checks in and returns the public key of its CSR, or nil when a
-// key is to be generated. It returns the per-field errors otherwise.
-func (in issueCertificateInput) validate() (crypto.PublicKey, map[string][]string) {
+// validate checks in, trimming its prefix, and returns the public key of its
+// CSR, or nil when a key is to be generated. It returns the per-field errors
+// otherwise.
+func (in *issueCertificateInput) validate() (crypto.PublicKey, map[string][]string) {
+	in.Prefix = strings.TrimSpace(in.Prefix)
+	if in.Prefix != "" {
+		if err := pki.ValidateCNPrefix(in.Prefix); err != nil {
+			return nil, map[string][]string{"prefix": {err.Error()}}
+		}
+	}
 	if in.CSR != "" {
 		pub, err := pki.ParseCSR(in.CSR)
 		if err != nil {
@@ -249,7 +259,28 @@ func (s *Server) issueCertificate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if in.Prefix != "" && !s.checkPrefixFree(w, r, in.Prefix+pki.CNPrefixSeparator+user.Username) {
+		return
+	}
 	s.issueFor(w, r, user, pub, in)
+}
+
+// checkPrefixFree checks that no account of any type is named name, the
+// prefixed username of a common name, which would then name that account.
+// It writes the error response and returns false otherwise.
+func (s *Server) checkPrefixFree(w http.ResponseWriter, r *http.Request, name string) bool {
+	list, err := s.users.ListUsers(r.Context(), authentik.ListUsersParams{Username: name})
+	if err != nil {
+		s.writeUpstreamError(w, r, err)
+		return false
+	}
+	if slices.ContainsFunc(list.Results, func(u authentik.User) bool { return u.Username == name }) {
+		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{
+			"prefix": {fmt.Sprintf("the common name would name the account %q", name)},
+		})
+		return false
+	}
+	return true
 }
 
 // issueFor issues a client certificate for user, for the public key pub of a
@@ -272,7 +303,14 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		Username:       user.Username,
 		UUID:           user.UUID,
 		ServiceAccount: user.Type.IsServiceAccount(),
+		Prefix:         in.Prefix,
 	}, time.Now())
+	if errors.Is(err, pki.ErrCommonNameTooLong) {
+		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{
+			"prefix": {"the prefix makes the common name longer than 64 characters"},
+		})
+		return
+	}
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "issuing certificate", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "issuing the certificate failed", nil)
@@ -298,11 +336,15 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		s.writeCertificateError(w, r, err)
 		return
 	}
-	s.recordUser(r, audit.ActionCertificateIssued, user, map[string]string{
+	details := map[string]string{
 		"serial":     record.Serial,
 		"not_after":  record.NotAfter.UTC().Format(time.RFC3339),
 		"key_source": string(source),
-	})
+	}
+	if in.Prefix != "" {
+		details["cn_prefix"] = in.Prefix
+	}
+	s.recordUser(r, audit.ActionCertificateIssued, user, details)
 
 	out := issuedCertificate{Certificate: record}
 	if key == nil {
@@ -616,27 +658,52 @@ func (s *Server) certificateOwner(
 	if subject.Username == "" {
 		return nil, errors.New("it has no common name naming its user"), nil
 	}
-	user, ok := owners[subject.Username]
-	if !ok {
-		if user, err = s.findCertificateOwner(r, subject.Username); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				s.logger.ErrorContext(r.Context(), "looking up certificate owner", slog.Any("error", err))
-			}
-			return nil, nil, errors.New("looking up its user in authentik failed")
+	name := subject.Username
+	if subject.Prefix != "" {
+		// The prefix may be part of a username holding the separator, so the
+		// account named by the whole common name comes first.
+		literal := subject.Prefix + pki.CNPrefixSeparator + subject.Username
+		if user, err = s.cachedCertificateOwner(r, literal, owners); err != nil {
+			return nil, nil, err
 		}
-		owners[subject.Username] = user
+		if user != nil {
+			name = literal
+		}
+	}
+	if name == subject.Username {
+		if user, err = s.cachedCertificateOwner(r, name, owners); err != nil {
+			return nil, nil, err
+		}
 	}
 	switch {
 	case user == nil:
-		return nil, fmt.Errorf("there is no user or service account named %q", subject.Username), nil
+		return nil, fmt.Errorf("there is no user or service account named %q", name), nil
 	case !user.IsActive:
-		return nil, fmt.Errorf("the account %q is inactive", subject.Username), nil
+		return nil, fmt.Errorf("the account %q is inactive", name), nil
 	case subject.UUID != "" && !strings.EqualFold(subject.UUID, user.UUID):
 		// The username was given to another account since: the certificate was
 		// revoked when the account was renamed or deleted, or must be.
-		return nil, fmt.Errorf("it was issued to another account named %q", subject.Username), nil
+		return nil, fmt.Errorf("it was issued to another account named %q", name), nil
 	}
 	return user, nil, nil
+}
+
+// cachedCertificateOwner returns the account findCertificateOwner finds for
+// username, nil when there is none, looking it up once per owners. The error
+// is safe to show users.
+func (s *Server) cachedCertificateOwner(r *http.Request, username string, owners map[string]*authentik.User) (*authentik.User, error) {
+	if user, ok := owners[username]; ok {
+		return user, nil
+	}
+	user, err := s.findCertificateOwner(r, username)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.ErrorContext(r.Context(), "looking up certificate owner", slog.Any("error", err))
+		}
+		return nil, errors.New("looking up its user in authentik failed")
+	}
+	owners[username] = user
+	return user, nil
 }
 
 // assignCertificateInput is the body of an assign request.

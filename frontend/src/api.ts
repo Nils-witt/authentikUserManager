@@ -91,6 +91,8 @@ export interface Access {
   certificates: boolean
   /** Suffixes appended to usernames in the common names of issued certificates, longest first. */
   certificate_cn_suffixes: string[]
+  /** The suffix of user certificates alone, for previewing their common name. */
+  certificate_user_cn_suffix: string
 }
 
 /** Members of operator_group may manage members of target_groups ('*': all users). */
@@ -220,8 +222,12 @@ export interface OwnCertificate extends Certificate {
 }
 
 /** What to certify: the key of a CSR, or a new key downloaded in a format. */
-export type IssueCertificateInput =
+export type IssueCertificateInput = (
   { csr: string } | { format: 'pem' } | { format: 'pkcs12'; password: string }
+) & {
+  /** Precedes the username in the common name, joined by "+"; own certificates only. */
+  prefix?: string
+}
 
 /** The result of issuing a certificate. */
 export interface IssuedCertificate {
