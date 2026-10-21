@@ -79,6 +79,41 @@ func TestStore_createCertificate(t *testing.T) {
 	}
 }
 
+func TestStore_createUnassignedCertificate(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+	c := certificate.Certificate{
+		Serial:    "c" + strings.Repeat("0", 20) + strconv.Itoa(uniqueUserPK()),
+		Subject:   "CN=gone",
+		NotBefore: time.Now().Add(-time.Minute),
+		NotAfter:  time.Now().Add(time.Hour),
+		IssuedBy:  "admin",
+		KeySource: certificate.KeySourceImported,
+	}
+	created, err := s.CreateCertificate(ctx, c)
+	if err != nil || created.Assigned() || created.Username != "" {
+		t.Fatalf("CreateCertificate(unassigned) = %+v, %v, want an unassigned certificate", created, err)
+	}
+	got, err := s.GetCertificate(ctx, c.Serial)
+	if err != nil || got.Assigned() || got.Username != "" {
+		t.Errorf("GetCertificate = %+v, %v, want the unassigned certificate", got, err)
+	}
+	list, _, err := s.ListAllCertificates(ctx, certificate.Query{Search: c.Serial, Page: 1, PageSize: 10}, time.Now())
+	if err != nil || len(list) != 1 || list[0].Serial != c.Serial {
+		t.Errorf("ListAllCertificates(serial) = %+v, %v, want the unassigned certificate", list, err)
+	}
+	if _, err := s.RevokeCertificate(ctx, c.Serial, "admin"); err != nil {
+		t.Errorf("RevokeCertificate(unassigned): %v", err)
+	}
+
+	issued := c
+	issued.Serial = "b" + c.Serial[1:]
+	issued.KeySource = certificate.KeySourceCSR
+	if _, err := s.CreateCertificate(ctx, issued); err == nil {
+		t.Error("CreateCertificate stored an issued certificate without a user")
+	}
+}
+
 func TestStore_getCertificateDER(t *testing.T) {
 	s := openTestStore(t)
 	ctx := t.Context()

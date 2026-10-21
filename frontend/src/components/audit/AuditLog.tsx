@@ -189,7 +189,7 @@ function AuditTable({ entries }: { entries: AuditEntry[] | null }) {
               <TableCell sx={{ whiteSpace: 'nowrap' }}>
                 {ACTION_LABELS[e.action] ?? e.action}
               </TableCell>
-              <TableCell>{e.target}</TableCell>
+              <TableCell>{e.target || '—'}</TableCell>
               <TableCell sx={{ whiteSpace: 'normal' }}>
                 <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: 'wrap' }}>
                   {Object.entries(e.details).map(([key, value]) => (

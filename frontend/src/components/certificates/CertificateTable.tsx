@@ -81,7 +81,14 @@ export function CertificateTable({
         <TableBody>
           {certificates?.map((c) => (
             <TableRow key={c.serial} hover>
-              {showUser && <TableCell title={`User ID ${c.user_pk}`}>{c.username}</TableCell>}
+              {showUser &&
+                (c.username ? (
+                  <TableCell title={`User ID ${c.user_pk}`}>{c.username}</TableCell>
+                ) : (
+                  <TableCell sx={{ color: 'text.secondary', fontStyle: 'italic' }}>
+                    Unassigned
+                  </TableCell>
+                ))}
               <TableCell
                 sx={{
                   fontFamily: 'monospace',

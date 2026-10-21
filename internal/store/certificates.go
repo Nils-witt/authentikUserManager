@@ -14,7 +14,8 @@ import (
 )
 
 // certificateColumns are the columns scanned by scanCertificate, in order.
-const certificateColumns = `serial, user_pk, username, subject, not_before, not_after,
+// Unassigned certificates have neither user_pk nor username; see certificate.Certificate.Assigned.
+const certificateColumns = `serial, COALESCE(user_pk, 0), COALESCE(username, ''), subject, not_before, not_after,
 	issued_at, issued_by, key_source, revoked_at, COALESCE(revoked_by, ''), der IS NOT NULL`
 
 func scanCertificate(row pgx.CollectableRow) (certificate.Certificate, error) {
@@ -30,7 +31,7 @@ func scanCertificate(row pgx.CollectableRow) (certificate.Certificate, error) {
 func (s *Store) CreateCertificate(ctx context.Context, c certificate.Certificate) (certificate.Certificate, error) {
 	rows, err := s.pool.Query(ctx, `
 		INSERT INTO certificates (serial, user_pk, username, subject, not_before, not_after, issued_by, key_source, der)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		VALUES ($1, NULLIF($2, 0), NULLIF($3, ''), $4, $5, $6, $7, $8, $9)
 		RETURNING `+certificateColumns,
 		c.Serial, c.UserPK, c.Username, c.Subject, c.NotBefore, c.NotAfter, c.IssuedBy, c.KeySource, c.DER,
 	)

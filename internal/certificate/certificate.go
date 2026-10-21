@@ -41,7 +41,9 @@ var (
 type Certificate struct {
 	// Serial is the lowercase hex serial number.
 	Serial string `json:"serial"`
-	// UserPK is the authentik primary key of the user the certificate is issued to.
+	// UserPK is the authentik primary key of the user the certificate is
+	// issued to. It is 0, and Username is empty, for an imported certificate
+	// assigned to no user (see Assigned).
 	UserPK   int    `json:"user_pk"`
 	Username string `json:"username"`
 	// Subject is the certificate's subject distinguished name.
@@ -63,6 +65,12 @@ type Certificate struct {
 	// Stored is set when DER is stored, so the certificate can be downloaded.
 	// Certificates issued before encodings were stored have none.
 	Stored bool `json:"stored"`
+}
+
+// Assigned reports whether the certificate belongs to a user. Only imported
+// certificates may belong to none; they can still be listed and revoked.
+func (c Certificate) Assigned() bool {
+	return c.UserPK != 0
 }
 
 // Status is the state of a certificate, for filtering lists.

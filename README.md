@@ -87,8 +87,12 @@ are listed and can be revoked through the CRL. Paste or load PEM certificates, u
 each is assigned to the active internal user or service account named by its common name, and a
 certificate holding a `urn:uuid:` URI SAN must match that account's UUID. Expired certificates,
 certificates of other CAs and already recorded serial numbers are rejected, CA certificates are
-skipped and private keys ignored. Imported certificates show the importing administrator as
-issuer, are revoked with their user like issued ones, and can be downloaded.
+skipped and private keys ignored. With **Import certificates without a matching account**
+checked, certificates whose account is missing, inactive or has another UUID, or that have no
+common name, are imported **assigned to no user** instead; they are listed as *Unassigned* and
+can only be downloaded and revoked by access administrators. Imported certificates show the
+importing administrator as issuer, are revoked with their user like issued ones, and can be
+downloaded.
 
 For development, `make example-ca` (or `scripts/example-ca.sh [dir] [common name] [days]`)
 creates a self-signed ECDSA P-256 CA in `ca/`, which git ignores; then set
@@ -333,7 +337,7 @@ the frontend, run `make build` again.
 | GET    | `/api/certificates`        | access administrators only; the certificates of all users, newest first, paginated: `?search=` (username substring or serial prefix), `?status=active\|revoked\|expired`, `?page=`, `?page_size=` |
 | GET    | `/api/certificates/{serial}/pem` | access administrators only; the certificate as PEM, without its key; 404 for certificates issued before certificates were stored |
 | POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |
-| POST   | `/api/certificates/import` | access administrators only; imports certificates the CA signed elsewhere: `{pem}`; returns `{results}`, each `{serial, subject}` with `certificate` when imported or `error` otherwise |
+| POST   | `/api/certificates/import` | access administrators only; imports certificates the CA signed elsewhere: `{pem, allow_unassigned}`; returns `{results}`, each `{serial, subject}` with `certificate` when imported (and `unassigned`, the reason, when assigned to no user; its `user_pk` is 0 and `username` empty) or `error` otherwise |
 | GET    | `/pki/crl`                 | DER certificate revocation list; no login required       |
 | GET    | `/pki/ca.pem`              | CA certificate chain; no login required                  |
 | GET    | `/healthz`                 | no login required                                        |

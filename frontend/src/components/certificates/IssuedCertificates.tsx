@@ -75,7 +75,11 @@ export function IssuedCertificates() {
     setError(null)
     try {
       const pem = await api.downloadCertificate(c.serial)
-      saveFile(pem, `${c.username}-${c.serial}.crt`, 'application/x-pem-file')
+      saveFile(
+        pem,
+        c.username ? `${c.username}-${c.serial}.crt` : `${c.serial}.crt`,
+        'application/x-pem-file',
+      )
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -85,7 +89,9 @@ export function IssuedCertificates() {
 
   async function revoke(c: Certificate) {
     const ok = await confirm({
-      title: `Revoke this certificate of ${c.username}?`,
+      title: c.username
+        ? `Revoke this certificate of ${c.username}?`
+        : 'Revoke this unassigned certificate?',
       message: 'It stops working wherever the CRL is checked. This cannot be undone.',
       confirmLabel: 'Revoke',
     })
@@ -94,7 +100,7 @@ export function IssuedCertificates() {
     setError(null)
     try {
       await api.revokeAnyCertificate(c.serial)
-      setNotice(`Certificate of ${c.username} revoked.`)
+      setNotice(c.username ? `Certificate of ${c.username} revoked.` : 'Certificate revoked.')
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -120,8 +126,9 @@ export function IssuedCertificates() {
         </Stack>
         <Typography variant="body2" color="text.secondary">
           Every client certificate issued by this application or imported, including those of
-          deleted users. Downloads contain the certificate only, never its private key; certificates
-          issued before downloads were added cannot be downloaded.
+          deleted users and imported ones assigned to no user. Downloads contain the certificate
+          only, never its private key; certificates issued before downloads were added cannot be
+          downloaded.
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
         <Stack direction="row" spacing={1.5} useFlexGap sx={{ flexWrap: 'wrap' }}>

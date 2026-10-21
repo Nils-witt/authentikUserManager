@@ -1,8 +1,10 @@
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
+import Checkbox from '@mui/material/Checkbox'
 import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import List from '@mui/material/List'
 import ListItem from '@mui/material/ListItem'
 import ListItemText from '@mui/material/ListItemText'
@@ -18,6 +20,17 @@ import { Modal } from '../common/Modal'
 /** Largest certificate file read into the form; the server accepts 1 MiB bodies. */
 const MAX_FILE_BYTES = 512 * 1024
 
+function resultText(r: ImportResult) {
+  if (!r.certificate) return `Not imported: ${r.error ?? 'unknown error'}`
+  if (r.unassigned) return `Imported without a user: ${r.unassigned}`
+  return `Imported for ${r.certificate.username}`
+}
+
+function resultColor(r: ImportResult) {
+  if (!r.certificate) return 'error'
+  return r.unassigned ? 'warning.main' : 'success.main'
+}
+
 interface ImportCertificatesDialogProps {
   onClose: () => void
   /** Called with the number of certificates imported, when there are any. */
@@ -30,6 +43,7 @@ interface ImportCertificatesDialogProps {
  */
 export function ImportCertificatesDialog({ onClose, onImported }: ImportCertificatesDialogProps) {
   const [pem, setPem] = useState('')
+  const [allowUnassigned, setAllowUnassigned] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
@@ -53,7 +67,7 @@ export function ImportCertificatesDialog({ onClose, onImported }: ImportCertific
     setError(null)
     setFieldError(null)
     try {
-      const res = await api.importCertificates(pem)
+      const res = await api.importCertificates(pem, allowUnassigned)
       setResults(res)
       const count = res.filter((r) => r.certificate).length
       if (count > 0) onImported(count)
@@ -73,14 +87,10 @@ export function ImportCertificatesDialog({ onClose, onImported }: ImportCertific
             {results.map((r, i) => (
               <ListItem key={`${i}-${r.serial}`} disableGutters>
                 <ListItemText
-                  primary={
-                    r.certificate
-                      ? `Imported for ${r.certificate.username}`
-                      : `Not imported: ${r.error ?? 'unknown error'}`
-                  }
+                  primary={resultText(r)}
                   secondary={`${r.subject} · serial ${r.serial}`}
                   slotProps={{
-                    primary: { color: r.certificate ? 'success.main' : 'error' },
+                    primary: { color: resultColor(r) },
                     secondary: { sx: { wordBreak: 'break-all' } },
                   }}
                 />
@@ -137,6 +147,15 @@ export function ImportCertificatesDialog({ onClose, onImported }: ImportCertific
                 onChange={(e) => void loadFile(e)}
               />
             </Button>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={allowUnassigned}
+                  onChange={(e) => setAllowUnassigned(e.target.checked)}
+                />
+              }
+              label="Import certificates without a matching account, assigned to no user, instead of rejecting them"
+            />
           </Stack>
         </DialogContent>
         <DialogActions>

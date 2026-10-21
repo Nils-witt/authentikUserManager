@@ -189,6 +189,7 @@ export type KeySource = 'generated' | 'csr' | 'imported'
 export interface Certificate {
   /** Lowercase hex serial number. */
   serial: string
+  /** 0, with an empty username, for an imported certificate assigned to no user. */
   user_pk: number
   username: string
   /** Subject distinguished name, e.g. "CN=ann". */
@@ -615,18 +616,22 @@ export interface ImportResult {
   subject: string
   /** The record of the imported certificate; absent when `error` is set. */
   certificate?: Certificate
+  /** Why the certificate was imported without a user; absent when it was assigned to one. */
+  unassigned?: string
   /** Why the certificate was not imported. */
   error?: string
 }
 
 /**
  * Imports PEM certificates the CA signed elsewhere, so they can be listed and revoked; only for
- * access administrators. Each is assigned to the account its common name names.
+ * access administrators. Each is assigned to the account its common name names; with
+ * `allowUnassigned`, those without such an account are imported without a user.
  */
-export const importCertificates = (pem: string) =>
-  request<{ results: ImportResult[] }>('POST', '/api/certificates/import', { pem }).then(
-    (res) => res.results,
-  )
+export const importCertificates = (pem: string, allowUnassigned: boolean) =>
+  request<{ results: ImportResult[] }>('POST', '/api/certificates/import', {
+    pem,
+    allow_unassigned: allowUnassigned,
+  }).then((res) => res.results)
 
 export const version = () => request<BuildInfo>('GET', '/api/version')
 

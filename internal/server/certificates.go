@@ -447,7 +447,8 @@ func (s *Server) downloadCertificate(w http.ResponseWriter, r *http.Request) {
 
 // revokeAnyCertificate revokes the certificate with the {serial} path value,
 // for access administrators. Unlike revokeCertificate it does not load the
-// user from authentik, so it also revokes the certificates of deleted users.
+// user from authentik, so it also revokes the certificates of deleted users
+// and those assigned to no user.
 func (s *Server) revokeAnyCertificate(w http.ResponseWriter, r *http.Request) {
 	serial := r.PathValue("serial")
 	if _, ok := pki.ParseSerial(serial); !ok {
@@ -461,17 +462,24 @@ func (s *Server) revokeAnyCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.keyDownloads.Delete(serial)
 	s.invalidateCRL()
-	s.recordUser(r, audit.ActionCertificateRevoked, &authentik.User{PK: c.UserPK, Username: c.Username},
-		map[string]string{"serial": serial})
+	if c.Assigned() {
+		s.recordUser(r, audit.ActionCertificateRevoked, &authentik.User{PK: c.UserPK, Username: c.Username},
+			map[string]string{"serial": serial})
+	} else {
+		s.record(r, audit.ActionCertificateRevoked, "", map[string]string{"serial": serial, "unassigned": "true"})
+	}
 	writeJSON(w, http.StatusOK, c)
 }
 
 // maxImport bounds the number of certificates imported by one request.
 const maxImport = 100
 
-// importCertificatesInput holds PEM certificates the CA signed outside this application.
+// importCertificatesInput holds PEM certificates the CA signed outside this
+// application. With AllowUnassigned, certificates whose account cannot be
+// resolved are imported without a user instead of being rejected.
 type importCertificatesInput struct {
-	PEM string `json:"pem"`
+	PEM             string `json:"pem"`
+	AllowUnassigned bool   `json:"allow_unassigned"`
 }
 
 // importResult tells whether one certificate of an import request was imported.
@@ -480,6 +488,9 @@ type importResult struct {
 	Subject string `json:"subject"`
 	// Certificate is the record of the imported certificate; nil when Error is set.
 	Certificate *certificate.Certificate `json:"certificate,omitempty"`
+	// Unassigned tells why the certificate was imported without a user; empty
+	// when it was assigned to one.
+	Unassigned string `json:"unassigned,omitempty"`
 	// Error tells why the certificate was not imported.
 	Error string `json:"error,omitempty"`
 }
@@ -488,9 +499,10 @@ type importResult struct {
 // openssl before this application was used, so that access administrators can
 // list, download and revoke them. Each certificate is assigned to the user or
 // service account named by its common name, which must be active and, when
-// the certificate holds a urn:uuid SAN, have that UUID. The CA certificates of
-// a bundle are skipped. Every certificate is imported or rejected on its own;
-// the response lists the outcome of each.
+// the certificate holds a urn:uuid SAN, have that UUID. Certificates without
+// such an account are rejected, or imported without a user when the request
+// allows it. The CA certificates of a bundle are skipped. Every certificate is
+// imported or rejected on its own; the response lists the outcome of each.
 func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 	var in importCertificatesInput
 	if !decodeJSON(w, r, &in) {
@@ -510,11 +522,14 @@ func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		res := importResult{Serial: pki.SerialText(cert.SerialNumber), Subject: cert.Subject.String()}
-		record, err := s.importCertificate(r, cert, now, owners)
+		record, unassigned, err := s.importCertificate(r, cert, now, owners, in.AllowUnassigned)
 		if err != nil {
 			res.Error = err.Error()
 		} else {
 			res.Certificate = &record
+			if unassigned != nil {
+				res.Unassigned = unassigned.Error()
+			}
 		}
 		results = append(results, res)
 	}
@@ -529,67 +544,95 @@ func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 }
 
 // importCertificate records cert for the account its subject names, looking
-// accounts up through owners. The error is safe to show users.
+// accounts up through owners. When there is no such account and
+// allowUnassigned is set, it records cert without a user and returns why as
+// unassigned. Both errors are safe to show users.
 func (s *Server) importCertificate(
 	r *http.Request,
 	cert *x509.Certificate,
 	now time.Time,
 	owners map[string]*authentik.User,
-) (certificate.Certificate, error) {
+	allowUnassigned bool,
+) (record certificate.Certificate, unassigned, err error) {
 	if err := s.ca.CheckIssued(cert, now); err != nil {
-		return certificate.Certificate{}, err
+		return certificate.Certificate{}, nil, err
 	}
-	subject := pki.IssuedSubject(cert)
-	if subject.Username == "" {
-		return certificate.Certificate{}, errors.New("it has no common name naming its user")
+	user, unassigned, err := s.certificateOwner(r, pki.IssuedSubject(cert), owners)
+	if err != nil {
+		return certificate.Certificate{}, nil, err
 	}
-	user, ok := owners[subject.Username]
-	if !ok {
-		var err error
-		if user, err = s.findCertificateOwner(r, subject.Username); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				s.logger.ErrorContext(r.Context(), "looking up certificate owner", slog.Any("error", err))
-			}
-			return certificate.Certificate{}, errors.New("looking up its user in authentik failed")
-		}
-		owners[subject.Username] = user
-	}
-	switch {
-	case user == nil:
-		return certificate.Certificate{}, fmt.Errorf("there is no user or service account named %q", subject.Username)
-	case !user.IsActive:
-		return certificate.Certificate{}, fmt.Errorf("the account %q is inactive", subject.Username)
-	case subject.UUID != "" && !strings.EqualFold(subject.UUID, user.UUID):
-		// The username was given to another account since: the certificate was
-		// revoked when the account was renamed or deleted, or must be.
-		return certificate.Certificate{}, fmt.Errorf("it was issued to another account named %q", subject.Username)
+	if unassigned != nil && !allowUnassigned {
+		return certificate.Certificate{}, nil, unassigned
 	}
 
-	record, err := s.certificates.CreateCertificate(r.Context(), certificate.Certificate{
+	c := certificate.Certificate{
 		Serial:    pki.SerialText(cert.SerialNumber),
-		UserPK:    user.PK,
-		Username:  user.Username,
 		Subject:   cert.Subject.String(),
 		NotBefore: cert.NotBefore,
 		NotAfter:  cert.NotAfter,
 		IssuedBy:  actorName(r),
 		KeySource: certificate.KeySourceImported,
 		DER:       cert.Raw,
-	})
+	}
+	if user != nil {
+		c.UserPK, c.Username = user.PK, user.Username
+	}
+	record, err = s.certificates.CreateCertificate(r.Context(), c)
 	if errors.Is(err, certificate.ErrExists) {
-		return certificate.Certificate{}, errors.New("it is already recorded")
+		return certificate.Certificate{}, nil, errors.New("it is already recorded")
 	}
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(r.Context(), "importing certificate", slog.Any("error", err))
 		}
-		return certificate.Certificate{}, errors.New("saving it failed")
+		return certificate.Certificate{}, nil, errors.New("saving it failed")
 	}
-	s.recordUser(r, audit.ActionCertificateImported, user, map[string]string{
+	details := map[string]string{
 		"serial":    record.Serial,
 		"not_after": record.NotAfter.UTC().Format(time.RFC3339),
-	})
-	return record, nil
+	}
+	if user == nil {
+		details["unassigned"] = unassigned.Error()
+		s.record(r, audit.ActionCertificateImported, "", details)
+	} else {
+		s.recordUser(r, audit.ActionCertificateImported, user, details)
+	}
+	return record, unassigned, nil
+}
+
+// certificateOwner returns the active account a certificate for subject
+// belongs to, looking accounts up through owners. When there is none, it
+// returns nil and the reason as unassigned. err is set when the lookup failed.
+// Both errors are safe to show users.
+func (s *Server) certificateOwner(
+	r *http.Request,
+	subject pki.Subject,
+	owners map[string]*authentik.User,
+) (user *authentik.User, unassigned, err error) {
+	if subject.Username == "" {
+		return nil, errors.New("it has no common name naming its user"), nil
+	}
+	user, ok := owners[subject.Username]
+	if !ok {
+		if user, err = s.findCertificateOwner(r, subject.Username); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.ErrorContext(r.Context(), "looking up certificate owner", slog.Any("error", err))
+			}
+			return nil, nil, errors.New("looking up its user in authentik failed")
+		}
+		owners[subject.Username] = user
+	}
+	switch {
+	case user == nil:
+		return nil, fmt.Errorf("there is no user or service account named %q", subject.Username), nil
+	case !user.IsActive:
+		return nil, fmt.Errorf("the account %q is inactive", subject.Username), nil
+	case subject.UUID != "" && !strings.EqualFold(subject.UUID, user.UUID):
+		// The username was given to another account since: the certificate was
+		// revoked when the account was renamed or deleted, or must be.
+		return nil, fmt.Errorf("it was issued to another account named %q", subject.Username), nil
+	}
+	return user, nil, nil
 }
 
 // findCertificateOwner returns the internal user or service account with

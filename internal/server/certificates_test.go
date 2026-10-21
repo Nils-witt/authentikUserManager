@@ -785,6 +785,7 @@ type importResponse struct {
 		Serial      string                   `json:"serial"`
 		Subject     string                   `json:"subject"`
 		Certificate *certificate.Certificate `json:"certificate"`
+		Unassigned  string                   `json:"unassigned"`
 		Error       string                   `json:"error"`
 	} `json:"results"`
 }
@@ -892,6 +893,81 @@ func checkImportRecorded(t *testing.T, env *certEnv, out importResponse) {
 	}
 }
 
+func TestCertificates_importUnassigned(t *testing.T) {
+	t.Parallel()
+	env := newCertServer(t, importUsers(), "admins")
+	now := time.Now()
+	annPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann"}, now)
+	renamedPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann", UUID: "00000000-0000-4000-8000-000000000000"}, now)
+	inactivePEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ian"}, now)
+	unknownPEM, unknownCert := signPEM(t, env.ca, pki.Subject{Username: "zoe"}, now)
+	expiredPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "zoe"}, now.Add(-2*time.Hour))
+
+	body, err := json.Marshal(map[string]any{
+		"pem":              annPEM + renamedPEM + inactivePEM + unknownPEM + expiredPEM,
+		"allow_unassigned": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", string(body))
+	var out importResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("import = %d %s", rec.Code, rec.Body)
+	}
+	tests := []struct {
+		wantUser       string
+		wantUnassigned string
+		wantError      string
+	}{
+		{wantUser: "ann"},
+		{wantUnassigned: `it was issued to another account named "ann"`},
+		{wantUnassigned: `the account "ian" is inactive`},
+		{wantUnassigned: `there is no user or service account named "zoe"`},
+		// Unassigned imports still need a valid certificate of the CA.
+		{wantError: "it has expired"},
+	}
+	if len(out.Results) != len(tests) {
+		t.Fatalf("results = %+v, want %d of them", out.Results, len(tests))
+	}
+	for i, tt := range tests {
+		got := out.Results[i]
+		if got.Error != tt.wantError || got.Unassigned != tt.wantUnassigned {
+			t.Errorf("result %d = %+v, want unassigned %q, error %q", i, got, tt.wantUnassigned, tt.wantError)
+			continue
+		}
+		if tt.wantError == "" && (got.Certificate.Username != tt.wantUser || got.Certificate.Assigned() != (tt.wantUser != "")) {
+			t.Errorf("result %d = %+v, want the certificate assigned to %q", i, got.Certificate, tt.wantUser)
+		}
+	}
+	e := env.log.recorded[3]
+	if e.Action != audit.ActionCertificateImported || e.Target != "" || e.Details["user_id"] != "" ||
+		e.Details["unassigned"] != tests[3].wantUnassigned {
+		t.Errorf("audit entry = %+v, want an unassigned import", e)
+	}
+
+	checkRevokeUnassigned(t, env, unknownCert)
+}
+
+// checkRevokeUnassigned checks that access administrators revoke cert, an
+// unassigned certificate, like any other.
+func checkRevokeUnassigned(t *testing.T, env *certEnv, cert *x509.Certificate) {
+	t.Helper()
+	serial := pki.SerialText(cert.SerialNumber)
+	if rec := do(t, env.srv, http.MethodPost, "/api/certificates/"+serial+"/revoke", ""); rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", rec.Code, rec.Body)
+	}
+	last := env.log.recorded[len(env.log.recorded)-1]
+	if last.Action != audit.ActionCertificateRevoked || last.Target != "" || last.Details["serial"] != serial ||
+		last.Details["user_id"] != "" {
+		t.Errorf("audit entry = %+v, want the revocation of the unassigned certificate", last)
+	}
+	crl := fetchCRL(t, env)
+	if len(crl.RevokedCertificateEntries) != 1 || crl.RevokedCertificateEntries[0].SerialNumber.Cmp(cert.SerialNumber) != 0 {
+		t.Errorf("CRL = %v, want the unassigned certificate", crl.RevokedCertificateEntries)
+	}
+}
+
 func TestCertificates_importRejected(t *testing.T) {
 	t.Parallel()
 	env := newCertServer(t, importUsers(), "admins")
@@ -942,7 +1018,9 @@ func TestCertificates_importFailures(t *testing.T) {
 			env := newCertServer(t, users, "admins")
 			env.certs.err = tt.storeErr
 			annPEM, _ := signPEM(t, env.ca, pki.Subject{Username: "ann"}, time.Now())
-			rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", importBody(t, annPEM+annPEM))
+			// A failed lookup is not taken for a missing account.
+			body := `{"allow_unassigned":true,` + importBody(t, annPEM+annPEM)[1:]
+			rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", body)
 			var out importResponse
 			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK {
 				t.Fatalf("import = %d %s", rec.Code, rec.Body)
