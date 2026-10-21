@@ -36,8 +36,9 @@ const MinPasswordLen = 8
 // clockSkew backdates NotBefore so clients with slightly wrong clocks accept new certificates.
 const clockSkew = time.Minute
 
-// crlLifetime is how long a CRL is valid; clients fetch a new one after it.
-const crlLifetime = 30 * 24 * time.Hour
+// DefaultCRLValidity is how long a CRL is valid when Options.CRLValidity is
+// unset; clients fetch a new one after it.
+const DefaultCRLValidity = 30 * 24 * time.Hour
 
 // pkcs12Iterations is the PBKDF2 iteration count of PKCS#12 bundles; the
 // library default of 2048 is too low for user-chosen passwords.
@@ -53,6 +54,9 @@ type Options struct {
 	Validity time.Duration
 	// CRLURL, when set, is embedded in issued certificates as their CRL distribution point.
 	CRLURL string
+	// CRLValidity is how long each CRL is valid, from its signing to its next
+	// update; zero means DefaultCRLValidity.
+	CRLValidity time.Duration
 }
 
 // CA signs user certificates and revocation lists. It is safe for concurrent use.
@@ -73,6 +77,12 @@ type CA struct {
 func LoadCA(certPEM, keyPEM []byte, opts Options) (*CA, error) {
 	if opts.Validity <= 0 {
 		return nil, errors.New("pki: validity must be positive")
+	}
+	switch {
+	case opts.CRLValidity < 0:
+		return nil, errors.New("pki: crl validity must not be negative")
+	case opts.CRLValidity == 0:
+		opts.CRLValidity = DefaultCRLValidity
 	}
 	chain, err := parseCertificates(certPEM)
 	if err != nil {
@@ -446,7 +456,7 @@ type Revoked struct {
 }
 
 // CRL returns a DER certificate revocation list of revoked, valid from now for
-// 30 days. Its CRL number is derived from now, so it grows with every new CRL.
+// Options.CRLValidity. Its CRL number is derived from now, so it grows with every new CRL.
 func (ca *CA) CRL(revoked []Revoked, now time.Time) ([]byte, error) {
 	entries := make([]x509.RevocationListEntry, 0, len(revoked))
 	for _, r := range revoked {
@@ -456,7 +466,7 @@ func (ca *CA) CRL(revoked []Revoked, now time.Time) ([]byte, error) {
 		RevokedCertificateEntries: entries,
 		Number:                    big.NewInt(now.UnixNano()),
 		ThisUpdate:                now,
-		NextUpdate:                now.Add(crlLifetime),
+		NextUpdate:                now.Add(ca.opts.CRLValidity),
 	}, ca.cert, ca.signer)
 	if err != nil {
 		return nil, fmt.Errorf("pki: signing crl: %w", err)

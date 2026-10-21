@@ -94,18 +94,22 @@ func TestFromEnv_certificates(t *testing.T) {
 		name         string
 		overrides    map[string]string
 		wantValidity time.Duration
+		wantCRL      time.Duration
 		wantErr      bool
 	}{
-		{name: "disabled", wantValidity: 365 * 24 * time.Hour},
+		{name: "disabled", wantValidity: 365 * 24 * time.Hour, wantCRL: 30 * 24 * time.Hour},
 		{
 			name:         "enabled",
-			overrides:    map[string]string{"CA_CERT_FILE": "ca.crt", "CA_KEY_FILE": "ca.key", "CERT_VALIDITY_DAYS": "30", "CERT_CRL_URL": "https://am.example.com/pki/crl"},
+			overrides:    map[string]string{"CA_CERT_FILE": "ca.crt", "CA_KEY_FILE": "ca.key", "CERT_VALIDITY_DAYS": "30", "CERT_CRL_URL": "https://am.example.com/pki/crl", "CERT_CRL_VALIDITY_DAYS": "7"},
 			wantValidity: 30 * 24 * time.Hour,
+			wantCRL:      7 * 24 * time.Hour,
 		},
 		{name: "cert without key", overrides: map[string]string{"CA_CERT_FILE": "ca.crt"}, wantErr: true},
 		{name: "key without cert", overrides: map[string]string{"CA_KEY_FILE": "ca.key"}, wantErr: true},
 		{name: "zero validity", overrides: map[string]string{"CERT_VALIDITY_DAYS": "0"}, wantErr: true},
 		{name: "validity too long", overrides: map[string]string{"CERT_VALIDITY_DAYS": "3651"}, wantErr: true},
+		{name: "zero crl validity", overrides: map[string]string{"CERT_CRL_VALIDITY_DAYS": "0"}, wantErr: true},
+		{name: "crl validity too long", overrides: map[string]string{"CERT_CRL_VALIDITY_DAYS": "366"}, wantErr: true},
 		{name: "relative crl url", overrides: map[string]string{"CERT_CRL_URL": "/pki/crl"}, wantErr: true},
 		{name: "ldap crl url", overrides: map[string]string{"CERT_CRL_URL": "ldap://example.com/crl"}, wantErr: true},
 	}
@@ -119,6 +123,9 @@ func TestFromEnv_certificates(t *testing.T) {
 			}
 			if !tt.wantErr && cfg.CertValidity != tt.wantValidity {
 				t.Errorf("CertValidity = %v, want %v", cfg.CertValidity, tt.wantValidity)
+			}
+			if !tt.wantErr && cfg.CertCRLValidity != tt.wantCRL {
+				t.Errorf("CertCRLValidity = %v, want %v", cfg.CertCRLValidity, tt.wantCRL)
 			}
 		})
 	}

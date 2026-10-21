@@ -36,6 +36,7 @@ Set these environment variables (see `.env.example`):
 | `CA_KEY_FILE`     | with `CA_CERT_FILE` |       | PEM file of the CA's unencrypted private key (PKCS#8, PKCS#1 or SEC 1) |
 | `CERT_VALIDITY_DAYS` | no    | `365`            | Days client certificates are valid (at most 3650, and never beyond the CA's expiry) |
 | `CERT_CRL_URL`    | no       |                  | Public URL of `/pki/crl`, embedded in client certificates as their CRL distribution point |
+| `CERT_CRL_VALIDITY_DAYS` | no | `30`             | Days each CRL is valid until its next update (at most 365) |
 
 The token's user needs permission to view, add, change and delete users, to view and change groups, and to add users to groups and remove them. To manage the tokens of [service accounts](#service-accounts) it must be a superuser: authentik assigns tokens created by other users to themselves.
 
@@ -79,7 +80,7 @@ certificate under **Issued certificates**, download it (the certificate only, ne
 not for certificates issued before this was added) and revoke it, including the certificates of
 deleted users. Revoked
 certificates are listed in the CRL at `/pki/crl` (as PEM at `/pki/crl.pem`) until they expire; each
-CRL is valid for 30 days. The CA chain is at
+CRL is valid for `CERT_CRL_VALIDITY_DAYS` (30 by default). The CA chain is at
 `/pki/ca.pem`. All are public, so relying parties can fetch them without a login.
 
 Access administrators can also **import** certificates the CA signed outside this application

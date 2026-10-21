@@ -25,6 +25,7 @@
 //	CA_KEY_FILE          PEM file of the CA's unencrypted private key (required with CA_CERT_FILE)
 //	CERT_VALIDITY_DAYS   days user certificates are valid (default 365)
 //	CERT_CRL_URL         public URL of this app's /pki/crl, embedded in user certificates (optional)
+//	CERT_CRL_VALIDITY_DAYS days each CRL is valid until its next update (default 30)
 package main
 
 import (
@@ -186,7 +187,11 @@ func loadCA(cfg config.Config) (*pki.CA, error) {
 		return nil, fmt.Errorf("reading CA_KEY_FILE: %w", err)
 	}
 	defer clear(keyPEM)
-	ca, err := pki.LoadCA(certPEM, keyPEM, pki.Options{Validity: cfg.CertValidity, CRLURL: cfg.CertCRLURL})
+	ca, err := pki.LoadCA(certPEM, keyPEM, pki.Options{
+		Validity:    cfg.CertValidity,
+		CRLURL:      cfg.CertCRLURL,
+		CRLValidity: cfg.CertCRLValidity,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("loading certificate authority: %w", err)
 	}

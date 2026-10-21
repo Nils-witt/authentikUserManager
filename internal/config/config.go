@@ -51,6 +51,8 @@ type Config struct {
 	// CertCRLURL, when set, is the public URL of the CRL (this app's /pki/crl),
 	// embedded in issued certificates.
 	CertCRLURL string
+	// CertCRLValidity is how long each signed CRL is valid until its next update.
+	CertCRLValidity time.Duration
 }
 
 const defaultListenAddr = "127.0.0.1:8080"
@@ -62,6 +64,12 @@ const maxAuditRetentionDays = 36500
 const (
 	defaultCertValidityDays = 365
 	maxCertValidityDays     = 3650
+)
+
+// Bounds and default of CERT_CRL_VALIDITY_DAYS.
+const (
+	defaultCRLValidityDays = 30
+	maxCRLValidityDays     = 365
 )
 
 // FromEnv reads the configuration from the environment, using getenv
@@ -114,7 +122,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.AuditRetention = retention
-	errs = append(errs, cfg.parseCertificates(getenv("CERT_VALIDITY_DAYS"))...)
+	errs = append(errs, cfg.parseCertificates(getenv("CERT_VALIDITY_DAYS"), getenv("CERT_CRL_VALIDITY_DAYS"))...)
 	if cfg.StaticDir != "" {
 		if fi, err := os.Stat(cfg.StaticDir); err != nil || !fi.IsDir() {
 			errs = append(errs, fmt.Errorf("STATIC_DIR %q is not a readable directory", cfg.StaticDir))
@@ -132,8 +140,9 @@ func parseRetention(v string) (time.Duration, error) {
 }
 
 // parseCertificates validates the CA files and the CRL URL, and sets
-// CertValidity from validityDays (CERT_VALIDITY_DAYS).
-func (cfg *Config) parseCertificates(validityDays string) []error {
+// CertValidity from validityDays (CERT_VALIDITY_DAYS) and CertCRLValidity from
+// crlValidityDays (CERT_CRL_VALIDITY_DAYS).
+func (cfg *Config) parseCertificates(validityDays, crlValidityDays string) []error {
 	var errs []error
 	if (cfg.CACertFile == "") != (cfg.CAKeyFile == "") {
 		errs = append(errs, errors.New("CA_CERT_FILE and CA_KEY_FILE must be set together"))
@@ -143,6 +152,11 @@ func (cfg *Config) parseCertificates(validityDays string) []error {
 		errs = append(errs, err)
 	}
 	cfg.CertValidity = validity
+	crlValidity, err := parseDays("CERT_CRL_VALIDITY_DAYS", crlValidityDays, defaultCRLValidityDays, maxCRLValidityDays)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.CertCRLValidity = crlValidity
 	if cfg.CertCRLURL != "" {
 		u, err := url.Parse(cfg.CertCRLURL)
 		if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {

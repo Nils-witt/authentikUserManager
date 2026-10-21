@@ -534,3 +534,21 @@ func TestCA_CRL(t *testing.T) {
 		t.Errorf("CRL number %v did not grow from %v", laterCRL.Number, crl.Number)
 	}
 }
+
+func TestCA_CRLValidity(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, ecKey(t), true, caUsage, 24*time.Hour)
+	loaded := loadCA(t, ca, pki.Options{Validity: time.Hour, CRLValidity: 7 * 24 * time.Hour})
+	now := time.Now().Truncate(time.Second)
+	der, err := loaded.CRL(nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl, err := x509.ParseRevocationList(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(7 * 24 * time.Hour); !crl.NextUpdate.Equal(want) {
+		t.Errorf("NextUpdate = %v, want %v", crl.NextUpdate, want)
+	}
+}
