@@ -553,7 +553,7 @@ func TestServer_listUsers_internalOnly(t *testing.T) {
 	}
 }
 
-func TestServer_listUserPaths(t *testing.T) {
+func TestServer_listAccountPaths(t *testing.T) {
 	t.Parallel()
 	inGroup := func(username, path, group string) authentik.User {
 		return authentik.User{
@@ -631,7 +631,43 @@ func TestServer_listUserPaths(t *testing.T) {
 	}
 }
 
-func TestServer_listUserPaths_scopeFilters(t *testing.T) {
+func TestServer_listAccountPaths_serviceAccounts(t *testing.T) {
+	t.Parallel()
+	account := func(username, path, group string, typ authentik.UserType) authentik.User {
+		return authentik.User{
+			Username: username,
+			Path:     path,
+			Type:     typ,
+			Groups:   []authentik.UserGroup{{Name: group}},
+		}
+	}
+	fake := &fakeUsers{listed: []authentik.User{
+		account("ci", "service-accounts/ci", "staff", authentik.UserTypeServiceAccount),
+		account("backup", "service-accounts", "staff", authentik.UserTypeServiceAccount),
+		account("other", "service-accounts/other", "guests", authentik.UserTypeServiceAccount),
+		account("ann", "users", "staff", authentik.UserTypeInternal),
+		// The operator's own account is no service account, so its folder is left out.
+		account("admin", "own", "guests", authentik.UserTypeInternal),
+	}}
+	rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodGet, "/api/service-accounts/paths", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body)
+	}
+	var body struct {
+		Paths []string `json:"paths"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	if want := []string{"service-accounts", "service-accounts/ci"}; !slices.Equal(body.Paths, want) {
+		t.Errorf("paths = %v, want %v", body.Paths, want)
+	}
+	if p := fake.listCalls[0]; !slices.Equal(p.Type, []authentik.UserType{authentik.UserTypeServiceAccount}) {
+		t.Errorf("Type = %v, want [service_account]", p.Type)
+	}
+}
+
+func TestServer_listAccountPaths_scopeFilters(t *testing.T) {
 	t.Parallel()
 	fake := &fakeUsers{}
 	rec := do(t, newScopedServer(t, fake, "helpdesk"), http.MethodGet, "/api/users/paths", "")
@@ -651,7 +687,7 @@ func TestServer_listUserPaths_scopeFilters(t *testing.T) {
 	}
 }
 
-func TestServer_listUserPaths_noAccess(t *testing.T) {
+func TestServer_listAccountPaths_noAccess(t *testing.T) {
 	t.Parallel()
 	rec := do(t, newScopedServer(t, &fakeUsers{}, "guests"), http.MethodGet, "/api/users/paths", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"paths":[]`) {

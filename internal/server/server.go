@@ -239,7 +239,7 @@ func New(d Deps) *Server {
 	api.Handle("GET /api/audit", s.requireAdmin(s.listAudit))
 	api.HandleFunc("GET /api/users", s.listAccounts(userAccounts))
 	api.HandleFunc("POST /api/users", s.createAccount(userAccounts))
-	api.HandleFunc("GET /api/users/paths", s.listUserPaths)
+	api.HandleFunc("GET /api/users/paths", s.listAccountPaths(userAccounts))
 	api.HandleFunc("GET /api/users/{id}", s.getAccount(userAccounts))
 	api.HandleFunc("PATCH /api/users/{id}", s.updateAccount(userAccounts))
 	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteAccount(userAccounts)))
@@ -250,6 +250,7 @@ func New(d Deps) *Server {
 	// Service accounts follow the access rules of users; see serviceaccounts.go.
 	api.HandleFunc("GET /api/service-accounts", s.listAccounts(serviceAccounts))
 	api.HandleFunc("POST /api/service-accounts", s.createAccount(serviceAccounts))
+	api.HandleFunc("GET /api/service-accounts/paths", s.listAccountPaths(serviceAccounts))
 	api.HandleFunc("GET /api/service-accounts/{id}", s.getAccount(serviceAccounts))
 	api.HandleFunc("PATCH /api/service-accounts/{id}", s.updateAccount(serviceAccounts))
 	api.Handle("DELETE /api/service-accounts/{id}", s.requireAdmin(s.deleteAccount(serviceAccounts)))

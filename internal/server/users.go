@@ -411,10 +411,16 @@ func (s *Server) visibleAccounts(r *http.Request, scope access.Scope, types ...a
 	}
 }
 
-// listUserPaths returns every distinct path of the internal users the operator
-// may see, so folders holding only hidden users, users outside the scope or
-// other account types are left out.
-func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
+// listAccountPaths returns a handler listing every distinct path of the
+// accounts of kind k the operator may see, so folders holding only hidden
+// accounts, accounts outside the scope or other account types are left out.
+func (s *Server) listAccountPaths(k accountKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.listAccountPathsOf(w, r, k)
+	}
+}
+
+func (s *Server) listAccountPathsOf(w http.ResponseWriter, r *http.Request, k accountKind) {
 	scope, ok := s.scope(w, r)
 	if !ok {
 		return
@@ -424,24 +430,24 @@ func (s *Server) listUserPaths(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string][]string{"paths": {}})
 		return
 	}
-	users, err := s.visibleAccounts(r, scope, userAccounts.typ)
+	accounts, err := s.visibleAccounts(r, scope, k.typ)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
 	// Operators see their own account outside their scope too, so its folder must not be empty.
-	self, err := s.ownAccountOutsideScope(r, userAccounts, authentik.ListUsersParams{}, scope)
+	self, err := s.ownAccountOutsideScope(r, k, authentik.ListUsersParams{}, scope)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
 		return
 	}
 	if self != nil {
-		users = append(users, *self)
+		accounts = append(accounts, *self)
 	}
 	paths := []string{}
-	for _, u := range users {
-		if u.Path != "" {
-			paths = append(paths, u.Path)
+	for _, a := range accounts {
+		if a.Path != "" {
+			paths = append(paths, a.Path)
 		}
 	}
 	slices.Sort(paths)

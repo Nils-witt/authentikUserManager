@@ -2,15 +2,18 @@ import { useEffect, useState } from 'react'
 import * as api from '../api'
 import { errorMessage } from '../errors'
 
-/** Loads the user folders; bump `version` after mutations, since a user's path may have changed. */
-export function useUserPaths(version: number) {
+/**
+ * Loads the user folders, or those of service accounts with `list`; bump `version` after mutations,
+ * since an account's path may have changed. `list` must be a stable function, such as one exported
+ * by the api module.
+ */
+export function useUserPaths(version: number, list: () => Promise<string[]> = api.listUserPaths) {
   const [paths, setPaths] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    api
-      .listUserPaths()
+    list()
       .then((list) => {
         if (cancelled) return
         setPaths(list)
@@ -22,7 +25,7 @@ export function useUserPaths(version: number) {
     return () => {
       cancelled = true
     }
-  }, [version])
+  }, [list, version])
 
   return { paths, error }
 }

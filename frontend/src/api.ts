@@ -375,6 +375,10 @@ export const listServiceAccounts = (params: AccountListParams) =>
 export const listUserPaths = () =>
   request<{ paths: string[] }>('GET', '/api/users/paths').then((res) => res.paths)
 
+/** Every distinct service account path (folder), e.g. "service-accounts". */
+export const listServiceAccountPaths = () =>
+  request<{ paths: string[] }>('GET', '/api/service-accounts/paths').then((res) => res.paths)
+
 export const access = () => request<Access>('GET', '/api/access')
 
 export const listRules = () =>

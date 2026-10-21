@@ -1,3 +1,4 @@
+import Box from '@mui/material/Box'
 import Container from '@mui/material/Container'
 import DialogContent from '@mui/material/DialogContent'
 import Typography from '@mui/material/Typography'
@@ -10,10 +11,12 @@ import { useConfirm } from '../../hooks/useConfirm'
 import { useGroupNames } from '../../hooks/useGroupNames'
 import { useUserFilters } from '../../hooks/useUserFilters'
 import { useUserList } from '../../hooks/useUserList'
+import { useUserPaths } from '../../hooks/useUserPaths'
 import { CertificateManager } from '../certificates/CertificateManager'
 import { ListPagination } from '../common/ListPagination'
 import { Modal } from '../common/Modal'
 import { NoticeSnackbar } from '../common/NoticeSnackbar'
+import { FolderTree } from '../folders/FolderTree'
 import { StatusAlerts } from '../users/StatusAlerts'
 import { UserForm } from '../users/UserForm'
 import { UserTable } from '../users/UserTable'
@@ -38,12 +41,8 @@ export function ServiceAccounts() {
   const [confirm, confirmDialog] = useConfirm()
   const filters = useUserFilters()
   const { access, noAccess, accessError, version, refresh } = useAppContext()
-  // Service accounts have no folder tree; their list ignores the users' folder.
-  const {
-    data,
-    loading,
-    error: listError,
-  } = useUserList({ ...filters, folder: null }, version, api.listServiceAccounts)
+  const { data, loading, error: listError } = useUserList(filters, version, api.listServiceAccounts)
+  const { paths, error: pathsError } = useUserPaths(version, api.listServiceAccountPaths)
   const isAdmin = access?.admin ?? false
   const groupNames = useGroupNames(isAdmin)
   // Restricted operators may only use the groups they manage.
@@ -113,31 +112,48 @@ export function ServiceAccounts() {
         />
 
         <StatusAlerts
-          errors={[actionError, listError, accessError]}
+          errors={[actionError, listError, pathsError, accessError]}
           access={access}
           noAccess={noAccess}
         />
 
-        <UserTable
-          noun={NOUN}
-          users={data?.results}
-          loading={loading}
-          canSendRecovery={false}
-          canManageCertificates={access?.certificates ?? false}
-          canDelete={isAdmin}
-          onEdit={(account) => setDialog({ kind: 'edit', account })}
-          onToggleActive={(account) => void toggleActive(account)}
-          onSendRecovery={() => undefined}
-          onTokens={(account) => setDialog({ kind: 'tokens', account })}
-          onCertificates={(account) => setDialog({ kind: 'certificates', account })}
-          onDelete={(account) => void remove(account)}
-        />
-        <ListPagination
-          pagination={data?.pagination}
-          page={filters.page}
-          onChange={filters.setPage}
-          noun={`${NOUN}s`}
-        />
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: '240px minmax(0, 1fr)' },
+            gap: 2,
+            alignItems: 'start',
+          }}
+        >
+          <FolderTree
+            paths={paths}
+            selected={filters.folder}
+            onSelect={filters.selectFolder}
+            noun={`${NOUN}s`}
+          />
+          <Box component="section">
+            <UserTable
+              noun={NOUN}
+              users={data?.results}
+              loading={loading}
+              canSendRecovery={false}
+              canManageCertificates={access?.certificates ?? false}
+              canDelete={isAdmin}
+              onEdit={(account) => setDialog({ kind: 'edit', account })}
+              onToggleActive={(account) => void toggleActive(account)}
+              onSendRecovery={() => undefined}
+              onTokens={(account) => setDialog({ kind: 'tokens', account })}
+              onCertificates={(account) => setDialog({ kind: 'certificates', account })}
+              onDelete={(account) => void remove(account)}
+            />
+            <ListPagination
+              pagination={data?.pagination}
+              page={filters.page}
+              onChange={filters.setPage}
+              noun={`${NOUN}s`}
+            />
+          </Box>
+        </Box>
       </Container>
 
       <NoticeSnackbar notice={notice} onClose={() => setNotice(null)} />
@@ -146,7 +162,7 @@ export function ServiceAccounts() {
       {dialog?.kind === 'create' && (
         <UserForm
           noun={NOUN}
-          defaultPath="service-accounts"
+          defaultPath={filters.folder ?? 'service-accounts'}
           groups={groups}
           canHide={isAdmin}
           onClose={() => setDialog(null)}
