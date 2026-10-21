@@ -79,6 +79,29 @@ func TestStore_createCertificate(t *testing.T) {
 	}
 }
 
+func TestStore_createRevokedCertificate(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+	revokedAt := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
+	c := certificate.Certificate{
+		Serial:    "e" + strings.Repeat("0", 20) + strconv.Itoa(uniqueUserPK()),
+		Subject:   "CN=old",
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  time.Now().Add(time.Hour),
+		IssuedBy:  "admin",
+		KeySource: certificate.KeySourceImported,
+		RevokedAt: &revokedAt,
+		RevokedBy: "admin",
+	}
+	created, err := s.CreateCertificate(ctx, c)
+	if err != nil || created.RevokedAt == nil || !created.RevokedAt.Equal(revokedAt) || created.RevokedBy != "admin" {
+		t.Fatalf("CreateCertificate(revoked) = %+v, %v, want it revoked by admin at %v", created, err, revokedAt)
+	}
+	if _, err := s.RevokeCertificate(ctx, c.Serial, "admin"); !errors.Is(err, certificate.ErrRevoked) {
+		t.Errorf("RevokeCertificate = %v, want ErrRevoked", err)
+	}
+}
+
 func TestStore_createUnassignedCertificate(t *testing.T) {
 	s := openTestStore(t)
 	ctx := t.Context()

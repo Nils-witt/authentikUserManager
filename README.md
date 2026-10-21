@@ -99,7 +99,10 @@ each is assigned to the active internal user or service account named by its com
 `prefix+` unless an account is named with it), and a
 certificate holding a `urn:uuid:` URI SAN must match that account's UUID. Expired certificates,
 certificates of other CAs and already recorded serial numbers are rejected, CA certificates are
-skipped and private keys ignored. With **Import certificates without a matching account**
+skipped and private keys ignored. With **Revoke the imported certificates right away** checked,
+they are recorded as revoked by the importing administrator, so the CRL lists them at once, e.g.
+to withdraw certificates signed before this application was used; this cannot be undone. With
+**Import certificates without a matching account**
 checked, certificates whose account is missing, inactive or has another UUID, or that have no
 common name, are imported **assigned to no user** instead; they are listed as *Unassigned* and
 can only be downloaded and revoked by access administrators. **Assign** assigns such a

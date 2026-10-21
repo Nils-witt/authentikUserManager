@@ -1040,6 +1040,55 @@ func TestCertificates_importWithCNSuffix(t *testing.T) {
 	checkImportRecorded(t, env, out)
 }
 
+func TestCertificates_importRevoked(t *testing.T) {
+	t.Parallel()
+	env := newCertServer(t, importUsers(), "admins")
+	now := time.Now()
+	annPEM, annCert := signPEM(t, env.ca, pki.Subject{Username: "ann"}, now)
+	gonePEM, goneCert := signPEM(t, env.ca, pki.Subject{Username: "gone"}, now)
+
+	body, err := json.Marshal(map[string]any{"pem": annPEM + gonePEM, "allow_unassigned": true, "revoke": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, env.srv, http.MethodPost, "/api/certificates/import", string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d %s", rec.Code, rec.Body)
+	}
+	var out importResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range out.Results {
+		if got.Error != "" || got.Certificate == nil || got.Certificate.RevokedAt == nil || got.Certificate.RevokedBy != "admin" {
+			t.Errorf("result %d = %+v, want it imported revoked by admin", i, got)
+		}
+	}
+
+	want := []audit.Action{
+		audit.ActionCertificateImported, audit.ActionCertificateRevoked,
+		audit.ActionCertificateImported, audit.ActionCertificateRevoked,
+	}
+	if got := actions(env.log); !slices.Equal(got, want) {
+		t.Errorf("audit = %v, want %v", got, want)
+	}
+	if e := env.log.recorded[1]; e.Target != "ann" || e.Details["revoked"] != "true" {
+		t.Errorf("audit entry = %+v, want ann's revocation", e)
+	}
+
+	crl := fetchCRL(t, env)
+	listed := []string{}
+	for _, entry := range crl.RevokedCertificateEntries {
+		listed = append(listed, pki.SerialText(entry.SerialNumber))
+	}
+	slices.Sort(listed)
+	wantListed := []string{pki.SerialText(annCert.SerialNumber), pki.SerialText(goneCert.SerialNumber)}
+	slices.Sort(wantListed)
+	if !slices.Equal(listed, wantListed) {
+		t.Errorf("CRL lists %v, want both imported certificates %v", listed, wantListed)
+	}
+}
+
 func TestCertificates_importUnassigned(t *testing.T) {
 	t.Parallel()
 	env := newCertServer(t, importUsers(), "admins")

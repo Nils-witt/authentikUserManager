@@ -26,14 +26,16 @@ func scanCertificate(row pgx.CollectableRow) (certificate.Certificate, error) {
 }
 
 // CreateCertificate stores the record of a newly issued or imported
-// certificate, with its DER encoding when set, and returns it with its issue
-// time set. It returns certificate.ErrExists when the serial is already recorded.
+// certificate, with its DER encoding when set, revoked when RevokedAt and
+// RevokedBy are set, and returns it with its issue time set. It returns certificate.ErrExists when the serial is already recorded.
 func (s *Store) CreateCertificate(ctx context.Context, c certificate.Certificate) (certificate.Certificate, error) {
 	rows, err := s.pool.Query(ctx, `
-		INSERT INTO certificates (serial, user_pk, username, subject, not_before, not_after, issued_by, key_source, der)
-		VALUES ($1, NULLIF($2, 0), NULLIF($3, ''), $4, $5, $6, $7, $8, $9)
+		INSERT INTO certificates (serial, user_pk, username, subject, not_before, not_after, issued_by, key_source, der,
+			revoked_at, revoked_by)
+		VALUES ($1, NULLIF($2, 0), NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''))
 		RETURNING `+certificateColumns,
 		c.Serial, c.UserPK, c.Username, c.Subject, c.NotBefore, c.NotAfter, c.IssuedBy, c.KeySource, c.DER,
+		c.RevokedAt, c.RevokedBy,
 	)
 	if err != nil {
 		return certificate.Certificate{}, fmt.Errorf("store: creating certificate: %w", err)

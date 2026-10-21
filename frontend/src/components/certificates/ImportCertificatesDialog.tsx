@@ -22,8 +22,9 @@ const MAX_FILE_BYTES = 512 * 1024
 
 function resultText(r: ImportResult) {
   if (!r.certificate) return `Not imported: ${r.error ?? 'unknown error'}`
-  if (r.unassigned) return `Imported without a user: ${r.unassigned}`
-  return `Imported for ${r.certificate.username}`
+  const imported = r.certificate.revoked_at ? 'Imported as revoked' : 'Imported'
+  if (r.unassigned) return `${imported} without a user: ${r.unassigned}`
+  return `${imported} for ${r.certificate.username}`
 }
 
 function resultColor(r: ImportResult) {
@@ -44,6 +45,7 @@ interface ImportCertificatesDialogProps {
 export function ImportCertificatesDialog({ onClose, onImported }: ImportCertificatesDialogProps) {
   const [pem, setPem] = useState('')
   const [allowUnassigned, setAllowUnassigned] = useState(false)
+  const [revoke, setRevoke] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
@@ -67,7 +69,7 @@ export function ImportCertificatesDialog({ onClose, onImported }: ImportCertific
     setError(null)
     setFieldError(null)
     try {
-      const res = await api.importCertificates(pem, allowUnassigned)
+      const res = await api.importCertificates(pem, { allowUnassigned, revoke })
       setResults(res)
       const count = res.filter((r) => r.certificate).length
       if (count > 0) onImported(count)
@@ -156,12 +158,28 @@ export function ImportCertificatesDialog({ onClose, onImported }: ImportCertific
               }
               label="Import certificates without a matching account, assigned to no user, instead of rejecting them"
             />
+            <FormControlLabel
+              control={<Checkbox checked={revoke} onChange={(e) => setRevoke(e.target.checked)} />}
+              label="Revoke the imported certificates right away, listing them in the CRL"
+            />
+            {revoke && (
+              <Alert severity="warning">
+                Revocation cannot be undone: the certificates stop working wherever the CRL is
+                checked.
+              </Alert>
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="contained" loading={busy} disabled={pem.trim() === ''}>
-            Import
+          <Button
+            type="submit"
+            variant="contained"
+            color={revoke ? 'error' : 'primary'}
+            loading={busy}
+            disabled={pem.trim() === ''}
+          >
+            {revoke ? 'Import and revoke' : 'Import'}
           </Button>
         </DialogActions>
       </form>

@@ -521,11 +521,20 @@ func (s *Server) revokeAnyCertificate(w http.ResponseWriter, r *http.Request) {
 const maxImport = 100
 
 // importCertificatesInput holds PEM certificates the CA signed outside this
-// application. With AllowUnassigned, certificates whose account cannot be
-// resolved are imported without a user instead of being rejected.
+// application, and how to import them.
 type importCertificatesInput struct {
-	PEM             string `json:"pem"`
-	AllowUnassigned bool   `json:"allow_unassigned"`
+	PEM string `json:"pem"`
+	importOptions
+}
+
+// importOptions tell how certificates are imported.
+type importOptions struct {
+	// AllowUnassigned imports certificates whose account cannot be resolved
+	// without a user instead of rejecting them.
+	AllowUnassigned bool `json:"allow_unassigned"`
+	// Revoke records the certificates as revoked at the import, so the CRL
+	// lists them, e.g. to withdraw certificates signed before this application.
+	Revoke bool `json:"revoke"`
 }
 
 // importResult tells whether one certificate of an import request was imported.
@@ -547,8 +556,9 @@ type importResult struct {
 // service account named by its common name, which must be active and, when
 // the certificate holds a urn:uuid SAN, have that UUID. Certificates without
 // such an account are rejected, or imported without a user when the request
-// allows it. The CA certificates of a bundle are skipped. Every certificate is
-// imported or rejected on its own; the response lists the outcome of each.
+// allows it. They are revoked right away when the request asks for it. The CA
+// certificates of a bundle are skipped. Every certificate is imported or
+// rejected on its own; the response lists the outcome of each.
 func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 	var in importCertificatesInput
 	if !decodeJSON(w, r, &in) {
@@ -568,7 +578,7 @@ func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		res := importResult{Serial: pki.SerialText(cert.SerialNumber), Subject: cert.Subject.String()}
-		record, unassigned, err := s.importCertificate(r, cert, now, owners, in.AllowUnassigned)
+		record, unassigned, err := s.importCertificate(r, cert, now, owners, in.importOptions)
 		if err != nil {
 			res.Error = err.Error()
 		} else {
@@ -591,14 +601,15 @@ func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 
 // importCertificate records cert for the account its subject names, looking
 // accounts up through owners. When there is no such account and
-// allowUnassigned is set, it records cert without a user and returns why as
-// unassigned. Both errors are safe to show users.
+// opts.AllowUnassigned is set, it records cert without a user and returns why
+// as unassigned. With opts.Revoke, cert is recorded as revoked at now. Both
+// errors are safe to show users.
 func (s *Server) importCertificate(
 	r *http.Request,
 	cert *x509.Certificate,
 	now time.Time,
 	owners map[string]*authentik.User,
-	allowUnassigned bool,
+	opts importOptions,
 ) (record certificate.Certificate, unassigned, err error) {
 	if err := s.ca.CheckIssued(cert, now); err != nil {
 		return certificate.Certificate{}, nil, err
@@ -607,7 +618,7 @@ func (s *Server) importCertificate(
 	if err != nil {
 		return certificate.Certificate{}, nil, err
 	}
-	if unassigned != nil && !allowUnassigned {
+	if unassigned != nil && !opts.AllowUnassigned {
 		return certificate.Certificate{}, nil, unassigned
 	}
 
@@ -623,6 +634,10 @@ func (s *Server) importCertificate(
 	if user != nil {
 		c.UserPK, c.Username = user.PK, user.Username
 	}
+	if opts.Revoke {
+		// Recorded together with the certificate, so it is never listed unrevoked.
+		c.RevokedAt, c.RevokedBy = &now, actorName(r)
+	}
 	record, err = s.certificates.CreateCertificate(r.Context(), c)
 	if errors.Is(err, certificate.ErrExists) {
 		return certificate.Certificate{}, nil, errors.New("it is already recorded")
@@ -637,11 +652,20 @@ func (s *Server) importCertificate(
 		"serial":    record.Serial,
 		"not_after": record.NotAfter.UTC().Format(time.RFC3339),
 	}
-	if user == nil {
-		details["unassigned"] = unassigned.Error()
-		s.record(r, audit.ActionCertificateImported, "", details)
-	} else {
-		s.recordUser(r, audit.ActionCertificateImported, user, details)
+	if opts.Revoke {
+		details["revoked"] = "true"
+	}
+	actions := []audit.Action{audit.ActionCertificateImported}
+	if opts.Revoke {
+		actions = append(actions, audit.ActionCertificateRevoked)
+	}
+	for _, action := range actions {
+		if user == nil {
+			details["unassigned"] = unassigned.Error()
+			s.record(r, action, "", details)
+		} else {
+			s.recordUser(r, action, user, details)
+		}
 	}
 	return record, unassigned, nil
 }

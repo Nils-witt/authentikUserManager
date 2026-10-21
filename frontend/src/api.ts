@@ -640,15 +640,23 @@ export interface ImportResult {
   error?: string
 }
 
+/** How certificates are imported. */
+export interface ImportOptions {
+  /** Import those without a matching account without a user instead of rejecting them. */
+  allowUnassigned: boolean
+  /** Record them as revoked right away, so the CRL lists them. */
+  revoke: boolean
+}
+
 /**
  * Imports PEM certificates the CA signed elsewhere, so they can be listed and revoked; only for
- * access administrators. Each is assigned to the account its common name names; with
- * `allowUnassigned`, those without such an account are imported without a user.
+ * access administrators. Each is assigned to the account its common name names.
  */
-export const importCertificates = (pem: string, allowUnassigned: boolean) =>
+export const importCertificates = (pem: string, options: ImportOptions) =>
   request<{ results: ImportResult[] }>('POST', '/api/certificates/import', {
     pem,
-    allow_unassigned: allowUnassigned,
+    allow_unassigned: options.allowUnassigned,
+    revoke: options.revoke,
   }).then((res) => res.results)
 
 export const version = () => request<BuildInfo>('GET', '/api/version')
