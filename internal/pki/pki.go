@@ -37,7 +37,7 @@ const MinPasswordLen = 8
 const clockSkew = time.Minute
 
 // crlLifetime is how long a CRL is valid; clients fetch a new one after it.
-const crlLifetime = 24 * time.Hour
+const crlLifetime = 30 * 24 * time.Hour
 
 // pkcs12Iterations is the PBKDF2 iteration count of PKCS#12 bundles; the
 // library default of 2048 is too low for user-chosen passwords.
@@ -446,7 +446,7 @@ type Revoked struct {
 }
 
 // CRL returns a DER certificate revocation list of revoked, valid from now for
-// a day. Its CRL number is derived from now, so it grows with every new CRL.
+// 30 days. Its CRL number is derived from now, so it grows with every new CRL.
 func (ca *CA) CRL(revoked []Revoked, now time.Time) ([]byte, error) {
 	entries := make([]x509.RevocationListEntry, 0, len(revoked))
 	for _, r := range revoked {

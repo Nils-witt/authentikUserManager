@@ -311,7 +311,7 @@ func actions(log *fakeAudit) []audit.Action {
 func TestCertificates_disabled(t *testing.T) {
 	t.Parallel()
 	srv := newServer(t, ownAccountUsers())
-	for _, target := range []string{"/api/certificates/mine", "/api/users/5/certificates", "/pki/crl", "/pki/ca.pem"} {
+	for _, target := range []string{"/api/certificates/mine", "/api/users/5/certificates", "/pki/crl", "/pki/crl.pem", "/pki/ca.pem"} {
 		if rec := do(t, srv, http.MethodGet, target, ""); rec.Code != http.StatusNotImplemented {
 			t.Errorf("GET %s = %d, want 501", target, rec.Code)
 		}
@@ -1282,7 +1282,13 @@ func TestCertificates_crl(t *testing.T) {
 		t.Errorf("revoked = %v, want serial ab right after revoking", crl.RevokedCertificateEntries)
 	}
 
-	rec := do(t, env.srv, http.MethodGet, "/pki/ca.pem", "")
+	rec := do(t, env.srv, http.MethodGet, "/pki/crl.pem", "")
+	if block, _ := pem.Decode(rec.Body.Bytes()); rec.Code != http.StatusOK || block == nil ||
+		block.Type != "X509 CRL" || !slices.Equal(block.Bytes, crl.Raw) {
+		t.Errorf("crl.pem = %d %s, want the DER CRL as PEM", rec.Code, rec.Body)
+	}
+
+	rec = do(t, env.srv, http.MethodGet, "/pki/ca.pem", "")
 	block, _ := pem.Decode(rec.Body.Bytes())
 	if rec.Code != http.StatusOK || block == nil || !slices.Equal(block.Bytes, env.caCert.Raw) {
 		t.Errorf("ca.pem = %d %s", rec.Code, rec.Body)

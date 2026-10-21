@@ -19,6 +19,33 @@ const KEY_SOURCE_LABELS: Record<KeySource, string> = {
   imported: 'Imported',
 }
 
+/**
+ * The common name in a subject distinguished name as Go formats it (RFC 2253, e.g.
+ * "CN=ann,O=Example"), unescaped; empty without one.
+ */
+function commonName(subject: string): string {
+  let attribute = ''
+  let value = ''
+  let inValue = false
+  for (let i = 0; i < subject.length; i++) {
+    const ch = subject[i]
+    if (ch === '\\' && i + 1 < subject.length) {
+      value += subject[++i]
+    } else if (!inValue && ch === '=') {
+      attribute = value.trim()
+      value = ''
+      inValue = true
+    } else if (ch === ',' || ch === '+') {
+      if (attribute.toUpperCase() === 'CN') return value
+      value = ''
+      inValue = false
+    } else {
+      value += ch
+    }
+  }
+  return inValue && attribute.toUpperCase() === 'CN' ? value : ''
+}
+
 /** Whether a certificate can still be used: neither revoked nor expired. */
 const isActive = (c: Certificate) => !c.revoked_at && new Date(c.not_after) > new Date()
 
@@ -42,6 +69,8 @@ interface CertificateTableProps {
   loadFailed: boolean
   /** Show whose certificate each one is, for lists of several users. */
   showUser?: boolean
+  /** Show the common name of each certificate's subject. */
+  showCommonName?: boolean
   /** Revokes an active certificate; without it, there are no revoke buttons. */
   onRevoke?: (c: Certificate) => void
   /** Downloads the generated key; only for the user's own certificates. */
@@ -56,13 +85,14 @@ export function CertificateTable({
   busy,
   loadFailed,
   showUser = false,
+  showCommonName = false,
   onRevoke,
   onDownload,
   onDownloadCertificate,
 }: CertificateTableProps) {
   const hasActions =
     onRevoke !== undefined || onDownload !== undefined || onDownloadCertificate !== undefined
-  const columns = 5 + Number(showUser) + Number(hasActions)
+  const columns = 5 + Number(showUser) + Number(showCommonName) + Number(hasActions)
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={certificates === null}>
       <Box sx={{ height: 4 }}>{certificates === null && !loadFailed && <LinearProgress />}</Box>
@@ -70,6 +100,7 @@ export function CertificateTable({
         <TableHead>
           <TableRow>
             {showUser && <TableCell>User</TableCell>}
+            {showCommonName && <TableCell>Common name</TableCell>}
             <TableCell>Serial</TableCell>
             <TableCell>Issued</TableCell>
             <TableCell>Expires</TableCell>
@@ -89,6 +120,7 @@ export function CertificateTable({
                     Unassigned
                   </TableCell>
                 ))}
+              {showCommonName && <TableCell title={c.subject}>{commonName(c.subject)}</TableCell>}
               <TableCell
                 sx={{
                   fontFamily: 'monospace',

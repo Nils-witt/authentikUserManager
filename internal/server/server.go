@@ -287,6 +287,7 @@ func New(d Deps) *Server {
 	mux.Handle("/auth/", d.Auth.Handler())
 	// The CRL and the CA certificate are public, for relying parties.
 	mux.Handle("GET /pki/crl", s.requireCertificates(s.getCRL))
+	mux.Handle("GET /pki/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/ca.pem", s.requireCertificates(s.getCAChain))
 	mux.Handle("/api/", d.Auth.Require(api))
 	if d.Static != nil {

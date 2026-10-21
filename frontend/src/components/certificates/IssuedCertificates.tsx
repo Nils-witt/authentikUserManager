@@ -177,6 +177,7 @@ export function IssuedCertificates() {
           busy={busy}
           loadFailed={error !== null}
           showUser
+          showCommonName
           onRevoke={(c) => void revoke(c)}
           onDownloadCertificate={(c) => void download(c)}
         />

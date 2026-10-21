@@ -682,19 +682,44 @@ func (s *Server) revokeUserCertificates(ctx context.Context, r *http.Request, us
 // getCRL serves the CA's DER certificate revocation list. It is public, so
 // that relying parties can check certificates without signing in.
 func (s *Server) getCRL(w http.ResponseWriter, r *http.Request) {
+	der, ok := s.currentCRLOrError(w, r)
+	if !ok {
+		return
+	}
+	writeCRL(w, "application/pkix-crl", der)
+}
+
+// getCRLPEM serves the same revocation list as getCRL, PEM-encoded as a download.
+func (s *Server) getCRLPEM(w http.ResponseWriter, r *http.Request) {
+	der, ok := s.currentCRLOrError(w, r)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="crl.pem"`)
+	writeCRL(w, "application/x-pem-file", pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: der}))
+}
+
+// currentCRLOrError returns the current DER CRL, or answers r with an error and
+// reports false when it cannot be generated.
+func (s *Server) currentCRLOrError(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	der, err := s.currentCRL(r.Context())
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(r.Context(), "generating crl", slog.Any("error", err))
 		}
 		http.Error(w, "generating the CRL failed", http.StatusInternalServerError)
-		return
+		return nil, false
 	}
+	return der, true
+}
+
+// writeCRL writes an encoded CRL, cacheable for as long as the server caches it.
+func writeCRL(w http.ResponseWriter, contentType string, body []byte) {
 	h := w.Header()
-	h.Set("Content-Type", "application/pkix-crl")
+	h.Set("Content-Type", contentType)
 	h.Set("Cache-Control", "public, max-age="+strconv.Itoa(int(crlCacheTTL/time.Second)))
 	// The status line is already sent; a write error here means the client went away.
-	_, _ = w.Write(der)
+	_, _ = w.Write(body)
 }
 
 // currentCRL returns the cached CRL, signing a new one when it has expired.

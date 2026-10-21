@@ -78,8 +78,9 @@ so revoke the certificates here as well. Access administrators can review every 
 certificate under **Issued certificates**, download it (the certificate only, never its key;
 not for certificates issued before this was added) and revoke it, including the certificates of
 deleted users. Revoked
-certificates are listed in the CRL at `/pki/crl` until they expire, and the CA chain is at
-`/pki/ca.pem`. Both are public, so relying parties can fetch them without a login.
+certificates are listed in the CRL at `/pki/crl` (as PEM at `/pki/crl.pem`) until they expire; each
+CRL is valid for 30 days. The CA chain is at
+`/pki/ca.pem`. All are public, so relying parties can fetch them without a login.
 
 Access administrators can also **import** certificates the CA signed outside this application
 (for example with openssl, before it was used), under **Issued certificates → Import**, so they
@@ -339,6 +340,7 @@ the frontend, run `make build` again.
 | POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |
 | POST   | `/api/certificates/import` | access administrators only; imports certificates the CA signed elsewhere: `{pem, allow_unassigned}`; returns `{results}`, each `{serial, subject}` with `certificate` when imported (and `unassigned`, the reason, when assigned to no user; its `user_pk` is 0 and `username` empty) or `error` otherwise |
 | GET    | `/pki/crl`                 | DER certificate revocation list; no login required       |
+| GET    | `/pki/crl.pem`             | The same revocation list as PEM; no login required       |
 | GET    | `/pki/ca.pem`              | CA certificate chain; no login required                  |
 | GET    | `/healthz`                 | no login required                                        |
 | GET    | `/auth/login`              | starts the OIDC login                                     |

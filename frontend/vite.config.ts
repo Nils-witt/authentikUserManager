@@ -15,11 +15,12 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    // Forward API and login calls to the Go backend during development.
+    // Forward API, login and PKI calls to the Go backend during development.
     // The Host header is kept, so session cookies are set for localhost:5173.
     proxy: {
       '/api': 'http://127.0.0.1:8080',
       '/auth': 'http://127.0.0.1:8080',
+      '/pki': 'http://127.0.0.1:8080',
     },
   },
 })

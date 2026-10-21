@@ -519,6 +519,9 @@ func TestCA_CRL(t *testing.T) {
 	if len(crl.RevokedCertificateEntries) != 1 || crl.RevokedCertificateEntries[0].SerialNumber.Int64() != 42 {
 		t.Errorf("revoked = %+v, want serial 42", crl.RevokedCertificateEntries)
 	}
+	if want := now.Add(30 * 24 * time.Hour); !crl.NextUpdate.Equal(want) {
+		t.Errorf("NextUpdate = %v, want %v", crl.NextUpdate, want)
+	}
 	later, err := loaded.CRL(nil, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
