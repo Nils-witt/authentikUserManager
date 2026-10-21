@@ -162,6 +162,8 @@ export function CertificateManager({ username, serviceAccountId }: CertificateMa
         certificates={certificates}
         busy={busy}
         loadFailed={error !== null}
+        // Own certificates may carry a chosen prefix, so their common names differ.
+        showCommonName={isOwn}
         onRevoke={(c) => void revoke(c)}
         onDownload={(c) => void download(c.serial)}
       />
