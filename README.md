@@ -181,6 +181,12 @@ curl -sS -X POST -H "Authorization: Bearer $API_KEY" \
   https://<app-host>/service-api/v1/certificates/$SERIAL/revoke
 ```
 
+On Windows, [`scripts/Update-ServiceCertificate.ps1`](scripts/Update-ServiceCertificate.ps1) keeps
+a certificate in `Cert:\LocalMachine\My`: it renews it once 10% or less of its lifetime remains,
+with a new non-exportable key, then revokes and deletes the old one. Run it elevated, e.g. daily
+from a scheduled task: `Update-ServiceCertificate.ps1 -BaseUrl https://<app-host> -ApiKeyFile
+C:\ProgramData\am\api-key.txt` (`-WhatIf` shows what it would do).
+
 The subject of the CSR is ignored; the certificate names the service account like the ones
 operators issue. Requests without a valid key get 401. Changes made through the service API are
 audited with the service account as the actor and the key's ID.
