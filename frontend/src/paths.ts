@@ -8,6 +8,7 @@ export const pagePaths = {
   issuedCertificates: '/issued-certificates',
   accessRules: '/access-rules',
   audit: '/audit',
+  notifications: '/notifications',
 } as const
 
 /** Dialogs on the user list that have their own URL, so they can be linked and reloaded. */

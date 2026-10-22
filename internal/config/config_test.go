@@ -146,3 +146,60 @@ func TestFromEnv_certificates(t *testing.T) {
 		})
 	}
 }
+
+func TestFromEnv_smtp(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		env          map[string]string
+		expectErr    bool
+		expectedPort int
+		expectedTLS  string
+	}{
+		{name: "disabled", env: validEnv(nil)},
+		{name: "disabled ignores other settings", env: validEnv(map[string]string{"SMTP_TLS": "bogus", "SMTP_PORT": "x"})},
+		{
+			name:         "starttls by default",
+			env:          validEnv(map[string]string{"SMTP_HOST": "smtp.example.com", "SMTP_FROM": "noreply@example.com"}),
+			expectedPort: 587, expectedTLS: "starttls",
+		},
+		{
+			name:         "implicit tls port",
+			env:          validEnv(map[string]string{"SMTP_HOST": "smtp.example.com", "SMTP_FROM": "noreply@example.com", "SMTP_TLS": "TLS"}),
+			expectedPort: 465, expectedTLS: "tls",
+		},
+		{
+			name: "explicit port",
+			env: validEnv(map[string]string{
+				"SMTP_HOST": "localhost", "SMTP_FROM": "noreply@example.com", "SMTP_TLS": "none", "SMTP_PORT": "1025",
+			}),
+			expectedPort: 1025, expectedTLS: "none",
+		},
+		{name: "missing from", env: validEnv(map[string]string{"SMTP_HOST": "smtp.example.com"}), expectErr: true},
+		{
+			name:      "invalid tls",
+			env:       validEnv(map[string]string{"SMTP_HOST": "smtp.example.com", "SMTP_FROM": "a@example.com", "SMTP_TLS": "ssl"}),
+			expectErr: true,
+		},
+		{
+			name:      "invalid port",
+			env:       validEnv(map[string]string{"SMTP_HOST": "smtp.example.com", "SMTP_FROM": "a@example.com", "SMTP_PORT": "70000"}),
+			expectErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.FromEnv(func(k string) string { return tt.env[k] })
+			if (err != nil) != tt.expectErr {
+				t.Fatalf("FromEnv error = %v, want error %v", err, tt.expectErr)
+			}
+			if err != nil {
+				return
+			}
+			if cfg.SMTPPort != tt.expectedPort || cfg.SMTPTLS != tt.expectedTLS {
+				t.Errorf("SMTP port, tls = %d, %q, want %d, %q", cfg.SMTPPort, cfg.SMTPTLS, tt.expectedPort, tt.expectedTLS)
+			}
+		})
+	}
+}

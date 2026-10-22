@@ -14,6 +14,8 @@ export interface AppContext {
   version: number
   /** Call after every change: it may change the operator's own access and the pending requests. */
   refresh: () => void
+  /** Call after reading, deleting or causing notifications, to update the unread count. */
+  notificationsChanged: () => void
 }
 
 /** Returns the context of the page's layout. */

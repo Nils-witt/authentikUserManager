@@ -12,7 +12,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), create and rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Operators also manage [service accounts](#service-accounts) with their tokens and certificates. Group-based access rules limit which users each operator may manage, and an [audit log](#audit-log) records every change.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), create and rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Operators also manage [service accounts](#service-accounts) with their tokens and certificates. Group-based access rules limit which users each operator may manage, Users are [notified](#notifications) in the app and by email about changes to their account. An [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -39,6 +39,12 @@ Set these environment variables (see `.env.example`):
 | `CERT_CRL_VALIDITY_DAYS` | no | `30`             | Days each CRL is valid until its next update (at most 365) |
 | `CERT_USER_CN_SUFFIX` | no   |                  | Appended to the username in the common name of user certificates, e.g. `@example.com` for `ann@example.com` |
 | `CERT_SERVICE_ACCOUNT_CN_SUFFIX` | no |         | Appended to the username in the common name of service account certificates |
+| `SMTP_HOST`       | no       |                  | SMTP server that emails [notifications](#notifications); in the app only when unset |
+| `SMTP_TLS`        | no       | `starttls`       | `starttls`, `tls` (implicit TLS) or `none` (only for a server on localhost) |
+| `SMTP_PORT`       | no       | by `SMTP_TLS`    | SMTP port; 587 for `starttls`, 465 for `tls`, 25 for `none` |
+| `SMTP_USERNAME`   | no       |                  | SMTP username; no authentication when unset             |
+| `SMTP_PASSWORD`   | no       |                  | SMTP password                                           |
+| `SMTP_FROM`       | with `SMTP_HOST` |          | Sender of notification emails, e.g. `authentik Manager <noreply@example.com>` |
 
 The token's user needs permission to view, add, change and delete users, to view and change groups, and to add users to groups and remove them. To manage the tokens of [service accounts](#service-accounts) it must be a superuser: authentik assigns tokens created by other users to themselves.
 
@@ -257,6 +263,30 @@ The API is `POST /api/groups/{pk}/join-requests` (body `{"message": "..."}`) and
 `GET /api/join-requests/mine` and `DELETE /api/join-requests/{id}` for the requester, and
 `GET /api/join-requests` (the pending requests the caller may decide) and
 `POST /api/join-requests/{id}/approve` or `/reject` for the deciders.
+
+## Notifications
+
+Users are notified about changes to their own account, each with a header and a message:
+
+| Category | Sent when |
+| --- | --- |
+| Profile changes | their username, name, email address, folder or active state changes, or they are added to or removed from groups, or their primary group changes |
+| Certificates | a certificate is issued to them or revoked, also when their account is deactivated or renamed |
+| Join requests | their request to join a group is granted or denied |
+| Notification settings | their notification settings are saved; always sent and cannot be turned off |
+
+Notifications appear behind the bell in the toolbar and are kept until the user deletes
+them. When `SMTP_HOST` is set they are emailed too; a changed email address is told about
+the change as well. Each user chooses per category and channel which notifications they
+receive (**Notifications → Settings**). Only internal users receive notifications; service
+accounts do not. Further delivery channels implement `notification.NotificationReceiver`
+and are passed to `notification.NewNotifier` in `cmd/authentik-manager`.
+
+The API, for the signed-in user's own notifications: `GET /api/notifications` (query
+parameters `before`, `limit`), `GET /api/notifications/unread-count`,
+`POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`,
+`DELETE /api/notifications/{id}`, `DELETE /api/notifications`, and
+`GET`/`PUT /api/notifications/preferences` (body `{"preferences": {"profile": {"email": false}}}`).
 
 ## Audit log
 

@@ -672,6 +672,7 @@ func (s *Server) updateAccountOf(w http.ResponseWriter, r *http.Request, k accou
 		details["hidden"] = strconv.FormatBool(*in.Hidden)
 	}
 	s.recordUser(r, k.updated, user, details)
+	s.notifyProfileUpdate(r, target, user)
 
 	if reason := certificateRevocationReason(target, req); reason != "" {
 		// The user is changed already, so finish revoking even when the client goes away.
@@ -754,17 +755,25 @@ func (s *Server) setAccountGroupsOf(w http.ResponseWriter, r *http.Request, k ac
 		}
 		toAdd = append(toAdd, group)
 	}
+	// One notification lists every change made, also when a later one fails.
+	changes := []string{}
+	defer func() { s.notifyGroupChanges(r, user, changes) }()
 	for _, g := range toAdd {
 		if err := s.users.AddUserToGroup(r.Context(), g.PK, user.PK); err != nil {
 			s.writeUpstreamError(w, r, err)
 			return
 		}
 		s.recordUser(r, audit.ActionUserGroupAdded, user, map[string]string{"group": g.Name})
+		changes = append(changes, fmt.Sprintf("Added to the group %q", g.Name))
 	}
 	// Set the primary group between adding and removing, so it is always one of the user's groups.
+	previous := primaryGroupName(user)
 	next := authentik.UserGroup{Name: primary, PK: groupPK(primary, user.Groups, toAdd)}
 	if !s.setPrimaryGroup(w, r, user, next) {
 		return
+	}
+	if primary != previous {
+		changes = append(changes, fmt.Sprintf("Primary group: %s → %s", orNone(previous), orNone(primary)))
 	}
 	for _, g := range change.removed {
 		if err := s.users.RemoveUserFromGroup(r.Context(), g.PK, user.PK); err != nil {
@@ -772,6 +781,7 @@ func (s *Server) setAccountGroupsOf(w http.ResponseWriter, r *http.Request, k ac
 			return
 		}
 		s.recordUser(r, audit.ActionUserGroupRemoved, user, map[string]string{"group": g.Name})
+		changes = append(changes, fmt.Sprintf("Removed from the group %q", g.Name))
 	}
 
 	updated, err := s.users.GetUser(r.Context(), user.PK)
@@ -889,6 +899,10 @@ func (s *Server) setPrimaryGroup(w http.ResponseWriter, r *http.Request, user *a
 	return true
 }
 
+// reasonUserDeleted is the reason recorded for the certificates revoked when
+// their user is deleted. The deleted user is not notified.
+const reasonUserDeleted = "user deleted"
+
 // deleteAccount returns a handler deleting the account of kind k with the {id}
 // path value, after revoking its certificates.
 func (s *Server) deleteAccount(k accountKind) http.HandlerFunc {
@@ -903,7 +917,7 @@ func (s *Server) deleteAccountOf(w http.ResponseWriter, r *http.Request, k accou
 		return
 	}
 	// Revoke first: once the user is deleted, nobody can list or revoke their certificates.
-	if err := s.revokeUserCertificates(r.Context(), r, target, "user deleted"); err != nil {
+	if err := s.revokeUserCertificates(r.Context(), r, target, reasonUserDeleted); err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(r.Context(), "revoking user certificates",
 				slog.Int("user_id", target.PK),

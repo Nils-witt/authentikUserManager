@@ -20,6 +20,7 @@ import (
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/certificate"
+	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
 )
 
@@ -345,6 +346,10 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		details["cn_prefix"] = in.Prefix
 	}
 	s.recordUser(r, audit.ActionCertificateIssued, user, details)
+	s.notify(r, user, notification.CategoryCertificate, "Certificate issued", fmt.Sprintf(
+		"A certificate was issued to your account by %s.\n- Serial number: %s\n- Subject: %s\n- Valid until: %s",
+		changedBy(r, user), record.Serial, record.Subject, record.NotAfter.UTC().Format("2006-01-02 15:04 MST"),
+	))
 
 	out := issuedCertificate{Certificate: record}
 	if key == nil {
@@ -468,6 +473,7 @@ func (s *Server) revokeAccountCertificateOf(w http.ResponseWriter, r *http.Reque
 	s.keyDownloads.Delete(serial)
 	s.invalidateCRL()
 	s.recordUser(r, audit.ActionCertificateRevoked, user, map[string]string{"serial": serial})
+	s.notifyCertificatesRevoked(r, user, []string{serial}, "")
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -511,6 +517,9 @@ func (s *Server) revokeAnyCertificate(w http.ResponseWriter, r *http.Request) {
 	if c.Assigned() {
 		s.recordUser(r, audit.ActionCertificateRevoked, &authentik.User{PK: c.UserPK, Username: c.Username},
 			map[string]string{"serial": serial})
+		if user := s.notificationRecipient(r, c.UserPK); user != nil {
+			s.notifyCertificatesRevoked(r, user, []string{serial}, "")
+		}
 	} else {
 		s.record(r, audit.ActionCertificateRevoked, "", map[string]string{"serial": serial, "unassigned": "true"})
 	}
@@ -833,6 +842,9 @@ func (s *Server) revokeUserCertificates(ctx context.Context, r *http.Request, us
 		s.recordUser(r, audit.ActionCertificateRevoked, user, map[string]string{"serial": serial, "reason": reason})
 	}
 	s.invalidateCRL()
+	if reason != reasonUserDeleted {
+		s.notifyCertificatesRevoked(r, user, serials, reason)
+	}
 	return nil
 }
 

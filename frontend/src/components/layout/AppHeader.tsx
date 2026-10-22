@@ -1,7 +1,9 @@
 import LogoutIcon from '@mui/icons-material/Logout'
+import NotificationsIcon from '@mui/icons-material/Notifications'
 import AppBar from '@mui/material/AppBar'
 import Badge from '@mui/material/Badge'
 import Button from '@mui/material/Button'
+import IconButton from '@mui/material/IconButton'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import Toolbar from '@mui/material/Toolbar'
@@ -36,6 +38,10 @@ interface AppHeaderProps {
   showCertificates: boolean
   /** Show the access rules, audit log and issued certificates tabs. */
   showAdmin: boolean
+  /** Show the notifications button; the user receives notifications. */
+  showNotifications: boolean
+  /** Number of unread notifications, shown on the notifications button. */
+  notificationCount: number
 }
 
 /** Top bar with the app title, the page tabs, the signed-in operator and a sign-out button. */
@@ -47,6 +53,8 @@ export function AppHeader({
   joinRequestCount,
   showCertificates,
   showAdmin,
+  showNotifications,
+  notificationCount,
 }: AppHeaderProps) {
   const { pathname, search } = useLocation()
   const onOtherPage = Object.values(pagePaths).some(
@@ -78,8 +86,12 @@ export function AppHeader({
         label: 'Issued certificates',
       },
   ].filter((tab) => tab !== false)
-  // The user list's dialogs have their own paths; they belong to the users tab.
-  const current = tabs.find((tab) => tab.path === pathname)?.path ?? pagePaths.users
+  // The user list's dialogs have their own paths; they belong to the users tab. The
+  // notifications page has no tab.
+  const current =
+    pathname === pagePaths.notifications
+      ? false
+      : (tabs.find((tab) => tab.path === pathname)?.path ?? pagePaths.users)
 
   return (
     <AppBar
@@ -104,6 +116,23 @@ export function AppHeader({
             />
           ))}
         </Tabs>
+        {showNotifications && (
+          <IconButton
+            component={Link}
+            to={pagePaths.notifications}
+            color={pathname === pagePaths.notifications ? 'primary' : 'default'}
+            aria-label={
+              notificationCount > 0
+                ? `Notifications (${notificationCount} unread)`
+                : 'Notifications'
+            }
+            title="Notifications"
+          >
+            <Badge badgeContent={notificationCount} color="primary" max={99}>
+              <NotificationsIcon />
+            </Badge>
+          </IconButton>
+        )}
         <Typography variant="body2" color="text.secondary" title={me.email}>
           {me.name || me.username}
         </Typography>

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/joinrequest"
+	"authentikManager/internal/notification"
 )
 
 // Every signed-in user may request to join a visible group. The operators who
@@ -249,7 +251,25 @@ func (s *Server) decideJoinRequest(w http.ResponseWriter, r *http.Request, statu
 		}
 	}
 	s.record(r, action, jr.Username, joinRequestDetails(decided, group.Name))
+	s.notifyJoinDecision(r, decided, group.Name)
 	writeJSON(w, http.StatusOK, decided)
+}
+
+// notifyJoinDecision tells the requester of jr, decided on the group named
+// groupName, whether their request was granted.
+func (s *Server) notifyJoinDecision(r *http.Request, jr joinrequest.Request, groupName string) {
+	user := s.notificationRecipient(r, jr.UserPK)
+	if user == nil {
+		return
+	}
+	header := "Join request denied"
+	message := fmt.Sprintf("Your request to join the group %q was denied by %s.", groupName, changedBy(r, user))
+	if jr.Status == joinrequest.StatusApproved {
+		header = "Join request granted"
+		message = fmt.Sprintf("Your request to join the group %q was granted by %s. You are now a member of the group.",
+			groupName, changedBy(r, user))
+	}
+	s.notify(r, user, notification.CategoryJoinRequest, header, message)
 }
 
 // joinRequestGroup loads the group of jr and checks that the operator may

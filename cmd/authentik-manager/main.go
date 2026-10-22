@@ -30,6 +30,14 @@
 //	                     e.g. @example.com (optional)
 //	CERT_SERVICE_ACCOUNT_CN_SUFFIX appended to the username in the common name of service
 //	                     account certificates (optional)
+//
+//	SMTP_HOST            SMTP server emailing notifications; they are shown in the app only when unset (optional)
+//	SMTP_PORT            SMTP port (default 587 for starttls, 465 for tls, 25 for none)
+//	SMTP_TLS             starttls (default), tls for implicit TLS, or none for a server on localhost
+//	SMTP_USERNAME        SMTP username; no authentication when unset (optional)
+//	SMTP_PASSWORD        SMTP password (optional)
+//	SMTP_FROM            sender address of notification emails, e.g. "Manager <noreply@example.com>"
+//	                     (required with SMTP_HOST)
 package main
 
 import (
@@ -50,6 +58,8 @@ import (
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/config"
+	"authentikManager/internal/mail"
+	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
 	"authentikManager/internal/server"
 	"authentikManager/internal/store"
@@ -110,6 +120,18 @@ func run(logger *slog.Logger) error {
 		pruning.Go(func() { keyDownloads.Run(pruneCtx, pki.PruneInterval) })
 	}
 
+	notifier, err := newNotifier(cfg, db, logger)
+	if err != nil {
+		return err
+	}
+	// Deferred after db.Close like the audit pruning, so queued deliveries
+	// finish before the pool closes.
+	deliverCtx, stopDelivering := context.WithCancel(ctx)
+	var delivering sync.WaitGroup
+	defer delivering.Wait()
+	defer stopDelivering()
+	delivering.Go(func() { notifier.Run(deliverCtx) })
+
 	authn, err := auth.New(ctx, auth.Config{
 		IssuerURL:    cfg.OIDCIssuer,
 		ClientID:     cfg.OIDCClientID,
@@ -146,6 +168,7 @@ func run(logger *slog.Logger) error {
 			CA:                 ca,
 			Certificates:       db,
 			KeyDownloads:       keyDownloads,
+			Notifications:      notifier,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -153,9 +176,14 @@ func run(logger *slog.Logger) error {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	return serve(ctx, srv, logger)
+}
+
+// serve runs srv until it fails or ctx is done, then shuts it down gracefully.
+func serve(ctx context.Context, srv *http.Server, logger *slog.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("listening", slog.String("addr", cfg.ListenAddr))
+		logger.Info("listening", slog.String("addr", srv.Addr))
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -175,6 +203,28 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutting down http server: %w", err)
 	}
 	return nil
+}
+
+// newNotifier returns the notifier storing notifications in db and emailing
+// them when an SMTP server is configured.
+func newNotifier(cfg config.Config, db *store.Store, logger *slog.Logger) (*notification.Notifier, error) {
+	var receivers []notification.NotificationReceiver
+	if cfg.SMTPHost != "" {
+		smtp, err := mail.New(mail.Config{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword,
+			From:     cfg.SMTPFrom,
+			TLS:      mail.TLSMode(cfg.SMTPTLS),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("configuring smtp: %w", err)
+		}
+		receivers = append(receivers, smtp)
+		logger.Info("emailing notifications", slog.String("smtp_host", cfg.SMTPHost), slog.Int("smtp_port", cfg.SMTPPort))
+	}
+	return notification.NewNotifier(db, logger, receivers...)
 }
 
 // loadCA reads the CA that signs user certificates, or returns nil when none is configured.

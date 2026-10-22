@@ -59,6 +59,19 @@ type Config struct {
 	// CertServiceAccountCNSuffix is appended to the username in the common
 	// name of service account certificates.
 	CertServiceAccountCNSuffix string
+
+	// SMTPHost is the SMTP server that emails notifications. When empty,
+	// notifications are delivered in the app only.
+	SMTPHost string
+	// SMTPPort defaults to the usual port of SMTPTLS.
+	SMTPPort int
+	// SMTPUsername and SMTPPassword authenticate with the server when SMTPUsername is set.
+	SMTPUsername string
+	SMTPPassword string
+	// SMTPFrom is the sender address of notification emails, e.g. "Manager <noreply@example.com>".
+	SMTPFrom string
+	// SMTPTLS is "starttls" (default), "tls" for implicit TLS, or "none" for a server on localhost.
+	SMTPTLS string
 }
 
 const defaultListenAddr = "127.0.0.1:8080"
@@ -71,6 +84,9 @@ const (
 	defaultCertValidityDays = 365
 	maxCertValidityDays     = 3650
 )
+
+// defaultSMTPPorts are the default SMTP_PORT values per SMTP_TLS mode.
+var defaultSMTPPorts = map[string]int{"starttls": 587, "tls": 465, "none": 25}
 
 // Bounds and default of CERT_CRL_VALIDITY_DAYS.
 const (
@@ -103,6 +119,12 @@ func FromEnv(getenv func(string) string) (Config, error) {
 
 		CertUserCNSuffix:           strings.TrimSpace(getenv("CERT_USER_CN_SUFFIX")),
 		CertServiceAccountCNSuffix: strings.TrimSpace(getenv("CERT_SERVICE_ACCOUNT_CN_SUFFIX")),
+
+		SMTPHost:     strings.TrimSpace(getenv("SMTP_HOST")),
+		SMTPUsername: getenv("SMTP_USERNAME"),
+		SMTPPassword: getenv("SMTP_PASSWORD"),
+		SMTPFrom:     strings.TrimSpace(getenv("SMTP_FROM")),
+		SMTPTLS:      strings.ToLower(strings.TrimSpace(getenv("SMTP_TLS"))),
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListenAddr
@@ -132,6 +154,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	}
 	cfg.AuditRetention = retention
 	errs = append(errs, cfg.parseCertificates(getenv("CERT_VALIDITY_DAYS"), getenv("CERT_CRL_VALIDITY_DAYS"))...)
+	errs = append(errs, cfg.parseSMTP(getenv("SMTP_PORT"))...)
 	if cfg.StaticDir != "" {
 		if fi, err := os.Stat(cfg.StaticDir); err != nil || !fi.IsDir() {
 			errs = append(errs, fmt.Errorf("STATIC_DIR %q is not a readable directory", cfg.StaticDir))
@@ -171,6 +194,35 @@ func (cfg *Config) parseCertificates(validityDays, crlValidityDays string) []err
 		if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
 			errs = append(errs, errors.New("CERT_CRL_URL must be an absolute http or https URL"))
 		}
+	}
+	return errs
+}
+
+// parseSMTP validates the SMTP settings and sets SMTPPort from port
+// (SMTP_PORT), defaulting SMTPTLS to starttls. Without SMTPHost, email is
+// disabled and the other settings are ignored.
+func (cfg *Config) parseSMTP(port string) []error {
+	if cfg.SMTPHost == "" {
+		cfg.SMTPTLS = ""
+		return nil
+	}
+	var errs []error
+	if cfg.SMTPTLS == "" {
+		cfg.SMTPTLS = "starttls"
+	}
+	cfg.SMTPPort = defaultSMTPPorts[cfg.SMTPTLS]
+	if cfg.SMTPPort == 0 {
+		errs = append(errs, errors.New(`SMTP_TLS must be "starttls", "tls" or "none"`))
+	}
+	if port = strings.TrimSpace(port); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			errs = append(errs, errors.New("SMTP_PORT must be a port number between 1 and 65535"))
+		}
+		cfg.SMTPPort = n
+	}
+	if cfg.SMTPFrom == "" {
+		errs = append(errs, errors.New("SMTP_FROM is required with SMTP_HOST"))
 	}
 	return errs
 }

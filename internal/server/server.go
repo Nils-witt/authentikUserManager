@@ -22,6 +22,7 @@ import (
 	"authentikManager/internal/buildinfo"
 	"authentikManager/internal/certificate"
 	"authentikManager/internal/joinrequest"
+	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
 )
 
@@ -144,6 +145,34 @@ type CertificateStore interface {
 	ListRevokedCertificates(ctx context.Context, now time.Time) ([]certificate.Revoked, error)
 }
 
+// NotificationService stores the notifications of users, delivers them on the
+// channels they choose and keeps their preferences.
+type NotificationService interface {
+	// Notify sends a notification of cat to rcpt on the channels their preferences enable.
+	Notify(ctx context.Context, rcpt notification.Recipient, cat notification.Category, header, message string) error
+	// Forward hands a notification to the receivers of rcpt without storing it in their inbox.
+	Forward(ctx context.Context, rcpt notification.Recipient, cat notification.Category, header, message string) error
+	// Channels lists the channels users choose between, the in-app inbox first.
+	Channels() []notification.ChannelInfo
+	// List returns the notifications of a user matching a normalized query, newest first.
+	List(ctx context.Context, userPK int, q notification.Query) ([]notification.Notification, error)
+	CountUnread(ctx context.Context, userPK int) (int, error)
+	// MarkRead returns notification.ErrNotFound when the user has no such notification.
+	MarkRead(ctx context.Context, userPK int, id int64) error
+	MarkAllRead(ctx context.Context, userPK int) error
+	// Delete returns notification.ErrNotFound when the user has no such notification.
+	Delete(ctx context.Context, userPK int, id int64) error
+	DeleteAll(ctx context.Context, userPK int) error
+	// Preferences returns the complete preferences of a user.
+	Preferences(ctx context.Context, userPK int) (notification.Preferences, error)
+	// SetPreferences replaces the preferences of rcpt and always notifies them of
+	// the change. It returns an error wrapping notification.ErrInvalidPreferences
+	// for invalid preferences.
+	SetPreferences(ctx context.Context, rcpt notification.Recipient, p notification.Preferences) (notification.Preferences, error)
+}
+
+var _ NotificationService = (*notification.Notifier)(nil)
+
 // Deps are the collaborators of the Server.
 type Deps struct {
 	Users  UserService
@@ -168,6 +197,9 @@ type Deps struct {
 	Certificates CertificateStore
 	// KeyDownloads holds generated keys until their single download.
 	KeyDownloads *pki.Pending
+	// Notifications tells users about changes to their account. When nil,
+	// notifications are disabled.
+	Notifications NotificationService
 }
 
 // Server is the HTTP handler for the application.
@@ -186,6 +218,8 @@ type Server struct {
 	ca           *pki.CA
 	certificates CertificateStore
 	keyDownloads *pki.Pending
+	// notifications tells users about changes to their account; nil disables them.
+	notifications NotificationService
 	// crl caches the signed revocation list.
 	crl crlCache
 	// handler is the router wrapped in CSRF protection.
@@ -208,6 +242,7 @@ func New(d Deps) *Server {
 		ca:                 d.CA,
 		certificates:       d.Certificates,
 		keyDownloads:       d.KeyDownloads,
+		notifications:      d.Notifications,
 	}
 
 	api := http.NewServeMux()
@@ -281,6 +316,16 @@ func New(d Deps) *Server {
 	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.importCertificates).ServeHTTP))
 	// They may assign an imported certificate to its account once the account exists.
 	api.Handle("POST /api/certificates/{serial}/assign", s.requireCertificates(s.requireAdmin(s.assignCertificate).ServeHTTP))
+	// Every signed-in internal user reads their own notifications and chooses
+	// which ones they receive; see notifications.go.
+	api.Handle("GET /api/notifications", s.requireNotifications(s.listNotifications))
+	api.Handle("DELETE /api/notifications", s.requireNotifications(s.deleteAllNotifications))
+	api.Handle("GET /api/notifications/unread-count", s.requireNotifications(s.countUnreadNotifications))
+	api.Handle("POST /api/notifications/read-all", s.requireNotifications(s.markAllNotificationsRead))
+	api.Handle("POST /api/notifications/{id}/read", s.requireNotifications(s.markNotificationRead))
+	api.Handle("DELETE /api/notifications/{id}", s.requireNotifications(s.deleteNotification))
+	api.Handle("GET /api/notifications/preferences", s.requireNotifications(s.getNotificationPreferences))
+	api.Handle("PUT /api/notifications/preferences", s.requireNotifications(s.putNotificationPreferences))
 	api.HandleFunc("GET /api/version", getVersion)
 	api.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)

@@ -618,6 +618,7 @@ func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordUser(r, audit.ActionUserGroupAdded, user, map[string]string{"group": group.Name})
+	s.notifyGroupChanges(r, user, []string{fmt.Sprintf("Added to the group %q", group.Name)})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -638,6 +639,7 @@ func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordUser(r, audit.ActionUserGroupRemoved, user, map[string]string{"group": group.Name})
+	s.notifyGroupChanges(r, user, []string{fmt.Sprintf("Removed from the group %q", group.Name)})
 	w.WriteHeader(http.StatusNoContent)
 }
 

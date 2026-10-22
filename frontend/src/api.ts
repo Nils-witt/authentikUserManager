@@ -669,3 +669,70 @@ export const me = () => request<Me>('GET', '/auth/me')
 
 /** Ends the session and returns authentik's end-session URL, if it has one. */
 export const logout = () => request<{ logout_url?: string }>('POST', '/auth/logout')
+
+/** What a notification is about. */
+export type NotificationCategory = 'profile' | 'certificate' | 'join_request' | 'settings'
+
+/** A message to the signed-in user about a change to their account. */
+export interface Notification {
+  id: number
+  category: NotificationCategory
+  header: string
+  message: string
+  created_at: string
+  /** Null while unread. */
+  read_at: string | null
+}
+
+/** A page of the signed-in user's notifications, newest first. */
+export interface NotificationPage {
+  notifications: Notification[]
+  /** Pass as `before` to load the next page; absent on the last page. */
+  next?: number
+  /** How many of all the user's notifications are unread. */
+  unread: number
+}
+
+/** A way notifications reach the user: "in_app", or a delivery system such as "email". */
+export interface NotificationChannel {
+  name: string
+  label: string
+}
+
+/** Whether the user receives the notifications of a category, per category and channel. */
+export type NotificationPreferences = Record<NotificationCategory, Record<string, boolean>>
+
+/** The signed-in user's notification preferences and what they choose between. */
+export interface NotificationSettings {
+  channels: NotificationChannel[]
+  categories: { name: NotificationCategory; label: string; mandatory: boolean }[]
+  preferences: NotificationPreferences
+}
+
+/** Loads a page of the signed-in user's notifications, newest first. */
+export function listNotifications(params: { before?: number } = {}) {
+  const q = new URLSearchParams()
+  if (params.before) q.set('before', String(params.before))
+  return request<NotificationPage>('GET', `/api/notifications?${q}`)
+}
+
+/** Counts the signed-in user's unread notifications. */
+export const countUnreadNotifications = () =>
+  request<{ unread: number }>('GET', '/api/notifications/unread-count').then((res) => res.unread)
+
+export const markNotificationRead = (id: number) =>
+  request<void>('POST', `/api/notifications/${id}/read`)
+
+export const markAllNotificationsRead = () => request<void>('POST', '/api/notifications/read-all')
+
+export const deleteNotification = (id: number) =>
+  request<void>('DELETE', `/api/notifications/${id}`)
+
+export const deleteAllNotifications = () => request<void>('DELETE', '/api/notifications')
+
+export const notificationSettings = () =>
+  request<NotificationSettings>('GET', '/api/notifications/preferences')
+
+/** Saves the signed-in user's preferences; they are always notified of the change. */
+export const putNotificationPreferences = (preferences: NotificationPreferences) =>
+  request<NotificationSettings>('PUT', '/api/notifications/preferences', { preferences })
