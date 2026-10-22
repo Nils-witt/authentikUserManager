@@ -212,6 +212,8 @@ type certEnv struct {
 	log       *fakeAudit
 	// notes records the notifications sent.
 	notes *memoryNotifications
+	// keys are the API keys of the service API.
+	keys *fakeAPIKeys
 }
 
 // testCAOptions are the options of the CAs newTestCA returns by default.
@@ -278,6 +280,7 @@ func newCertServerWithOptions(t *testing.T, opts pki.Options, users server.UserS
 		certs:  &fakeCertificates{},
 		clock:  &testClock{t: time.Now()},
 		log:    &fakeAudit{},
+		keys:   &fakeAPIKeys{},
 	}
 	env.downloads = pki.NewPending(env.clock.Now)
 	notifier, notes, _, _ := newNotifier(t)
@@ -293,6 +296,7 @@ func newCertServerWithOptions(t *testing.T, opts pki.Options, users server.UserS
 		Certificates:  env.certs,
 		KeyDownloads:  env.downloads,
 		Notifications: notifier,
+		APIKeys:       env.keys,
 	})
 	return env
 }

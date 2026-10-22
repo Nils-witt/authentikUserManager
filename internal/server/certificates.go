@@ -458,8 +458,14 @@ func (s *Server) revokeAccountCertificateOf(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	s.revokeCertificateOf(w, r, user, serial)
+}
+
+// revokeCertificateOf revokes the certificate with the valid serial of user.
+// Its key can no longer be downloaded. Certificates of other users are
+// reported as not found.
+func (s *Server) revokeCertificateOf(w http.ResponseWriter, r *http.Request, user *authentik.User, serial string) {
 	c, err := s.certificates.GetCertificate(r.Context(), serial)
-	// Certificates of other users are reported as not found.
 	if err == nil && c.UserPK != user.PK {
 		err = certificate.ErrNotFound
 	}

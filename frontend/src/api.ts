@@ -133,6 +133,8 @@ export type AuditAction =
   | 'service_account.deleted'
   | 'service_account.token_created'
   | 'service_account.token_deleted'
+  | 'service_account.api_key_created'
+  | 'service_account.api_key_deleted'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -267,6 +269,35 @@ export interface CreateTokenInput {
 /** A new token with its key, which is not shown again. */
 export interface CreatedToken {
   token: Token
+  key: string
+}
+
+/** An API key with which a service account uses the service API; the key itself is only shown when it is created. */
+export interface ApiKey {
+  id: number
+  /** Primary key of the service account the key authenticates as. */
+  user_pk: number
+  username: string
+  description: string
+  /** The beginning of the key, to tell keys apart. */
+  start: string
+  created_at: string
+  created_by: string
+  /** Null for a key that never expires. */
+  expires_at: string | null
+  /** Null while the key has not been used. */
+  last_used_at: string | null
+}
+
+export interface CreateApiKeyInput {
+  description: string
+  /** When the key expires (ISO 8601); null for a key that never expires. */
+  expires: string | null
+}
+
+/** A new API key with the key, which is not shown again. */
+export interface CreatedApiKey {
+  api_key: ApiKey
   key: string
 }
 
@@ -542,6 +573,19 @@ export const createToken = (id: number, input: CreateTokenInput) =>
 
 export const deleteToken = (id: number, identifier: string) =>
   request<void>('DELETE', `/api/service-accounts/${id}/tokens/${encodeURIComponent(identifier)}`)
+
+/** The API keys of a service account, without the keys themselves. */
+export const listApiKeys = (id: number) =>
+  request<{ api_keys: ApiKey[] }>('GET', `/api/service-accounts/${id}/api-keys`).then(
+    (res) => res.api_keys,
+  )
+
+/** Creates an API key for a service account; the result holds the key, which is not shown again. */
+export const createApiKey = (id: number, input: CreateApiKeyInput) =>
+  request<CreatedApiKey>('POST', `/api/service-accounts/${id}/api-keys`, input)
+
+export const deleteApiKey = (id: number, keyId: number) =>
+  request<void>('DELETE', `/api/service-accounts/${id}/api-keys/${keyId}`)
 
 /** The certificates of a service account; `downloadable` while the signed-in operator can download a key. */
 export const listServiceAccountCertificates = (id: number) =>

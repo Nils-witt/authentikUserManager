@@ -21,6 +21,7 @@ import { StatusAlerts } from '../users/StatusAlerts'
 import { UserForm } from '../users/UserForm'
 import { UserTable } from '../users/UserTable'
 import { UserToolbar } from '../users/UserToolbar'
+import { ApiKeysDialog } from './ApiKeysDialog'
 import { TokensDialog } from './TokensDialog'
 
 const NOUN = 'service account'
@@ -30,6 +31,7 @@ type Dialog =
   | { kind: 'create' }
   | { kind: 'edit'; account: User }
   | { kind: 'tokens'; account: User }
+  | { kind: 'api-keys'; account: User }
   | { kind: 'certificates'; account: User }
   | null
 
@@ -143,6 +145,7 @@ export function ServiceAccounts() {
               onToggleActive={(account) => void toggleActive(account)}
               onSendRecovery={() => undefined}
               onTokens={(account) => setDialog({ kind: 'tokens', account })}
+              onApiKeys={(account) => setDialog({ kind: 'api-keys', account })}
               onCertificates={(account) => setDialog({ kind: 'certificates', account })}
               onDelete={(account) => void remove(account)}
             />
@@ -201,6 +204,13 @@ export function ServiceAccounts() {
       )}
       {dialog?.kind === 'tokens' && (
         <TokensDialog
+          account={dialog.account}
+          onClose={() => setDialog(null)}
+          onChanged={setNotice}
+        />
+      )}
+      {dialog?.kind === 'api-keys' && (
+        <ApiKeysDialog
           account={dialog.account}
           onClose={() => setDialog(null)}
           onChanged={setNotice}

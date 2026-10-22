@@ -7,6 +7,7 @@ import KeyIcon from '@mui/icons-material/Key'
 import LockIcon from '@mui/icons-material/Lock'
 import MailLockIcon from '@mui/icons-material/MailLock'
 import VerifiedUserIcon from '@mui/icons-material/VerifiedUser'
+import VpnKeyIcon from '@mui/icons-material/VpnKey'
 import IconButton from '@mui/material/IconButton'
 import Tooltip from '@mui/material/Tooltip'
 import type { User } from '../../api'
@@ -26,6 +27,11 @@ export interface UserRowActionsProps {
   onDelete: (user: User) => void
   /** Lists the tokens of a service account; the button is hidden when undefined. */
   onTokens?: (user: User) => void
+  /**
+   * Lists the API keys of a service account for the service API; the button is hidden when
+   * undefined or certificates cannot be managed, which is all the keys are for.
+   */
+  onApiKeys?: (user: User) => void
   /** Lists the applications the user may access; the button is hidden when undefined. */
   onApplications?: (user: User) => void
 }
@@ -42,6 +48,7 @@ export function UserRowActions({
   onCertificates,
   onDelete,
   onTokens,
+  onApiKeys,
   onApplications,
 }: UserRowActionsProps) {
   // Listing the applications changes nothing, so it is offered for locked users too.
@@ -95,6 +102,13 @@ export function UserRowActions({
         <Tooltip title="Tokens">
           <IconButton size="small" onClick={() => onTokens(user)}>
             <KeyIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      )}
+      {canManageCertificates && onApiKeys && (
+        <Tooltip title="API keys">
+          <IconButton size="small" onClick={() => onApiKeys(user)}>
+            <VpnKeyIcon fontSize="small" />
           </IconButton>
         </Tooltip>
       )}

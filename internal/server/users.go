@@ -928,6 +928,17 @@ func (s *Server) deleteAccountOf(w http.ResponseWriter, r *http.Request, k accou
 			fmt.Sprintf("revoking the %[1]s's certificates failed; the %[1]s was not deleted", k.noun), nil)
 		return
 	}
+	if err := s.deleteUserAPIKeys(r.Context(), r, target); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.ErrorContext(r.Context(), "deleting user API keys",
+				slog.Int("user_id", target.PK),
+				slog.Any("error", err),
+			)
+		}
+		writeError(w, http.StatusInternalServerError,
+			fmt.Sprintf("deleting the %[1]s's API keys failed; the %[1]s was not deleted", k.noun), nil)
+		return
+	}
 	if err := s.users.DeleteUser(r.Context(), target.PK); err != nil {
 		s.writeUpstreamError(w, r, err)
 		return

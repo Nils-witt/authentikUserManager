@@ -63,6 +63,11 @@ const (
 	ActionTokenCreated Action = "service_account.token_created"
 	// ActionTokenDeleted is recorded when an operator deletes a token of a service account.
 	ActionTokenDeleted Action = "service_account.token_deleted"
+	// ActionAPIKeyCreated is recorded when an operator creates an API key of a service account.
+	ActionAPIKeyCreated Action = "service_account.api_key_created"
+	// ActionAPIKeyDeleted is recorded when an operator deletes an API key of a service account,
+	// or its keys are deleted with the service account.
+	ActionAPIKeyDeleted Action = "service_account.api_key_deleted"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -76,7 +81,7 @@ func (a Action) Valid() bool {
 		ActionCertificateIssued, ActionCertificateKeyDownloaded, ActionCertificateRevoked, ActionCertificateImported,
 		ActionCertificateAssigned,
 		ActionServiceAccountCreated, ActionServiceAccountUpdated, ActionServiceAccountDeleted,
-		ActionTokenCreated, ActionTokenDeleted:
+		ActionTokenCreated, ActionTokenDeleted, ActionAPIKeyCreated, ActionAPIKeyDeleted:
 		return true
 	}
 	return false

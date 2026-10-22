@@ -169,6 +169,7 @@ func run(logger *slog.Logger) error {
 			Certificates:       db,
 			KeyDownloads:       keyDownloads,
 			Notifications:      notifier,
+			APIKeys:            db,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

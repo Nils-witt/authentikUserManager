@@ -12,7 +12,7 @@ A small web app for managing users in an [authentik](https://goauthentik.io) ins
 
 ## Features
 
-List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), create and rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Operators also manage [service accounts](#service-accounts) with their tokens and certificates. Group-based access rules limit which users each operator may manage, Users are [notified](#notifications) in the app and by email about changes to their account. An [audit log](#audit-log) records every change.
+List and search users (paginated), filter them by active or inactive, browse them by folder (path), create, edit (username, name, email, path, type, active, groups and [primary group](#primary-groups)), activate/deactivate, delete, and send a password recovery email. Access administrators can also list the authentik [groups](#groups), create and rename them, and add or remove their members. Users can [request to join](#join-requests) visible groups, and the operators managing a group approve or reject the requests. Users can issue [client certificates](#client-certificates) for their own account, which they and their operators can revoke. Operators also manage [service accounts](#service-accounts) with their tokens, certificates and API keys, with which service accounts renew and revoke their own certificates. Group-based access rules limit which users each operator may manage, Users are [notified](#notifications) in the app and by email about changes to their account. An [audit log](#audit-log) records every change.
 
 ## Configuration
 
@@ -142,6 +142,11 @@ shown.
   certificates](#client-certificates) for it, like users do for themselves. A generated key can be
   downloaded once, by the operator who issued the certificate. Renaming, deactivating or deleting
   the service account revokes its certificates, as for users.
+- **API keys**: when certificates are configured, the same operators create API keys with which
+  the service account itself issues and revokes its certificates through the [service
+  API](#service-api), optionally expiring. The key is shown once; only its SHA-256 hash is stored.
+  Deleting a key rejects it at once; deactivating the service account rejects its keys, and
+  deleting it deletes them.
 
 The API mirrors the user routes under `/api/service-accounts` (`GET`, `POST`, `GET`/`PATCH`/`DELETE
 /{id}`, `PUT /{id}/groups`), plus `GET` and `POST /api/service-accounts/{id}/tokens` (body
@@ -149,7 +154,36 @@ The API mirrors the user routes under `/api/service-accounts` (`GET`, `POST`, `G
 `{token, key}`), `DELETE /api/service-accounts/{id}/tokens/{identifier}`, `GET` and `POST
 /api/service-accounts/{id}/certificates` (as `/api/certificates/mine`) and `POST
 /api/service-accounts/{id}/certificates/{serial}/revoke`. Generated keys are downloaded from
-`/api/certificates/mine/{serial}/download` by the issuing operator.
+`/api/certificates/mine/{serial}/download` by the issuing operator. API keys are listed and
+created with `GET` and `POST /api/service-accounts/{id}/api-keys` (body `{"description": "...",
+"expires": "<RFC 3339>"|null}`, returning `{api_key, key}`) and deleted with `DELETE
+/api/service-accounts/{id}/api-keys/{keyID}`.
+
+### Service API
+
+Programs running as a service account renew and revoke its certificates under `/service-api/v1/`,
+authenticated with an API key instead of a session (`Authorization: Bearer amk_…`). The service
+account must be active. The server never generates keys here: the program sends a CSR and keeps
+its private key.
+
+| Method | Path                                           | Body                                                         |
+| ------ | ---------------------------------------------- | ------------------------------------------------------------ |
+| GET    | `/service-api/v1/certificates`                 | the service account's certificates: `{certificates}`         |
+| POST   | `/service-api/v1/certificates`                 | `{csr}`; returns `{certificate, certificate_pem, chain_pem}` |
+| POST   | `/service-api/v1/certificates/{serial}/revoke` | revokes a certificate of the service account; returns it     |
+
+```sh
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout client.key -out client.csr -subj /CN=ignored
+jq -Rs '{csr: .}' client.csr | curl -sS -H "Authorization: Bearer $API_KEY" \
+  -H 'Content-Type: application/json' -d @- https://<app-host>/service-api/v1/certificates
+curl -sS -X POST -H "Authorization: Bearer $API_KEY" \
+  https://<app-host>/service-api/v1/certificates/$SERIAL/revoke
+```
+
+The subject of the CSR is ignored; the certificate names the service account like the ones
+operators issue. Requests without a valid key get 401. Changes made through the service API are
+audited with the service account as the actor and the key's ID.
 
 ## Access rules
 
@@ -292,7 +326,7 @@ parameters `before`, `limit`), `GET /api/notifications/unread-count`,
 
 Every change made through the app is recorded in PostgreSQL with the time, the operator,
 the action, the affected user or rule, and details such as the changed fields or groups:
-creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing, importing, assigning and revoking certificates and downloading their keys, creating and deleting service account tokens (never their keys),
+creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing, importing, assigning and revoking certificates and downloading their keys, creating and deleting service account tokens and API keys (never their keys),
 saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
@@ -352,7 +386,7 @@ the frontend, run `make build` again.
 
 - Users are filtered by the access rules on the server for every route; the UI only mirrors it.
   If the rules cannot be loaded, requests fail with 500 instead of falling back to more access.
-- Every `/api/` route requires a login. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Any authentik user may log in; operators without an access rule see and manage no users.
+- Every `/api/` route requires a login. The [service API](#service-api) requires the API key of an active service account instead and reads no cookies. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Any authentik user may log in; operators without an access rule see and manage no users.
 - The browser only holds an opaque session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` with a `__Host-` prefix when served over https). ID and access tokens never reach the browser.
 - Logging out of authentik also ends the app's sessions when the provider's **Back-Channel Logout URI** is set to `https://<app-host>/auth/backchannel-logout`. The app only accepts logout tokens signed by the provider for this client ID. It checks that the token is recent, carries the back-channel logout event and has no nonce. It ends the session with the token's `sid`. If the token or the session has no `sid`, it ends all sessions of the token's `sub`.
 - Sessions live in memory for 8 hours. A restart logs everyone out, and you must run a single instance.

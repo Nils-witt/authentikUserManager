@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"authentikManager/internal/access"
+	"authentikManager/internal/apikey"
 	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
@@ -145,6 +146,22 @@ type CertificateStore interface {
 	ListRevokedCertificates(ctx context.Context, now time.Time) ([]certificate.Revoked, error)
 }
 
+// APIKeyStore keeps the API keys with which service accounts issue and revoke
+// their own certificates.
+type APIKeyStore interface {
+	// CreateAPIKey stores a new key under hash, the hash of the key.
+	CreateAPIKey(ctx context.Context, k apikey.Key, hash []byte) (apikey.Key, error)
+	// ListAPIKeys returns the keys of a user, newest first.
+	ListAPIKeys(ctx context.Context, userPK int) ([]apikey.Key, error)
+	// DeleteAPIKey returns apikey.ErrNotFound when the user has no such key.
+	DeleteAPIKey(ctx context.Context, userPK int, id int64) (apikey.Key, error)
+	// DeleteUserAPIKeys deletes every key of a user and returns how many it deleted.
+	DeleteUserAPIKeys(ctx context.Context, userPK int) (int64, error)
+	// AuthenticateAPIKey returns the unexpired key stored under hash and records
+	// its use at now, or returns apikey.ErrNotFound.
+	AuthenticateAPIKey(ctx context.Context, hash []byte, now time.Time) (apikey.Key, error)
+}
+
 // NotificationService stores the notifications of users, delivers them on the
 // channels they choose and keeps their preferences.
 type NotificationService interface {
@@ -200,6 +217,9 @@ type Deps struct {
 	// Notifications tells users about changes to their account. When nil,
 	// notifications are disabled.
 	Notifications NotificationService
+	// APIKeys keeps the API keys of service accounts. When nil, API keys and
+	// the service API are disabled.
+	APIKeys APIKeyStore
 }
 
 // Server is the HTTP handler for the application.
@@ -220,6 +240,8 @@ type Server struct {
 	keyDownloads *pki.Pending
 	// notifications tells users about changes to their account; nil disables them.
 	notifications NotificationService
+	// apiKeys keeps the API keys of service accounts; nil disables them.
+	apiKeys APIKeyStore
 	// crl caches the signed revocation list.
 	crl crlCache
 	// handler is the router wrapped in CSRF protection.
@@ -243,6 +265,7 @@ func New(d Deps) *Server {
 		certificates:       d.Certificates,
 		keyDownloads:       d.KeyDownloads,
 		notifications:      d.Notifications,
+		apiKeys:            d.APIKeys,
 	}
 
 	api := http.NewServeMux()
@@ -293,6 +316,10 @@ func New(d Deps) *Server {
 	api.HandleFunc("GET /api/service-accounts/{id}/tokens", s.listServiceAccountTokens)
 	api.HandleFunc("POST /api/service-accounts/{id}/tokens", s.createServiceAccountToken)
 	api.HandleFunc("DELETE /api/service-accounts/{id}/tokens/{identifier}", s.deleteServiceAccountToken)
+	// The same operators manage the API keys of the service API; see apikeys.go.
+	api.Handle("GET /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.listAPIKeys))
+	api.Handle("POST /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.createAPIKey))
+	api.Handle("DELETE /api/service-accounts/{id}/api-keys/{keyID}", s.requireAPIKeys(s.deleteAPIKey))
 	// Users issue certificates for their own account only and download the
 	// generated key once; see certificates.go. Operators who may change a
 	// user may list and revoke the user's certificates.
@@ -341,6 +368,9 @@ func New(d Deps) *Server {
 	mux.Handle("GET /pki/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/ca.pem", s.requireCertificates(s.getCAChain))
 	mux.Handle("/api/", d.Auth.Require(api))
+	// Service accounts authenticate to the service API with an API key
+	// instead of a session; see serviceapi.go.
+	mux.Handle("/service-api/", s.serviceAPI())
 	if d.Static != nil {
 		mux.Handle("/", s.spaHandler(d.Static))
 	}

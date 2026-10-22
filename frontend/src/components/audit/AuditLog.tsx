@@ -39,6 +39,8 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'service_account.deleted': 'Service account deleted',
   'service_account.token_created': 'Token created',
   'service_account.token_deleted': 'Token deleted',
+  'service_account.api_key_created': 'API key created',
+  'service_account.api_key_deleted': 'API key deleted',
   'access_rule.saved': 'Access rule saved',
   'access_rule.deleted': 'Access rule deleted',
   'group.created': 'Group created',
