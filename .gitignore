@@ -185,3 +185,10 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
+
+# opsi package: copied by opsi/build.sh, and build output
+/opsi/CLIENT_DATA/files/Update-ServiceCertificate.ps1
+/opsi/*.opsi
+/opsi/*.opsi.md5
+/opsi/*.opsi.zsync
+/opsi/OPSI/control

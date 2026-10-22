@@ -1,0 +1,67 @@
+[Package]
+version = "4"
+depends = []
+
+[Product]
+type = "LocalbootProduct"
+id = "authentik-manager-cert"
+name = "authentik-manager service certificate"
+description = """Obtains a client certificate of an authentik-manager service account in Cert:\\LocalMachine\\My.
+Each setup run renews it through the service API when there is none or little of its lifetime remains, then revokes and deletes the old one."""
+advice = """Set base_url and api_key (client-specific: one service account per machine).
+Nothing is installed and the API key is not stored on the client; set the product to setup again to renew."""
+version = "1.0.0"
+priority = 0
+licenseRequired = false
+productClasses = []
+setupScript = "setup.opsiscript"
+windowsSoftwareIds = []
+
+[[ProductProperty]]
+type = "UnicodeProductProperty"
+name = "base_url"
+description = """URL of authentik-manager, e.g. https://am.example.com"""
+default = [""]
+values = [
+    "",
+]
+multivalue = false
+editable = true
+
+[[ProductProperty]]
+type = "UnicodeProductProperty"
+name = "api_key"
+description = """API key (amk_...) of the service account; create it under Service accounts > API keys"""
+default = [""]
+values = [
+    "",
+]
+multivalue = false
+editable = true
+
+[[ProductProperty]]
+type = "UnicodeProductProperty"
+name = "renew_threshold_percent"
+description = """Renew once no more than this percentage of the certificate's lifetime remains (1-99)"""
+default = ["10"]
+values = [
+    "10",
+    "20",
+    "33",
+    "5",
+]
+multivalue = false
+editable = true
+
+[[ProductProperty]]
+type = "UnicodeProductProperty"
+name = "key_algorithm"
+description = """Algorithm of new keys"""
+default = ["ECDSA_P256"]
+values = [
+    "ECDSA_P256",
+    "RSA_2048",
+    "RSA_3072",
+]
+multivalue = false
+editable = false

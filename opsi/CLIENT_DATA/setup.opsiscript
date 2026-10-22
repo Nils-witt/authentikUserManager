@@ -1,0 +1,53 @@
+; Runs Update-ServiceCertificate.ps1 once from the depot: it obtains a
+; certificate of the service account in Cert:\LocalMachine\My, or renews it
+; when little of its lifetime remains. Nothing is installed, and the API key is
+; only passed to the script in an environment variable, never stored.
+
+[Actions]
+requiredOpsiscriptVersion >= "4.12.4.23"
+ScriptErrorMessages = false
+
+DefVar $ProductId$
+DefVar $BaseUrl$
+DefVar $ApiKey$
+DefVar $Threshold$
+DefVar $KeyAlgorithm$
+DefVar $ExitCode$
+
+Set $ProductId$ = "authentik-manager-cert"
+Set $BaseUrl$ = GetProductProperty("base_url", "")
+; Keeps the key out of the opsi logs.
+Set $ApiKey$ = GetProductProperty("api_key", "")
+Set $Threshold$ = GetProductProperty("renew_threshold_percent", "10")
+Set $KeyAlgorithm$ = GetProductProperty("key_algorithm", "ECDSA_P256")
+
+if not(GetOS = "Windows_NT")
+	isFatalError "this product supports Windows only"
+endif
+if not(FileExists("%ScriptPath%\files\Update-ServiceCertificate.ps1"))
+	isFatalError "the package lacks Update-ServiceCertificate.ps1; build it with opsi/build.sh"
+endif
+if not(isRegexMatch($BaseUrl$, '^https?://[^\s"]+$'))
+	isFatalError "base_url must be the http(s) URL of authentik-manager"
+endif
+
+if not(isRegexMatch($Threshold$, "^[1-9][0-9]?$"))
+	isFatalError "renew_threshold_percent must be a number from 1 to 99"
+endif
+
+Message "Checking the certificate of " + $ProductId$ + " ..."
+DosInAnIcon_update_certificate /SysNative
+Set $ExitCode$ = getLastExitCode
+if $ExitCode$ = "2"
+	LogWarning "the new certificate is installed, but removing an old one failed; the next setup run retries"
+else
+	if not($ExitCode$ = "0")
+		isFatalError "Update-ServiceCertificate.ps1 failed with exit code " + $ExitCode$
+	endif
+endif
+
+
+[DosInAnIcon_update_certificate]
+set "AUTHENTIK_MANAGER_API_KEY=$ApiKey$"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%ScriptPath%\files\Update-ServiceCertificate.ps1" -BaseUrl "$BaseUrl$" -RenewThresholdPercent $Threshold$ -KeyAlgorithm $KeyAlgorithm$
+exit %ERRORLEVEL%

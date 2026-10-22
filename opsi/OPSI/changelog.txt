@@ -1,0 +1,5 @@
+authentik-manager-cert (1.0.0-1)
+
+  * Initial package: runs Update-ServiceCertificate.ps1 once per setup from the
+    depot to obtain or renew the service account certificate. Installs nothing
+    and does not store the API key.

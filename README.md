@@ -187,6 +187,13 @@ with a new non-exportable key, then revokes and deletes the old one. Run it elev
 from a scheduled task: `Update-ServiceCertificate.ps1 -BaseUrl https://<app-host> -ApiKeyFile
 C:\ProgramData\am\api-key.txt` (`-WhatIf` shows what it would do).
 
+The opsi product in [`opsi/`](opsi) (`authentik-manager-cert`) runs it once per setup, from the
+depot: it installs nothing and does not store the API key on the client. Set the product to setup
+again to renew. Set the properties `base_url` and `api_key` per client. Build it with
+`opsi/build.sh` (needs Docker): it copies the script into the package and runs `opsi-makepackage`
+in a container, writing `opsi/authentik-manager-cert_<version>.opsi`; install it on the opsi server
+with `opsi-package-manager -i`.
+
 The subject of the CSR is ignored; the certificate names the service account like the ones
 operators issue. Requests without a valid key get 401. Changes made through the service API are
 audited with the service account as the actor and the key's ID.
