@@ -268,7 +268,6 @@ func TestAuthorities_adminOnly(t *testing.T) {
 	env := newCertServer(t, ownAccountUsers(), "helpdesk")
 	certPEM, keyPEM := newTestCAPEM(t, "New CA")
 	for _, req := range []struct{ method, target, body string }{
-		{http.MethodGet, "/api/certificate-authorities", ""},
 		{http.MethodPost, "/api/certificate-authorities", createBody(t, "new", certPEM, keyPEM, nil)},
 		{http.MethodPut, "/api/certificate-authorities/" + env.caID.String(), `{}`},
 		{http.MethodPost, "/api/certificate-authorities/" + env.caID.String() + "/default", ""},
@@ -444,7 +443,8 @@ func TestAuthorities_setDefault(t *testing.T) {
 
 func TestAuthorities_list(t *testing.T) {
 	t.Parallel()
-	env := newCertServer(t, ownAccountUsers(), "admins")
+	// Users who are no access administrators may view the CAs too.
+	env := newCertServer(t, ownAccountUsers(), "helpdesk")
 	addStaffCA(t, env)
 
 	rec := do(t, env.srv, http.MethodGet, "/api/certificate-authorities", "")

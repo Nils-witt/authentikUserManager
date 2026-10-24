@@ -368,8 +368,9 @@ func New(d Deps) *Server {
 	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.importCertificates).ServeHTTP))
 	// They may assign an imported certificate to its account once the account exists.
 	api.Handle("POST /api/certificates/{serial}/assign", s.requireCertificates(s.requireAdmin(s.assignCertificate).ServeHTTP))
-	// Access administrators manage the certificate authorities; see authorities.go.
-	api.Handle("GET /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.listAuthorities).ServeHTTP))
+	// Every signed-in user may view the certificate authorities; access
+	// administrators manage them. See authorities.go.
+	api.Handle("GET /api/certificate-authorities", s.requireCertificates(s.listAuthorities))
 	api.Handle("POST /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.createAuthority).ServeHTTP))
 	api.Handle("PUT /api/certificate-authorities/{id}", s.requireCertificates(s.requireAdmin(s.updateAuthority).ServeHTTP))
 	api.Handle("POST /api/certificate-authorities/{id}/default",

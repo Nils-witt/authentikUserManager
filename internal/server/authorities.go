@@ -18,13 +18,14 @@ import (
 	"authentikManager/internal/pki"
 )
 
-// Access administrators add certificate authorities by uploading their
+// Every signed-in user may view the certificate authorities. Access
+// administrators add certificate authorities by uploading their
 // certificate and private key, which is stored encrypted. They change their
 // settings, choose which groups' accounts each CA issues certificates for,
 // disable CAs and choose the default one; CAs are never deleted, so the CRLs
 // of the certificates they issued stay published.
 
-// authorityView is a CA as access administrators see it, without its key.
+// authorityView is a CA as users see it, without its key.
 type authorityView struct {
 	authority.Authority
 	Subject   string    `json:"subject"`

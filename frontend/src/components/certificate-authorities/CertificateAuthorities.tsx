@@ -14,14 +14,20 @@ import { AuthorityForm } from './AuthorityForm'
 import { AuthorityTable } from './AuthorityTable'
 
 /**
- * Lets access administrators add certificate authorities, choose which accounts each one issues
- * certificates for and which one is the default, and disable them. CAs are never deleted, so the
- * CRLs of the certificates they issued stay published. onChange is called after every change,
- * since it may change the suffixes the app shows.
+ * Lists the certificate authorities. When canManage is set, it lets access administrators add
+ * them, choose which accounts each one issues certificates for and which one is the default, and
+ * disable them. CAs are never deleted, so the CRLs of the certificates they issued stay published.
+ * onChange is called after every change, since it may change the suffixes the app shows.
  */
-export function CertificateAuthorities({ onChange }: { onChange: () => void }) {
+export function CertificateAuthorities({
+  canManage,
+  onChange,
+}: {
+  canManage: boolean
+  onChange: () => void
+}) {
   const [authorities, setAuthorities] = useState<CertificateAuthority[] | null>(null)
-  const groups = useGroupNames()
+  const groups = useGroupNames(canManage)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // The CA being edited, 'new' while adding one, or null.
@@ -74,9 +80,11 @@ export function CertificateAuthorities({ onChange }: { onChange: () => void }) {
             Certificate authorities
           </Typography>
           <Box sx={{ flexGrow: 1 }} />
-          <Button variant="contained" onClick={() => setEditing('new')}>
-            Add CA
-          </Button>
+          {canManage && (
+            <Button variant="contained" onClick={() => setEditing('new')}>
+              Add CA
+            </Button>
+          )}
         </Stack>
         {error && <Alert severity="error">{error}</Alert>}
         {notice && <Alert severity="success">{notice}</Alert>}
@@ -89,8 +97,8 @@ export function CertificateAuthorities({ onChange }: { onChange: () => void }) {
           authorities={authorities}
           loadFailed={error !== null}
           busy={busy}
-          onEdit={setEditing}
-          onMakeDefault={(a) => void makeDefault(a)}
+          onEdit={canManage ? setEditing : undefined}
+          onMakeDefault={canManage ? (a) => void makeDefault(a) : undefined}
         />
       </Stack>
       {editing && (

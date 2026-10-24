@@ -19,8 +19,9 @@ interface AuthorityTableProps {
   loadFailed: boolean
   /** ID of the CA an action runs for, so its buttons show progress. */
   busy: string | null
-  onEdit: (a: CertificateAuthority) => void
-  onMakeDefault: (a: CertificateAuthority) => void
+  /** Edits a CA; without it, the CAs are read-only and the table has no actions column. */
+  onEdit?: (a: CertificateAuthority) => void
+  onMakeDefault?: (a: CertificateAuthority) => void
 }
 
 /** Lists the certificate authorities with their state and the accounts they issue for. */
@@ -31,6 +32,7 @@ export function AuthorityTable({
   onEdit,
   onMakeDefault,
 }: AuthorityTableProps) {
+  const columns = onEdit ? 6 : 5
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={authorities === null}>
       <Box sx={{ height: 4 }}>{authorities === null && !loadFailed && <LinearProgress />}</Box>
@@ -42,7 +44,7 @@ export function AuthorityTable({
             <TableCell>Expires</TableCell>
             <TableCell>Issues for</TableCell>
             <TableCell>Published</TableCell>
-            <TableCell aria-label="Actions" />
+            {onEdit && <TableCell aria-label="Actions" />}
           </TableRow>
         </TableHead>
         <TableBody>
@@ -77,29 +79,33 @@ export function AuthorityTable({
                 {' · '}
                 <Link href={`/pki/${a.id}/crl.pem`}>CRL</Link>
               </TableCell>
-              <TableCell align="right">
-                <Stack direction="row" spacing={1} sx={{ justifyContent: 'flex-end' }}>
-                  {!a.default && !a.disabled && (
-                    <Button
-                      size="small"
-                      loading={busy === a.id}
-                      disabled={busy !== null && busy !== a.id}
-                      onClick={() => onMakeDefault(a)}
-                    >
-                      Make default
+              {onEdit && (
+                <TableCell align="right">
+                  <Stack direction="row" spacing={1} sx={{ justifyContent: 'flex-end' }}>
+                    {onMakeDefault && !a.default && !a.disabled && (
+                      <Button
+                        size="small"
+                        loading={busy === a.id}
+                        disabled={busy !== null && busy !== a.id}
+                        onClick={() => onMakeDefault(a)}
+                      >
+                        Make default
+                      </Button>
+                    )}
+                    <Button size="small" disabled={busy !== null} onClick={() => onEdit(a)}>
+                      Edit
                     </Button>
-                  )}
-                  <Button size="small" disabled={busy !== null} onClick={() => onEdit(a)}>
-                    Edit
-                  </Button>
-                </Stack>
-              </TableCell>
+                  </Stack>
+                </TableCell>
+              )}
             </TableRow>
           ))}
           {authorities?.length === 0 && (
             <TableRow>
-              <TableCell colSpan={6} align="center" sx={{ color: 'text.secondary', py: 3 }}>
-                No certificate authorities yet. Add one to issue certificates.
+              <TableCell colSpan={columns} align="center" sx={{ color: 'text.secondary', py: 3 }}>
+                {onEdit
+                  ? 'No certificate authorities yet. Add one to issue certificates.'
+                  : 'No certificate authorities yet.'}
               </TableCell>
             </TableRow>
           )}

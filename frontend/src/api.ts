@@ -266,7 +266,7 @@ export interface AuthoritySettings {
   allowed_groups: string[]
 }
 
-/** A certificate authority, as access administrators see it. Its key is never sent. */
+/** A certificate authority, as users see it. Its key is never sent. */
 export interface CertificateAuthority extends AuthoritySettings {
   /** UUID of the CA, which requests and its URLs name it by. */
   id: string
@@ -785,7 +785,7 @@ export const importCertificates = (pem: string, options: ImportOptions) =>
     revoke: options.revoke,
   }).then((res) => res.results)
 
-/** Lists every certificate authority, disabled ones included; only for access administrators. */
+/** Lists every certificate authority, disabled ones included. */
 export const listAuthorities = () =>
   request<{ authorities: CertificateAuthority[] }>('GET', '/api/certificate-authorities').then(
     (res) => res.authorities,
