@@ -132,8 +132,8 @@ func (s *Server) listCallerCertificates(w http.ResponseWriter, r *http.Request) 
 // The service account keeps its key; the server never generates one here.
 type issueCallerCertificateInput struct {
 	CSR string `json:"csr"`
-	// CA optionally names the CA to sign; see issueCertificateInput.CA.
-	CA string `json:"ca"`
+	// CAID is the optional UUID of the CA to sign; see issueCertificateInput.CAID.
+	CAID string `json:"ca_id"`
 }
 
 // issueCallerCertificate issues a client certificate for the public key of a
@@ -147,7 +147,7 @@ func (s *Server) issueCallerCertificate(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"csr": {"a CSR is required"}})
 		return
 	}
-	in := issueCertificateInput{CSR: body.CSR, CA: body.CA}
+	in := issueCertificateInput{CSR: body.CSR, CAID: body.CAID}
 	pub, fields := in.validate()
 	if fields != nil {
 		writeError(w, http.StatusBadRequest, "validation failed", fields)

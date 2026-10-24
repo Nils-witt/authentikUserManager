@@ -18,7 +18,7 @@ interface AuthorityTableProps {
   authorities: CertificateAuthority[] | null
   loadFailed: boolean
   /** ID of the CA an action runs for, so its buttons show progress. */
-  busy: number | null
+  busy: string | null
   onEdit: (a: CertificateAuthority) => void
   onMakeDefault: (a: CertificateAuthority) => void
 }
@@ -73,9 +73,9 @@ export function AuthorityTable({
                 )}
               </TableCell>
               <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                <Link href={`/pki/${a.name}/ca.pem`}>Chain</Link>
+                <Link href={`/pki/${a.id}/ca.pem`}>Chain</Link>
                 {' · '}
-                <Link href={`/pki/${a.name}/crl.pem`}>CRL</Link>
+                <Link href={`/pki/${a.id}/crl.pem`}>CRL</Link>
               </TableCell>
               <TableCell align="right">
                 <Stack direction="row" spacing={1} sx={{ justifyContent: 'flex-end' }}>

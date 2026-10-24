@@ -16,8 +16,12 @@ import { errorMessage } from '../../errors'
 /** Largest PEM file read into the form. */
 const MAX_PEM_BYTES = 256 * 1024
 
-/** Names the server accepts; it checks them too. */
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/
+/** Longest name the server accepts; it checks names too. */
+const MAX_NAME_LENGTH = 64
+
+/** Whether name is a valid CA name: 1 to 64 characters without control characters. */
+const isValidName = (name: string) =>
+  name !== '' && [...name].length <= MAX_NAME_LENGTH && !/\p{Cc}/u.test(name)
 
 const DEFAULT_SETTINGS: AuthoritySettings = {
   description: '',
@@ -29,8 +33,8 @@ const DEFAULT_SETTINGS: AuthoritySettings = {
   allowed_groups: [],
 }
 
-/** The public URL of the CRL this app serves for the CA named name. */
-const crlURL = (name: string) => `${window.location.origin}/pki/${name}/crl`
+/** The public URL of the CRL this app serves for the CA with id. */
+const crlURL = (id: string) => `${window.location.origin}/pki/${id}/crl`
 
 interface PEMFieldProps {
   label: string
@@ -119,8 +123,7 @@ export function AuthorityForm({ authority, groups, onCancel, onSaved }: Authorit
   const [error, setError] = useState<string | null>(null)
   const [fields, setFields] = useState<Record<string, string[]>>({})
 
-  const caName = authority?.name ?? name.trim()
-  const badName = isNew && name !== '' && !NAME_PATTERN.test(name.trim())
+  const badName = isNew && name !== '' && !isValidName(name.trim())
   const fieldError = (field: string) => fields[field]?.join(' ')
   const set = <K extends keyof AuthoritySettings>(key: K, value: AuthoritySettings[K]) =>
     setSettings((s) => ({ ...s, [key]: value }))
@@ -166,8 +169,8 @@ export function AuthorityForm({ authority, groups, onCancel, onSaved }: Authorit
                 helperText={
                   fieldError('name') ??
                   (badName
-                    ? 'Up to 32 lowercase letters, digits and hyphens'
-                    : 'Identifies the CA in requests and in its URLs; it cannot be changed')
+                    ? `Up to ${MAX_NAME_LENGTH} characters, without control characters`
+                    : 'Shown to people choosing a CA; it must be unique and cannot be changed')
                 }
               />
               <PEMField
@@ -218,11 +221,15 @@ export function AuthorityForm({ authority, groups, onCancel, onSaved }: Authorit
               fullWidth
               value={settings.crl_url}
               onChange={(e) => set('crl_url', e.target.value)}
-              helperText="Embedded in issued certificates as their CRL distribution point"
+              helperText={
+                isNew
+                  ? "Embedded in issued certificates as their CRL distribution point. This app's URL holds the CA's id, so it can be filled in once the CA is added"
+                  : 'Embedded in issued certificates as their CRL distribution point'
+              }
             />
             <Button
-              disabled={caName === '' || badName}
-              onClick={() => set('crl_url', crlURL(caName))}
+              disabled={isNew}
+              onClick={() => authority && set('crl_url', crlURL(authority.id))}
               sx={{ mt: 1, whiteSpace: 'nowrap' }}
             >
               Use this app

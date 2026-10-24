@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -21,7 +22,8 @@ const authorityColumns = `id, name, description, cert_pem, key_ciphertext, finge
 
 func scanAuthority(row pgx.CollectableRow) (authority.Authority, error) {
 	var a authority.Authority
-	err := row.Scan(&a.ID, &a.Name, &a.Description, &a.CertPEM, &a.KeyCiphertext, &a.Fingerprint, &a.CRLURL,
+	// pgx scans and encodes uuid columns as [16]byte, the underlying type of uuid.UUID.
+	err := row.Scan((*[16]byte)(&a.ID), &a.Name, &a.Description, &a.CertPEM, &a.KeyCiphertext, &a.Fingerprint, &a.CRLURL,
 		&a.ValidityDays, &a.CRLValidityDays, &a.UserCNSuffix, &a.ServiceAccountCNSuffix, &a.AllowedGroups,
 		&a.Default, &a.Legacy, &a.Disabled, &a.CreatedAt, &a.CreatedBy)
 	return a, err
@@ -43,9 +45,9 @@ func (s *Store) ListAuthorities(ctx context.Context) ([]authority.Authority, err
 	return list, nil
 }
 
-// CreateAuthority stores a new CA and returns it. It becomes the default CA
-// when there is none. It returns authority.ErrExists when its name or
-// certificate is already stored.
+// CreateAuthority stores a new CA, whose ID the caller generated, and
+// returns it. It becomes the default CA when there is none. It returns
+// authority.ErrExists when its ID, name or certificate is already stored.
 func (s *Store) CreateAuthority(ctx context.Context, a authority.Authority) (authority.Authority, error) {
 	var created authority.Authority
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -67,15 +69,15 @@ func insertAuthority(ctx context.Context, tx pgx.Tx, a authority.Authority, lega
 		return authority.Authority{}, fmt.Errorf("store: locking certificate authorities: %w", err)
 	}
 	rows, err := tx.Query(ctx, `
-		INSERT INTO certificate_authorities (name, description, cert_pem, key_ciphertext, fingerprint, crl_url,
+		INSERT INTO certificate_authorities (id, name, description, cert_pem, key_ciphertext, fingerprint, crl_url,
 			validity_days, crl_validity_days, user_cn_suffix, service_account_cn_suffix, allowed_groups,
 			is_default, legacy, disabled, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+		VALUES ($15, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			NOT $12 AND NOT EXISTS (SELECT 1 FROM certificate_authorities WHERE is_default), $13, $12, $14)
 		RETURNING `+authorityColumns,
 		a.Name, a.Description, a.CertPEM, a.KeyCiphertext, a.Fingerprint, a.CRLURL,
 		a.ValidityDays, a.CRLValidityDays, a.UserCNSuffix, a.ServiceAccountCNSuffix, a.AllowedGroups,
-		a.Disabled, legacy, a.CreatedBy,
+		a.Disabled, legacy, a.CreatedBy, [16]byte(a.ID),
 	)
 	if err != nil {
 		return authority.Authority{}, fmt.Errorf("store: creating certificate authority: %w", err)
@@ -93,14 +95,14 @@ func insertAuthority(ctx context.Context, tx pgx.Tx, a authority.Authority, lega
 // UpdateAuthority replaces the settings of the CA with id and enables or
 // disables it, and returns it. It returns authority.ErrNotFound when there is
 // no such CA and authority.ErrDefaultDisabled when disabling the default CA.
-func (s *Store) UpdateAuthority(ctx context.Context, id int64, settings authority.Settings, disabled bool) (authority.Authority, error) {
+func (s *Store) UpdateAuthority(ctx context.Context, id uuid.UUID, settings authority.Settings, disabled bool) (authority.Authority, error) {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE certificate_authorities
 		SET description = $2, crl_url = $3, validity_days = $4, crl_validity_days = $5,
 			user_cn_suffix = $6, service_account_cn_suffix = $7, allowed_groups = $8, disabled = $9
 		WHERE id = $1
 		RETURNING `+authorityColumns,
-		id, settings.Description, settings.CRLURL, settings.ValidityDays, settings.CRLValidityDays,
+		[16]byte(id), settings.Description, settings.CRLURL, settings.ValidityDays, settings.CRLValidityDays,
 		settings.UserCNSuffix, settings.ServiceAccountCNSuffix, settings.AllowedGroups, disabled,
 	)
 	if err != nil {
@@ -122,10 +124,10 @@ func (s *Store) UpdateAuthority(ctx context.Context, id int64, settings authorit
 // SetDefaultAuthority makes the CA with id the default CA. It returns
 // authority.ErrNotFound when there is no such CA and
 // authority.ErrDefaultDisabled when it is disabled.
-func (s *Store) SetDefaultAuthority(ctx context.Context, id int64) error {
+func (s *Store) SetDefaultAuthority(ctx context.Context, id uuid.UUID) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var disabled bool
-		err := tx.QueryRow(ctx, `SELECT disabled FROM certificate_authorities WHERE id = $1 FOR UPDATE`, id).Scan(&disabled)
+		err := tx.QueryRow(ctx, `SELECT disabled FROM certificate_authorities WHERE id = $1 FOR UPDATE`, [16]byte(id)).Scan(&disabled)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return authority.ErrNotFound
@@ -135,10 +137,10 @@ func (s *Store) SetDefaultAuthority(ctx context.Context, id int64) error {
 			return authority.ErrDefaultDisabled
 		}
 		// Cleared first, since at most one CA may be the default at any time.
-		if _, err := tx.Exec(ctx, `UPDATE certificate_authorities SET is_default = false WHERE is_default AND id <> $1`, id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE certificate_authorities SET is_default = false WHERE is_default AND id <> $1`, [16]byte(id)); err != nil {
 			return fmt.Errorf("store: clearing default certificate authority: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE certificate_authorities SET is_default = true WHERE id = $1`, id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE certificate_authorities SET is_default = true WHERE id = $1`, [16]byte(id)); err != nil {
 			return fmt.Errorf("store: setting default certificate authority: %w", err)
 		}
 		return nil
@@ -175,7 +177,7 @@ func (s *Store) ImportLegacyAuthority(ctx context.Context, a authority.Authority
 		if !stored.Legacy {
 			return nil
 		}
-		if _, err := tx.Exec(ctx, `UPDATE certificates SET ca_id = $1 WHERE ca_id IS NULL`, stored.ID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE certificates SET ca_id = $1 WHERE ca_id IS NULL`, [16]byte(stored.ID)); err != nil {
 			return fmt.Errorf("store: assigning certificates to the legacy certificate authority: %w", err)
 		}
 		return nil

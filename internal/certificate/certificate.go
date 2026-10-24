@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"uuid"
 )
 
 // KeySource tells where the certificate's private key was created.
@@ -68,10 +69,10 @@ type Certificate struct {
 	// Certificates issued before encodings were stored have none.
 	Stored bool `json:"stored"`
 	// CAID is the ID of the CA that signed the certificate, and CA its name.
-	// Both are empty for a certificate recorded before CAs were stored that
-	// no CA was imported for.
-	CAID int64  `json:"ca_id"`
-	CA   string `json:"ca"`
+	// CAID is the nil UUID, omitted from JSON, and CA empty for a certificate
+	// recorded before CAs were stored that no CA was imported for.
+	CAID uuid.UUID `json:"ca_id,omitzero"`
+	CA   string    `json:"ca"`
 }
 
 // Assigned reports whether the certificate belongs to a user. Only imported

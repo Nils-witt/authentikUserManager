@@ -213,8 +213,8 @@ export interface Certificate {
   revoked_by: string
   /** The certificate itself is stored and can be downloaded; not for those issued before it was stored. */
   stored: boolean
-  /** ID and name of the CA that signed it; 0 and empty for certificates recorded before CAs were stored. */
-  ca_id: number
+  /** UUID and name of the CA that signed it; absent and empty for certificates recorded before CAs were stored. */
+  ca_id?: string
   ca: string
 }
 
@@ -233,12 +233,14 @@ export type IssueCertificateInput = (
 ) & {
   /** Precedes the username in the common name, joined by "+"; own certificates only. */
   prefix?: string
-  /** Name of the CA to sign; the account's default CA when omitted. */
-  ca?: string
+  /** UUID of the CA to sign; the account's default CA when omitted. */
+  ca_id?: string
 }
 
 /** A certificate authority that issues certificates for an account. */
 export interface UsableAuthority {
+  /** UUID of the CA, which requests name it by. */
+  id: string
   name: string
   description: string
   /** Signs when an issue request names no CA. */
@@ -266,8 +268,9 @@ export interface AuthoritySettings {
 
 /** A certificate authority, as access administrators see it. Its key is never sent. */
 export interface CertificateAuthority extends AuthoritySettings {
-  id: number
-  /** Identifies the CA in requests and in its URLs, e.g. /pki/{name}/crl; it never changes. */
+  /** UUID of the CA, which requests and its URLs name it by. */
+  id: string
+  /** Labels the CA for people; it never changes. Requests and URLs, e.g. /pki/{id}/crl, use the id. */
   name: string
   /** The CA certificate, followed by the certificates above it. */
   certificate_pem: string
@@ -793,11 +796,11 @@ export const createAuthority = (input: CreateAuthorityInput) =>
   request<CertificateAuthority>('POST', '/api/certificate-authorities', input)
 
 /** Replaces the settings of a certificate authority and enables or disables it. */
-export const updateAuthority = (id: number, settings: AuthoritySettings & { disabled: boolean }) =>
+export const updateAuthority = (id: string, settings: AuthoritySettings & { disabled: boolean }) =>
   request<CertificateAuthority>('PUT', `/api/certificate-authorities/${id}`, settings)
 
 /** Makes an enabled certificate authority the one that signs when a request names none. */
-export const setDefaultAuthority = (id: number) =>
+export const setDefaultAuthority = (id: string) =>
   request<CertificateAuthority>('POST', `/api/certificate-authorities/${id}/default`)
 
 export const version = () => request<BuildInfo>('GET', '/api/version')

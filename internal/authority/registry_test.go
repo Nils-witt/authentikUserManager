@@ -11,14 +11,15 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/authority"
 	"authentikManager/internal/pki"
 )
 
-// newRecord returns the record of a new self-signed CA named name, its key
-// sealed by r.
-func newRecord(t *testing.T, r *authority.Registry, id int64, name string) authority.Authority {
+// newRecord returns the record of a new self-signed CA named name with a new
+// ID, its key sealed by r.
+func newRecord(t *testing.T, r *authority.Registry, name string) authority.Authority {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -41,7 +42,8 @@ func newRecord(t *testing.T, r *authority.Registry, id int64, name string) autho
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := r.SealKey(name, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+	id := uuid.New()
+	sealed, err := r.SealKey(id, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,7 @@ func TestRegistry_Load(t *testing.T) {
 		t.Fatal("a new registry is not empty")
 	}
 
-	zeta, alpha := newRecord(t, r, 1, "zeta"), newRecord(t, r, 2, "alpha")
+	zeta, alpha := newRecord(t, r, "zeta"), newRecord(t, r, "alpha")
 	zeta.Default = true
 	if err := r.Load([]authority.Authority{zeta, alpha}); err != nil {
 		t.Fatal(err)
@@ -86,18 +88,18 @@ func TestRegistry_Load(t *testing.T) {
 	if got := names(r.All()); len(got) != 2 || got[0] != "alpha" || got[1] != "zeta" {
 		t.Errorf("All = %v, want [alpha zeta]", got)
 	}
-	if e, ok := r.ByID(2); !ok || e.Name != "alpha" || e.CA.Certificate().Subject.CommonName != "alpha" {
-		t.Errorf("ByID(2) = %v, %v, want alpha", e, ok)
+	if e, ok := r.ByID(alpha.ID); !ok || e.Name != "alpha" || e.CA.Certificate().Subject.CommonName != "alpha" {
+		t.Errorf("ByID(alpha's id) = %v, %v, want alpha", e, ok)
 	}
-	if _, ok := r.ByName("nope"); ok {
-		t.Error("ByName(nope) found a CA")
+	if _, ok := r.ByID(uuid.New()); ok {
+		t.Error("ByID(unknown id) found a CA")
 	}
 
 	// A CA whose key does not open keeps the CAs loaded before.
-	broken := newRecord(t, r, 3, "broken")
-	broken.Name = "renamed"
+	broken := newRecord(t, r, "broken")
+	broken.ID = uuid.New()
 	if err := r.Load([]authority.Authority{broken}); err == nil {
-		t.Error("Load with a key sealed for another name succeeded")
+		t.Error("Load with a key sealed for another id succeeded")
 	}
 	if len(r.All()) != 2 {
 		t.Errorf("after a failed Load, %d CAs are loaded, want the 2 before", len(r.All()))
@@ -107,7 +109,7 @@ func TestRegistry_Load(t *testing.T) {
 func TestRegistry_DefaultAndLegacy(t *testing.T) {
 	t.Parallel()
 	r := newRegistry(t)
-	main, other := newRecord(t, r, 1, "main"), newRecord(t, r, 2, "other")
+	main, other := newRecord(t, r, "main"), newRecord(t, r, "other")
 	other.Default = true
 	if err := r.Load([]authority.Authority{main, other}); err != nil {
 		t.Fatal(err)
@@ -130,7 +132,7 @@ func TestRegistry_DefaultAndLegacy(t *testing.T) {
 func TestRegistry_Usable(t *testing.T) {
 	t.Parallel()
 	r := newRegistry(t)
-	a, b, c, d := newRecord(t, r, 1, "a"), newRecord(t, r, 2, "b"), newRecord(t, r, 3, "c"), newRecord(t, r, 4, "d")
+	a, b, c, d := newRecord(t, r, "a"), newRecord(t, r, "b"), newRecord(t, r, "c"), newRecord(t, r, "d")
 	c.Default = true
 	b.AllowedGroups = []string{"staff"}
 	d.Disabled = true

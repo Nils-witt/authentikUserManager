@@ -55,8 +55,8 @@ export function IssueCertificateForm({
 }: IssueCertificateFormProps) {
   // The CAs available to the account, the default one first, or null while loading.
   const [authorities, setAuthorities] = useState<UsableAuthority[] | null>(null)
-  // The chosen CA's name; empty for the default one.
-  const [caName, setCaName] = useState('')
+  // The chosen CA's id; empty for the default one.
+  const [caId, setCaId] = useState('')
   const [mode, setMode] = useState<Mode>('generate')
   const [format, setFormat] = useState<Format>('pkcs12')
   const [password, setPassword] = useState('')
@@ -70,7 +70,7 @@ export function IssueCertificateForm({
   const mismatch = format === 'pkcs12' && confirmation !== '' && password !== confirmation
   const tooShort = format === 'pkcs12' && password.length < MIN_PASSWORD_LENGTH
   const { me } = useAppContext()
-  const authority = authorities?.find((a) => a.name === caName) ?? authorities?.[0]
+  const authority = authorities?.find((a) => a.id === caId) ?? authorities?.[0]
   const noAuthority = authorities !== null && authorities.length === 0
   // Only users choose a prefix, for their own certificates.
   const ownCertificate = owner === undefined
@@ -121,7 +121,7 @@ export function IssueCertificateForm({
     else if (format === 'pkcs12') input = { format, password }
     else input = { format }
     if (trimmedPrefix) input.prefix = trimmedPrefix
-    if (authority) input.ca = authority.name
+    if (authority) input.ca_id = authority.id
     setBusy(true)
     setError(null)
     setFields({})
@@ -163,13 +163,13 @@ export function IssueCertificateForm({
           <TextField
             select
             label="Certificate authority"
-            value={authority?.name ?? ''}
-            onChange={(e) => setCaName(e.target.value)}
-            error={!!fieldError('ca')}
-            helperText={fieldError('ca') ?? (authority?.description || ' ')}
+            value={authority?.id ?? ''}
+            onChange={(e) => setCaId(e.target.value)}
+            error={!!fieldError('ca_id')}
+            helperText={fieldError('ca_id') ?? (authority?.description || ' ')}
           >
             {authorities.map((a) => (
-              <MenuItem key={a.name} value={a.name}>
+              <MenuItem key={a.id} value={a.id}>
                 {a.default ? `${a.name} (default)` : a.name}
               </MenuItem>
             ))}

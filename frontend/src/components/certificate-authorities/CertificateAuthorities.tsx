@@ -26,7 +26,7 @@ export function CertificateAuthorities({ onChange }: { onChange: () => void }) {
   const [notice, setNotice] = useState<string | null>(null)
   // The CA being edited, 'new' while adding one, or null.
   const [editing, setEditing] = useState<CertificateAuthority | 'new' | null>(null)
-  const [busy, setBusy] = useState<number | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
   // Bumped after every change, to reload the CAs.
   const [version, setVersion] = useState(0)
 
@@ -83,7 +83,7 @@ export function CertificateAuthorities({ onChange }: { onChange: () => void }) {
         <Typography variant="body2" color="text.secondary">
           Users and operators choose among the enabled CAs that issue certificates for the account;
           the default one signs when they choose none. Each CA publishes its CRL and chain at
-          /pki/&lt;name&gt;/crl and /pki/&lt;name&gt;/ca.pem.
+          /pki/&lt;id&gt;/crl and /pki/&lt;id&gt;/ca.pem, by its UUID.
         </Typography>
         <AuthorityTable
           authorities={authorities}

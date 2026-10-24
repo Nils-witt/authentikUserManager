@@ -1,5 +1,5 @@
 [Package]
-version = "4"
+version = "2"
 depends = []
 
 [Product]
@@ -10,7 +10,7 @@ description = """Obtains a client certificate of an authentik-manager service ac
 Each setup run renews it through the service API when there is none or little of its lifetime remains, then revokes and deletes the old one."""
 advice = """Set base_url and api_key (client-specific: one service account per machine).
 Nothing is installed and the API key is not stored on the client; set the product to setup again to renew."""
-version = "1.0.0"
+version = "1.1.0"
 priority = 0
 licenseRequired = false
 productClasses = []
@@ -32,6 +32,17 @@ editable = true
 type = "UnicodeProductProperty"
 name = "api_key"
 description = """API key (amk_...) of the service account; create it under Service accounts > API keys"""
+default = [""]
+values = [
+    "",
+]
+multivalue = false
+editable = true
+
+[[ProductProperty]]
+type = "UnicodeProductProperty"
+name = "certificate_authority_id"
+description = """UUID of the authentik-manager certificate authority to request certificates from, as shown under Certificate authorities; empty for the one the server uses for the service account (usually the default CA)"""
 default = [""]
 values = [
     "",

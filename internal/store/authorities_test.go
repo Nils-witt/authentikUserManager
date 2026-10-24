@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/authority"
 	"authentikManager/internal/store"
@@ -92,7 +93,7 @@ func TestStore_createAuthority(t *testing.T) {
 	ctx := t.Context()
 
 	a := createTestAuthority(t, s)
-	if a.ID == 0 || a.CreatedAt.IsZero() || a.Legacy || a.Disabled {
+	if a.ID == (uuid.UUID{}) || a.CreatedAt.IsZero() || a.Legacy || a.Disabled {
 		t.Errorf("created = %+v, want an enabled, non-legacy CA with ID and creation time", a)
 	}
 	if names := defaultAuthorities(t, s); len(names) != 1 {
@@ -150,10 +151,10 @@ func TestStore_updateAuthority(t *testing.T) {
 		t.Errorf("SetDefaultAuthority(disabled) = %v, want ErrDefaultDisabled", err)
 	}
 
-	if _, err := s.UpdateAuthority(ctx, -1, settings, false); !errors.Is(err, authority.ErrNotFound) {
+	if _, err := s.UpdateAuthority(ctx, uuid.New(), settings, false); !errors.Is(err, authority.ErrNotFound) {
 		t.Errorf("UpdateAuthority(unknown) = %v, want ErrNotFound", err)
 	}
-	if err := s.SetDefaultAuthority(ctx, -1); !errors.Is(err, authority.ErrNotFound) {
+	if err := s.SetDefaultAuthority(ctx, uuid.New()); !errors.Is(err, authority.ErrNotFound) {
 		t.Errorf("SetDefaultAuthority(unknown) = %v, want ErrNotFound", err)
 	}
 }
@@ -161,7 +162,7 @@ func TestStore_updateAuthority(t *testing.T) {
 func TestStore_importLegacyAuthority(t *testing.T) {
 	s := openTestStore(t)
 	ctx := t.Context()
-	before := createCACertificate(t, s, 0, uniqueUserPK(), "ann", time.Now().Add(time.Hour))
+	before := createCACertificate(t, s, uuid.UUID{}, uniqueUserPK(), "ann", time.Now().Add(time.Hour))
 
 	a := newTestAuthority(t)
 	stored, err := s.ImportLegacyAuthority(ctx, a)
@@ -174,10 +175,10 @@ func TestStore_importLegacyAuthority(t *testing.T) {
 	}
 	// The table is not wiped, so an earlier run may have imported the legacy CA.
 	if stored.Legacy && got.CAID != stored.ID {
-		t.Errorf("certificate recorded before CAs has CA %d, want the legacy CA %d", got.CAID, stored.ID)
+		t.Errorf("certificate recorded before CAs has CA %v, want the legacy CA %v", got.CAID, stored.ID)
 	}
-	if !stored.Legacy && got.CAID != 0 {
-		t.Errorf("certificate recorded before CAs has CA %d, want none: there was a legacy CA", got.CAID)
+	if !stored.Legacy && got.CAID != (uuid.UUID{}) {
+		t.Errorf("certificate recorded before CAs has CA %v, want none: there was a legacy CA", got.CAID)
 	}
 
 	again := a

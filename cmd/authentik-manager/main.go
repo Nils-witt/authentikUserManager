@@ -24,7 +24,7 @@
 //	                     private keys of the certificate authorities stored in the database;
 //	                     certificates are disabled when unset. Access administrators add CAs in the app.
 //	CA_CERT_FILE         PEM file of a CA certificate, optionally followed by the certificates above
-//	                     it, imported as the CA named "default" unless stored already (optional)
+//	                     it, imported as a CA named "default" unless stored already (optional)
 //	CA_KEY_FILE          PEM file of the CA's unencrypted private key (required with CA_CERT_FILE)
 //
 //	The following settings only apply when CA_CERT_FILE is first imported; access
@@ -59,6 +59,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/access"
 	"authentikManager/internal/audit"
@@ -290,14 +291,15 @@ func importCAFile(ctx context.Context, cfg config.Config, db *store.Store, cas *
 	if err != nil {
 		return fmt.Errorf("certificate settings: %w", err)
 	}
-	a := authority.Authority{Name: legacyCAName, Settings: settings, CreatedBy: "CA_CERT_FILE"}
+	// The ID is only used when the CA is not stored yet.
+	a := authority.Authority{ID: uuid.New(), Name: legacyCAName, Settings: settings, CreatedBy: "CA_CERT_FILE"}
 	ca, err := pki.LoadCA(certPEM, keyPEM, a.Options())
 	if err != nil {
 		return fmt.Errorf("loading certificate authority of CA_CERT_FILE: %w", err)
 	}
 	a.CertPEM = string(ca.ChainPEM())
 	a.Fingerprint = pki.Fingerprint(ca.Certificate())
-	if a.KeyCiphertext, err = cas.SealKey(a.Name, keyPEM); err != nil {
+	if a.KeyCiphertext, err = cas.SealKey(a.ID, keyPEM); err != nil {
 		return err
 	}
 	stored, err := db.ImportLegacyAuthority(ctx, a)
@@ -309,6 +311,6 @@ func importCAFile(ctx context.Context, cfg config.Config, db *store.Store, cas *
 		return err
 	}
 	logger.Info("certificate authority of CA_CERT_FILE is stored",
-		slog.String("ca", stored.Name), slog.Bool("legacy", stored.Legacy))
+		slog.String("ca_id", stored.ID.String()), slog.Bool("legacy", stored.Legacy))
 	return nil
 }

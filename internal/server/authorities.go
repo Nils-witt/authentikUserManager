@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
@@ -87,7 +87,7 @@ func (s *Server) createAuthority(w http.ResponseWriter, r *http.Request) {
 	}
 	keyPEM := []byte(in.KeyPEM)
 	defer clear(keyPEM)
-	a := authority.Authority{Name: in.Name, Settings: settings, CreatedBy: actorName(r)}
+	a := authority.Authority{ID: uuid.New(), Name: in.Name, Settings: settings, CreatedBy: actorName(r)}
 	ca, err := pki.LoadCA([]byte(in.CertificatePEM), keyPEM, a.Options())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"certificate_pem": {userPKIError(err)}})
@@ -100,7 +100,7 @@ func (s *Server) createAuthority(w http.ResponseWriter, r *http.Request) {
 	}
 	a.CertPEM = string(ca.ChainPEM())
 	a.Fingerprint = pki.Fingerprint(ca.Certificate())
-	if a.KeyCiphertext, err = s.cas.SealKey(a.Name, keyPEM); err != nil {
+	if a.KeyCiphertext, err = s.cas.SealKey(a.ID, keyPEM); err != nil {
 		s.logger.ErrorContext(r.Context(), "encrypting ca key", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "saving the certificate authority failed", nil)
 		return
@@ -110,8 +110,8 @@ func (s *Server) createAuthority(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthorityError(w, r, err)
 		return
 	}
-	s.record(r, audit.ActionAuthorityCreated, created.Name, map[string]string{
-		"id":                 strconv.FormatInt(created.ID, 10),
+	s.record(r, audit.ActionAuthorityCreated, created.ID.String(), map[string]string{
+		"name":               created.Name,
 		"subject":            ca.Certificate().Subject.String(),
 		"fingerprint_sha256": hex.EncodeToString(created.Fingerprint),
 	})
@@ -146,7 +146,7 @@ func (s *Server) updateAuthority(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthorityError(w, r, err)
 		return
 	}
-	s.record(r, audit.ActionAuthorityUpdated, updated.Name, authorityChanges(e.Authority, updated))
+	s.record(r, audit.ActionAuthorityUpdated, updated.ID.String(), authorityChanges(e.Authority, updated))
 	s.writeReloadedAuthority(w, r, http.StatusOK, updated.ID)
 }
 
@@ -161,15 +161,15 @@ func (s *Server) setDefaultAuthority(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthorityError(w, r, err)
 		return
 	}
-	s.record(r, audit.ActionAuthorityDefaultChanged, e.Name, map[string]string{"id": strconv.FormatInt(e.ID, 10)})
+	s.record(r, audit.ActionAuthorityDefaultChanged, e.ID.String(), map[string]string{"name": e.Name})
 	s.writeReloadedAuthority(w, r, http.StatusOK, e.ID)
 }
 
 // pathAuthority returns the CA with the {id} path value. It writes the error
 // response when it returns false.
 func (s *Server) pathAuthority(w http.ResponseWriter, r *http.Request) (*authority.Entry, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id < 1 {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid certificate authority id", nil)
 		return nil, false
 	}
@@ -183,7 +183,7 @@ func (s *Server) pathAuthority(w http.ResponseWriter, r *http.Request) (*authori
 
 // writeReloadedAuthority reloads the CAs after a change and answers with the
 // CA with id and status.
-func (s *Server) writeReloadedAuthority(w http.ResponseWriter, r *http.Request, status int, id int64) {
+func (s *Server) writeReloadedAuthority(w http.ResponseWriter, r *http.Request, status int, id uuid.UUID) {
 	if err := s.reloadAuthorities(r.Context()); err != nil {
 		s.logger.ErrorContext(r.Context(), "reloading certificate authorities", slog.Any("error", err))
 		writeError(w, http.StatusInternalServerError, "the change was saved, but loading the certificate authorities failed", nil)
@@ -217,7 +217,7 @@ func (s *Server) reloadAuthorities(ctx context.Context) error {
 // authorityChanges returns the audit details of the settings that differ
 // between old and changed.
 func authorityChanges(old, changed authority.Authority) map[string]string {
-	details := map[string]string{"id": strconv.FormatInt(changed.ID, 10)}
+	details := map[string]string{"name": changed.Name}
 	set := func(field string, before, after any) {
 		if b, a := fmt.Sprint(before), fmt.Sprint(after); b != a {
 			details[field] = b + " → " + a
@@ -261,8 +261,9 @@ func (s *Server) writeAuthorityError(w http.ResponseWriter, r *http.Request, err
 
 // usableAuthority is a CA that issues certificates for an account.
 type usableAuthority struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
 	// Default is set for the CA that signs when a request names none.
 	Default bool `json:"default"`
 	// CNSuffix is appended to the username in the common name of the account's certificates.
@@ -281,6 +282,7 @@ func (s *Server) writeUsableAuthorities(w http.ResponseWriter, user *authentik.U
 			suffix = e.ServiceAccountCNSuffix
 		}
 		out = append(out, usableAuthority{
+			ID:          e.ID,
 			Name:        e.Name,
 			Description: e.Description,
 			Default:     i == 0,
@@ -313,13 +315,13 @@ func (s *Server) listServiceAccountAuthorities(w http.ResponseWriter, r *http.Re
 	s.writeUsableAuthorities(w, account)
 }
 
-// issuingAuthority returns the enabled CA named name if it issues
-// certificates for user. When name is empty, it returns the default CA if it
-// does, otherwise the first CA by name that does. It writes the error
-// response when it returns false.
-func (s *Server) issuingAuthority(w http.ResponseWriter, user *authentik.User, name string) (*authority.Entry, bool) {
+// issuingAuthority returns the enabled CA with id if it issues certificates
+// for user. When id is the nil UUID, it returns the default CA if it does,
+// otherwise the first CA by name that does. It writes the error response when
+// it returns false.
+func (s *Server) issuingAuthority(w http.ResponseWriter, user *authentik.User, id uuid.UUID) (*authority.Entry, bool) {
 	groups := user.GroupNames()
-	if name == "" {
+	if id == (uuid.UUID{}) {
 		usable := s.cas.Usable(groups)
 		if len(usable) == 0 {
 			writeError(w, http.StatusForbidden, "no certificate authority issues certificates for this account", nil)
@@ -327,16 +329,16 @@ func (s *Server) issuingAuthority(w http.ResponseWriter, user *authentik.User, n
 		}
 		return usable[0], true
 	}
-	e, ok := s.cas.ByName(name)
+	e, ok := s.cas.ByID(id)
 	if !ok || e.Disabled {
 		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{
-			"ca": {fmt.Sprintf("there is no enabled certificate authority named %q", name)},
+			"ca_id": {fmt.Sprintf("there is no enabled certificate authority with id %s", id)},
 		})
 		return nil, false
 	}
 	if !e.Allows(groups) {
 		writeError(w, http.StatusForbidden,
-			fmt.Sprintf("the certificate authority %q does not issue certificates for this account", name), nil)
+			fmt.Sprintf("the certificate authority %s does not issue certificates for this account", id), nil)
 		return nil, false
 	}
 	return e, true

@@ -7,10 +7,10 @@ import (
 	"maps"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
@@ -18,7 +18,7 @@ import (
 	"authentikManager/internal/pki"
 )
 
-// addStaffCA adds the CA "staff-ca", issuing for members of staff only, to
+// addStaffCA adds the CA named "staff-ca", issuing for members of staff only, to
 // env and returns its record and certificate PEM.
 func addStaffCA(t *testing.T, env *certEnv) (authority.Authority, []byte) {
 	t.Helper()
@@ -41,7 +41,7 @@ func TestAuthorities_issueWithNamedCA(t *testing.T) {
 	env := newCertServer(t, staffAccountUsers())
 	staff, certPEM := addStaffCA(t, env)
 
-	out := issue(t, env, strings.Replace(csrBody(t), "{", `{"ca":"staff-ca",`, 1))
+	out := issue(t, env, strings.Replace(csrBody(t), "{", `{"ca_id":"`+staff.ID.String()+`",`, 1))
 	if c := out.Certificate; c.CAID != staff.ID || c.Subject != "CN=admin@staff.example.com" {
 		t.Errorf("certificate = %+v, want one of staff-ca with its suffix", c)
 	}
@@ -52,7 +52,7 @@ func TestAuthorities_issueWithNamedCA(t *testing.T) {
 	if block == nil {
 		t.Fatal("no certificate PEM")
 	}
-	if e := env.log.recorded[0]; e.Action != audit.ActionCertificateIssued || e.Details["ca"] != "staff-ca" {
+	if e := env.log.recorded[0]; e.Action != audit.ActionCertificateIssued || e.Details["ca_id"] != staff.ID.String() {
 		t.Errorf("audit entry = %+v, want the CA recorded", e)
 	}
 
@@ -65,15 +65,17 @@ func TestAuthorities_issueWithNamedCA(t *testing.T) {
 func TestAuthorities_issueRefused(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
+		name string
+		// ca is the requested CA's id; empty for staff-ca's.
 		ca       string
 		disable  bool
 		expected int
 		message  string
 	}{
-		{name: "unknown ca", ca: "nope", expected: http.StatusBadRequest, message: `"ca"`},
-		{name: "disabled ca", ca: "staff-ca", disable: true, expected: http.StatusBadRequest, message: `"ca"`},
-		{name: "ca of other groups", ca: "staff-ca", expected: http.StatusForbidden, message: "does not issue"},
+		{name: "malformed id", ca: "staff-ca", expected: http.StatusBadRequest, message: `"ca_id"`},
+		{name: "unknown ca", ca: uuid.New().String(), expected: http.StatusBadRequest, message: `"ca_id"`},
+		{name: "disabled ca", disable: true, expected: http.StatusBadRequest, message: `"ca_id"`},
+		{name: "ca of other groups", expected: http.StatusForbidden, message: "does not issue"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,7 +88,11 @@ func TestAuthorities_issueRefused(t *testing.T) {
 				}
 				env.reload(t)
 			}
-			rec := do(t, env.srv, http.MethodPost, "/api/certificates/mine", `{"format":"pem","ca":"`+tt.ca+`"}`)
+			ca := tt.ca
+			if ca == "" {
+				ca = staff.ID.String()
+			}
+			rec := do(t, env.srv, http.MethodPost, "/api/certificates/mine", `{"format":"pem","ca_id":"`+ca+`"}`)
 			if rec.Code != tt.expected || !strings.Contains(rec.Body.String(), tt.message) {
 				t.Errorf("issue = %d %s, want %d mentioning %s", rec.Code, rec.Body, tt.expected, tt.message)
 			}
@@ -158,13 +164,13 @@ func TestAuthorities_crlPerCA(t *testing.T) {
 	env := newCertServer(t, staffAccountUsers())
 	staff, _ := addStaffCA(t, env)
 
-	c := issue(t, env, `{"format":"pem","ca":"staff-ca"}`).Certificate
+	c := issue(t, env, `{"format":"pem","ca_id":"`+staff.ID.String()+`"}`).Certificate
 	if _, err := env.certs.RevokeCertificate(t.Context(), c.Serial, "admin"); err != nil {
 		t.Fatal(err)
 	}
 
 	staffEntry, _ := env.cas.ByID(staff.ID)
-	rec := do(t, env.srv, http.MethodGet, "/pki/staff-ca/crl", "")
+	rec := do(t, env.srv, http.MethodGet, "/pki/"+staff.ID.String()+"/crl", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("staff-ca crl = %d %s", rec.Code, rec.Body)
 	}
@@ -175,17 +181,22 @@ func TestAuthorities_crlPerCA(t *testing.T) {
 	if crl := parseCRL(t, rec.Body.Bytes(), env.ca); len(crl) != 0 {
 		t.Errorf("default CA revoked = %v, want none", crl)
 	}
-	rec = do(t, env.srv, http.MethodGet, "/pki/main/crl", "")
+	rec = do(t, env.srv, http.MethodGet, "/pki/"+env.caID.String()+"/crl", "")
 	if crl := parseCRL(t, rec.Body.Bytes(), env.ca); rec.Code != http.StatusOK || len(crl) != 0 {
 		t.Errorf("main crl = %d, revoked %v, want none", rec.Code, crl)
 	}
 
-	rec = do(t, env.srv, http.MethodGet, "/pki/staff-ca/ca.pem", "")
+	rec = do(t, env.srv, http.MethodGet, "/pki/"+staff.ID.String()+"/ca.pem", "")
 	if block, _ := pem.Decode(rec.Body.Bytes()); rec.Code != http.StatusOK || block == nil ||
 		!slices.Equal(block.Bytes, staffEntry.CA.Certificate().Raw) {
 		t.Errorf("staff-ca ca.pem = %d %s", rec.Code, rec.Body)
 	}
-	for _, target := range []string{"/pki/nope/crl", "/pki/nope/crl.pem", "/pki/nope/ca.pem"} {
+	unknown := uuid.New().String()
+	for _, target := range []string{
+		"/pki/" + unknown + "/crl", "/pki/" + unknown + "/crl.pem", "/pki/" + unknown + "/ca.pem",
+		// CAs are found by their id only.
+		"/pki/staff-ca/crl", "/pki/staff-ca/ca.pem",
+	} {
 		if rec := do(t, env.srv, http.MethodGet, target, ""); rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", target, rec.Code)
 		}
@@ -259,8 +270,8 @@ func TestAuthorities_adminOnly(t *testing.T) {
 	for _, req := range []struct{ method, target, body string }{
 		{http.MethodGet, "/api/certificate-authorities", ""},
 		{http.MethodPost, "/api/certificate-authorities", createBody(t, "new", certPEM, keyPEM, nil)},
-		{http.MethodPut, "/api/certificate-authorities/1", `{}`},
-		{http.MethodPost, "/api/certificate-authorities/1/default", ""},
+		{http.MethodPut, "/api/certificate-authorities/" + env.caID.String(), `{}`},
+		{http.MethodPost, "/api/certificate-authorities/" + env.caID.String() + "/default", ""},
 	} {
 		if rec := do(t, env.srv, req.method, req.target, req.body); rec.Code != http.StatusForbidden {
 			t.Errorf("%s %s = %d, want 403", req.method, req.target, rec.Code)
@@ -288,11 +299,11 @@ func TestAuthorities_create(t *testing.T) {
 	}
 	checkCreated(t, created)
 	checkKeyKept(t, env, rec.Body.String())
-	if e := env.log.recorded[0]; e.Action != audit.ActionAuthorityCreated || e.Target != "new-ca" {
+	if e := env.log.recorded[0]; e.Action != audit.ActionAuthorityCreated || e.Target != created.ID.String() || e.Details["name"] != "new-ca" {
 		t.Errorf("audit entry = %+v, want the creation", e)
 	}
 	// The new CA issues certificates right away.
-	if c := issue(t, env, `{"format":"pem","ca":"new-ca"}`).Certificate; c.CAID != created.ID {
+	if c := issue(t, env, `{"format":"pem","ca_id":"`+created.ID.String()+`"}`).Certificate; c.CAID != created.ID {
 		t.Errorf("certificate = %+v, want one of new-ca", c)
 	}
 
@@ -336,7 +347,7 @@ func TestAuthorities_createInvalid(t *testing.T) {
 		settings map[string]any
 		message  string
 	}{
-		{name: "invalid name", caName: "New CA", certPEM: certPEM, keyPEM: keyPEM, message: `"name"`},
+		{name: "invalid name", caName: "new\x07", certPEM: certPEM, keyPEM: keyPEM, message: `"name"`},
 		{name: "mismatched key", caName: "new", certPEM: certPEM, keyPEM: otherKey, message: "does not match"},
 		{name: "no certificate", caName: "new", keyPEM: keyPEM, message: "no CERTIFICATE block"},
 		{
@@ -372,13 +383,13 @@ func TestAuthorities_update(t *testing.T) {
 	t.Parallel()
 	env := newCertServer(t, staffAccountUsers(), "admins")
 	staff, _ := addStaffCA(t, env)
-	target := "/api/certificate-authorities/" + strconv.FormatInt(staff.ID, 10)
+	target := "/api/certificate-authorities/" + staff.ID.String()
 
 	rec := do(t, env.srv, http.MethodPut, target, `{"validity_days":10,"user_cn_suffix":"@new.example.com","allowed_groups":["staff"]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update = %d %s", rec.Code, rec.Body)
 	}
-	if c := issue(t, env, `{"format":"pem","ca":"staff-ca"}`).Certificate; c.Subject != "CN=admin@new.example.com" {
+	if c := issue(t, env, `{"format":"pem","ca_id":"`+staff.ID.String()+`"}`).Certificate; c.Subject != "CN=admin@new.example.com" {
 		t.Errorf("certificate = %+v, want the new suffix", c)
 	}
 	e := env.log.recorded[0]
@@ -389,16 +400,19 @@ func TestAuthorities_update(t *testing.T) {
 	if rec := do(t, env.srv, http.MethodPut, target, `{"disabled":true}`); rec.Code != http.StatusOK {
 		t.Fatalf("disable = %d %s", rec.Code, rec.Body)
 	}
-	if rec := do(t, env.srv, http.MethodPost, "/api/certificates/mine", `{"format":"pem","ca":"staff-ca"}`); rec.Code != http.StatusBadRequest {
+	if rec := do(t, env.srv, http.MethodPost, "/api/certificates/mine", `{"format":"pem","ca_id":"`+staff.ID.String()+`"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("issue with the disabled CA = %d, want 400", rec.Code)
 	}
 
-	mainTarget := "/api/certificate-authorities/" + strconv.FormatInt(env.caID, 10)
+	mainTarget := "/api/certificate-authorities/" + env.caID.String()
 	if rec := do(t, env.srv, http.MethodPut, mainTarget, `{"disabled":true}`); rec.Code != http.StatusConflict {
 		t.Errorf("disable the default CA = %d %s, want 409", rec.Code, rec.Body)
 	}
-	if rec := do(t, env.srv, http.MethodPut, "/api/certificate-authorities/99", `{}`); rec.Code != http.StatusNotFound {
+	if rec := do(t, env.srv, http.MethodPut, "/api/certificate-authorities/"+uuid.New().String(), `{}`); rec.Code != http.StatusNotFound {
 		t.Errorf("update unknown CA = %d, want 404", rec.Code)
+	}
+	if rec := do(t, env.srv, http.MethodPut, "/api/certificate-authorities/1", `{}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("update with an invalid id = %d, want 400", rec.Code)
 	}
 	if rec := do(t, env.srv, http.MethodPut, target, `{"validity_days":-1}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("update with invalid settings = %d, want 400", rec.Code)
@@ -411,7 +425,7 @@ func TestAuthorities_setDefault(t *testing.T) {
 	env.authorities.list[0].Legacy = true
 	staff, _ := addStaffCA(t, env)
 
-	rec := do(t, env.srv, http.MethodPost, "/api/certificate-authorities/"+strconv.FormatInt(staff.ID, 10)+"/default", "")
+	rec := do(t, env.srv, http.MethodPost, "/api/certificate-authorities/"+staff.ID.String()+"/default", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"default":true`) {
 		t.Fatalf("set default = %d %s", rec.Code, rec.Body)
 	}
@@ -423,7 +437,7 @@ func TestAuthorities_setDefault(t *testing.T) {
 	if block, _ := pem.Decode(rec.Body.Bytes()); block == nil || !slices.Equal(block.Bytes, env.caCert.Raw) {
 		t.Errorf("ca.pem = %s, want the legacy CA", rec.Body)
 	}
-	if e := env.log.recorded[0]; e.Action != audit.ActionAuthorityDefaultChanged || e.Target != "staff-ca" {
+	if e := env.log.recorded[0]; e.Action != audit.ActionAuthorityDefaultChanged || e.Target != staff.ID.String() {
 		t.Errorf("audit entry = %+v, want the default change", e)
 	}
 }
@@ -462,7 +476,7 @@ func TestServiceAPI_issueWithNamedCA(t *testing.T) {
 	if err := json.Unmarshal([]byte(csrBody(t)), &body); err != nil {
 		t.Fatal(err)
 	}
-	body["ca"] = "staff-ca"
+	body["ca_id"] = staff.ID.String()
 	b, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
@@ -480,7 +494,7 @@ func TestServiceAPI_issueWithNamedCA(t *testing.T) {
 	}
 
 	rec = callServiceAPI(t, env.srv, http.MethodGet, "/service-api/v1/certificate-authorities", "Bearer "+key, "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"name":"staff-ca"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"`+staff.ID.String()+`"`) {
 		t.Errorf("list = %d %s, want staff-ca", rec.Code, rec.Body)
 	}
 }

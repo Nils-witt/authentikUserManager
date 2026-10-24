@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/certificate"
 	"authentikManager/internal/store"
@@ -25,12 +26,12 @@ func createTestCertificate(t *testing.T, s *store.Store, userPK int, notAfter ti
 // createUserCertificate stores a certificate of username with a fresh serial.
 func createUserCertificate(t *testing.T, s *store.Store, userPK int, username string, notAfter time.Time) certificate.Certificate {
 	t.Helper()
-	return createCACertificate(t, s, 0, userPK, username, notAfter)
+	return createCACertificate(t, s, uuid.UUID{}, userPK, username, notAfter)
 }
 
 // createCACertificate stores a certificate of username signed by the CA with
-// caID, none when 0, with a fresh serial.
-func createCACertificate(t *testing.T, s *store.Store, caID int64, userPK int, username string, notAfter time.Time) certificate.Certificate {
+// caID, none when it is the nil UUID, with a fresh serial.
+func createCACertificate(t *testing.T, s *store.Store, caID uuid.UUID, userPK int, username string, notAfter time.Time) certificate.Certificate {
 	t.Helper()
 	serial := make([]byte, 16)
 	if _, err := rand.Read(serial); err != nil {
@@ -298,7 +299,7 @@ func TestStore_revokeCertificate(t *testing.T) {
 	expired := createCACertificate(t, s, ca.ID, userPK, "ann", time.Now().Add(-time.Second))
 	ofOther := createCACertificate(t, s, other.ID, userPK, "ann", time.Now().Add(time.Hour))
 	if valid.CAID != ca.ID || valid.CA != ca.Name {
-		t.Errorf("created CA = %d %q, want %d %q", valid.CAID, valid.CA, ca.ID, ca.Name)
+		t.Errorf("created CA = %v %q, want %v %q", valid.CAID, valid.CA, ca.ID, ca.Name)
 	}
 
 	revoked, err := s.RevokeCertificate(ctx, valid.Serial, "admin")

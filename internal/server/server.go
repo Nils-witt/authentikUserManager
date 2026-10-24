@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/access"
 	"authentikManager/internal/apikey"
@@ -146,7 +147,7 @@ type CertificateStore interface {
 	// RevokeUserCertificates revokes every unrevoked certificate of a user and returns their serials.
 	RevokeUserCertificates(ctx context.Context, userPK int, actor string) ([]string, error)
 	// ListRevokedCertificates returns the revoked certificates of a CA still valid at now.
-	ListRevokedCertificates(ctx context.Context, caID int64, now time.Time) ([]certificate.Revoked, error)
+	ListRevokedCertificates(ctx context.Context, caID uuid.UUID, now time.Time) ([]certificate.Revoked, error)
 }
 
 // AuthorityStore keeps the certificate authorities.
@@ -157,10 +158,10 @@ type AuthorityStore interface {
 	CreateAuthority(ctx context.Context, a authority.Authority) (authority.Authority, error)
 	// UpdateAuthority returns authority.ErrNotFound when there is no CA and
 	// authority.ErrDefaultDisabled when disabling the default CA.
-	UpdateAuthority(ctx context.Context, id int64, settings authority.Settings, disabled bool) (authority.Authority, error)
+	UpdateAuthority(ctx context.Context, id uuid.UUID, settings authority.Settings, disabled bool) (authority.Authority, error)
 	// SetDefaultAuthority returns authority.ErrNotFound when there is no CA
 	// and authority.ErrDefaultDisabled when it is disabled.
-	SetDefaultAuthority(ctx context.Context, id int64) error
+	SetDefaultAuthority(ctx context.Context, id uuid.UUID) error
 }
 
 // APIKeyStore keeps the API keys with which service accounts issue and revoke
@@ -399,6 +400,7 @@ func New(d Deps) *Server {
 	mux.Handle("GET /pki/crl", s.requireCertificates(s.getCRL))
 	mux.Handle("GET /pki/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/ca.pem", s.requireCertificates(s.getCAChain))
+	// The {ca} path value is the CA's UUID.
 	mux.Handle("GET /pki/{ca}/crl", s.requireCertificates(s.getCRL))
 	mux.Handle("GET /pki/{ca}/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/{ca}/ca.pem", s.requireCertificates(s.getCAChain))

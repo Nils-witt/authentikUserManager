@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/pki"
 )
@@ -43,19 +44,19 @@ func (a Authority) Options() pki.Options {
 	}
 }
 
-// SealKey normalizes keyPEM to PKCS#8 and encrypts it for the CA named name.
-func (r *Registry) SealKey(name string, keyPEM []byte) ([]byte, error) {
+// SealKey normalizes keyPEM to PKCS#8 and encrypts it for the CA with id.
+func (r *Registry) SealKey(id uuid.UUID, keyPEM []byte) ([]byte, error) {
 	normalized, err := pki.NormalizeKeyPEM(keyPEM)
 	if err != nil {
 		return nil, err
 	}
 	defer clear(normalized)
-	return r.cipher.Seal(normalized, []byte(name))
+	return r.cipher.Seal(normalized, id[:])
 }
 
 // Open decrypts the key of a and loads the CA it describes.
 func (r *Registry) Open(a Authority) (*pki.CA, error) {
-	keyPEM, err := r.cipher.Open(a.KeyCiphertext, []byte(a.Name))
+	keyPEM, err := r.cipher.Open(a.KeyCiphertext, a.ID[:])
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +72,7 @@ func (r *Registry) Load(list []Authority) error {
 	for _, a := range list {
 		ca, err := r.Open(a)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("loading ca %q: %w", a.Name, err))
+			errs = append(errs, fmt.Errorf("loading ca %s: %w", a.ID, err))
 			continue
 		}
 		entries = append(entries, &Entry{Authority: a, CA: ca})
@@ -90,13 +91,8 @@ func (r *Registry) All() []*Entry {
 }
 
 // ByID returns the CA with id.
-func (r *Registry) ByID(id int64) (*Entry, bool) {
+func (r *Registry) ByID(id uuid.UUID) (*Entry, bool) {
 	return r.find(func(e *Entry) bool { return e.ID == id })
-}
-
-// ByName returns the CA named name.
-func (r *Registry) ByName(name string) (*Entry, bool) {
-	return r.find(func(e *Entry) bool { return e.Name == name })
 }
 
 // Default returns the CA that signs when a request names none.

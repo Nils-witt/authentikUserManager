@@ -70,12 +70,12 @@ func manyGroups(n int) []string {
 
 func TestValidateName(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"a", "main", "staff-ca", "2026", strings.Repeat("a", 32)} {
+	for _, name := range []string{"a", "main", "Staff CA", "Zertifizierungsstelle 2026", strings.Repeat("ä", 64)} {
 		if err := authority.ValidateName(name); err != nil {
 			t.Errorf("ValidateName(%q) = %v, want nil", name, err)
 		}
 	}
-	for _, name := range []string{"", "-ca", "Main", "staff ca", "a/b", "ca.", strings.Repeat("a", 33)} {
+	for _, name := range []string{"", "a\x07b", "line\nbreak", "\xff", strings.Repeat("a", 65)} {
 		if err := authority.ValidateName(name); err == nil {
 			t.Errorf("ValidateName(%q) succeeded, want an error", name)
 		}

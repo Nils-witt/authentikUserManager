@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -17,12 +18,13 @@ import (
 // Unassigned certificates have neither user_pk nor username; see certificate.Certificate.Assigned.
 const certificateColumns = `serial, COALESCE(user_pk, 0), COALESCE(username, ''), subject, not_before, not_after,
 	issued_at, issued_by, key_source, revoked_at, COALESCE(revoked_by, ''), der IS NOT NULL,
-	COALESCE(ca_id, 0), COALESCE((SELECT a.name FROM certificate_authorities a WHERE a.id = certificates.ca_id), '')`
+	COALESCE(ca_id, '00000000-0000-0000-0000-000000000000'),
+	COALESCE((SELECT a.name FROM certificate_authorities a WHERE a.id = certificates.ca_id), '')`
 
 func scanCertificate(row pgx.CollectableRow) (certificate.Certificate, error) {
 	var c certificate.Certificate
 	err := row.Scan(&c.Serial, &c.UserPK, &c.Username, &c.Subject, &c.NotBefore, &c.NotAfter,
-		&c.IssuedAt, &c.IssuedBy, &c.KeySource, &c.RevokedAt, &c.RevokedBy, &c.Stored, &c.CAID, &c.CA)
+		&c.IssuedAt, &c.IssuedBy, &c.KeySource, &c.RevokedAt, &c.RevokedBy, &c.Stored, (*[16]byte)(&c.CAID), &c.CA)
 	return c, err
 }
 
@@ -34,10 +36,10 @@ func (s *Store) CreateCertificate(ctx context.Context, c certificate.Certificate
 	rows, err := s.pool.Query(ctx, `
 		INSERT INTO certificates (serial, user_pk, username, subject, not_before, not_after, issued_by, key_source, der,
 			revoked_at, revoked_by, ca_id)
-		VALUES ($1, NULLIF($2, 0), NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, 0))
+		VALUES ($1, NULLIF($2, 0), NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12::uuid, '00000000-0000-0000-0000-000000000000'))
 		RETURNING `+certificateColumns,
 		c.Serial, c.UserPK, c.Username, c.Subject, c.NotBefore, c.NotAfter, c.IssuedBy, c.KeySource, c.DER,
-		c.RevokedAt, c.RevokedBy, c.CAID,
+		c.RevokedAt, c.RevokedBy, [16]byte(c.CAID),
 	)
 	if err != nil {
 		return certificate.Certificate{}, fmt.Errorf("store: creating certificate: %w", err)
@@ -229,12 +231,12 @@ func (s *Store) RevokeUserCertificates(ctx context.Context, userPK int, actor st
 
 // ListRevokedCertificates returns the revoked certificates the CA with caID
 // signed that are still valid at now, for its CRL.
-func (s *Store) ListRevokedCertificates(ctx context.Context, caID int64, now time.Time) ([]certificate.Revoked, error) {
+func (s *Store) ListRevokedCertificates(ctx context.Context, caID uuid.UUID, now time.Time) ([]certificate.Revoked, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT serial, revoked_at FROM certificates
 		WHERE ca_id = $1 AND revoked_at IS NOT NULL AND not_after > $2
 		ORDER BY serial`,
-		caID, now,
+		[16]byte(caID), now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: listing revoked certificates: %w", err)

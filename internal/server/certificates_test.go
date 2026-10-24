@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"software.sslmate.com/src/go-pkcs12"
 
@@ -171,7 +172,7 @@ func (f *fakeCertificates) RevokeUserCertificates(_ context.Context, userPK int,
 	return serials, nil
 }
 
-func (f *fakeCertificates) ListRevokedCertificates(_ context.Context, caID int64, now time.Time) ([]certificate.Revoked, error) {
+func (f *fakeCertificates) ListRevokedCertificates(_ context.Context, caID uuid.UUID, now time.Time) ([]certificate.Revoked, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -209,7 +210,7 @@ type fakeAuthorities struct {
 	err  error
 }
 
-func (f *fakeAuthorities) index(id int64) (int, error) {
+func (f *fakeAuthorities) index(id uuid.UUID) (int, error) {
 	i := slices.IndexFunc(f.list, func(a authority.Authority) bool { return a.ID == id })
 	if i < 0 {
 		return 0, authority.ErrNotFound
@@ -235,18 +236,17 @@ func (f *fakeAuthorities) CreateAuthority(_ context.Context, a authority.Authori
 		return authority.Authority{}, f.err
 	}
 	if slices.ContainsFunc(f.list, func(b authority.Authority) bool {
-		return b.Name == a.Name || slices.Equal(b.Fingerprint, a.Fingerprint)
+		return b.ID == a.ID || b.Name == a.Name || slices.Equal(b.Fingerprint, a.Fingerprint)
 	}) {
 		return authority.Authority{}, authority.ErrExists
 	}
-	a.ID = int64(len(f.list) + 1)
 	a.CreatedAt = time.Now()
 	a.Default = !a.Disabled && !slices.ContainsFunc(f.list, func(b authority.Authority) bool { return b.Default })
 	f.list = append(f.list, a)
 	return a, nil
 }
 
-func (f *fakeAuthorities) UpdateAuthority(_ context.Context, id int64, settings authority.Settings, disabled bool) (authority.Authority, error) {
+func (f *fakeAuthorities) UpdateAuthority(_ context.Context, id uuid.UUID, settings authority.Settings, disabled bool) (authority.Authority, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -263,7 +263,7 @@ func (f *fakeAuthorities) UpdateAuthority(_ context.Context, id int64, settings 
 	return f.list[i], nil
 }
 
-func (f *fakeAuthorities) SetDefaultAuthority(_ context.Context, id int64) error {
+func (f *fakeAuthorities) SetDefaultAuthority(_ context.Context, id uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -300,7 +300,7 @@ type certEnv struct {
 	ca     *pki.CA
 	caCert *x509.Certificate
 	// caID is the ID of "main".
-	caID        int64
+	caID        uuid.UUID
 	cas         *authority.Registry
 	authorities *fakeAuthorities
 	certs       *fakeCertificates
@@ -372,7 +372,8 @@ func settingsFor(opts pki.Options) authority.Settings {
 // default one.
 func (env *certEnv) addCA(t *testing.T, name string, settings authority.Settings, certPEM, keyPEM []byte) authority.Authority {
 	t.Helper()
-	sealed, err := env.cas.SealKey(name, keyPEM)
+	id := uuid.New()
+	sealed, err := env.cas.SealKey(id, keyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,6 +382,7 @@ func (env *certEnv) addCA(t *testing.T, name string, settings authority.Settings
 		t.Fatal(err)
 	}
 	a, err := env.authorities.CreateAuthority(t.Context(), authority.Authority{
+		ID:            id,
 		Name:          name,
 		Settings:      settings,
 		CertPEM:       string(certPEM),

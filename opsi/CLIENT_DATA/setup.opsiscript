@@ -12,6 +12,8 @@ DefVar $BaseUrl$
 DefVar $ApiKey$
 DefVar $Threshold$
 DefVar $KeyAlgorithm$
+DefVar $CertificateAuthorityId$
+DefVar $CaArgument$
 DefVar $ExitCode$
 
 Set $ProductId$ = "authentik-manager-cert"
@@ -20,6 +22,8 @@ Set $BaseUrl$ = GetProductProperty("base_url", "")
 Set $ApiKey$ = GetProductProperty("api_key", "")
 Set $Threshold$ = GetProductProperty("renew_threshold_percent", "10")
 Set $KeyAlgorithm$ = GetProductProperty("key_algorithm", "ECDSA_P256")
+; Empty: the CA the server uses for the service account when a request names none.
+Set $CertificateAuthorityId$ = GetProductProperty("certificate_authority_id", "")
 
 if not(GetOS = "Windows_NT")
 	isFatalError "this product supports Windows only"
@@ -33,6 +37,15 @@ endif
 
 if not(isRegexMatch($Threshold$, "^[1-9][0-9]?$"))
 	isFatalError "renew_threshold_percent must be a number from 1 to 99"
+endif
+
+; The id is passed unquoted, so it must be a UUID exactly.
+Set $CaArgument$ = ""
+if not($CertificateAuthorityId$ = "")
+	if not(isRegexMatch($CertificateAuthorityId$, "^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"))
+		isFatalError "certificate_authority_id must be the UUID of a certificate authority of authentik-manager, or empty"
+	endif
+	Set $CaArgument$ = "-CertificateAuthorityId " + $CertificateAuthorityId$
 endif
 
 Message "Checking the certificate of " + $ProductId$ + " ..."
@@ -49,5 +62,5 @@ endif
 
 [DosInAnIcon_update_certificate]
 set "AUTHENTIK_MANAGER_API_KEY=$ApiKey$"
-powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%ScriptPath%\files\Update-ServiceCertificate.ps1" -BaseUrl "$BaseUrl$" -RenewThresholdPercent $Threshold$ -KeyAlgorithm $KeyAlgorithm$
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%ScriptPath%\files\Update-ServiceCertificate.ps1" -BaseUrl "$BaseUrl$" -RenewThresholdPercent $Threshold$ -KeyAlgorithm $KeyAlgorithm$ $CaArgument$
 exit %ERRORLEVEL%

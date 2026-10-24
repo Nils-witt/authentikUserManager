@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+	"uuid"
 
 	"authentikManager/internal/pki"
 )
@@ -25,13 +27,11 @@ const (
 
 // Bounds of the other settings.
 const (
+	maxNameLen        = 64
 	maxDescriptionLen = 500
 	maxGroups         = 100
 	maxGroupNameLen   = 255
 )
-
-// namePattern is the form of CA names, which appear in URLs such as /pki/{name}/crl.
-var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 var (
 	// ErrNotFound is returned when there is no CA with the given ID.
@@ -123,25 +123,29 @@ func (s Settings) problems() []string {
 	return problems
 }
 
-// ValidateName checks that name is 1 to 32 lowercase letters, digits and
-// hyphens, starting with a letter or digit. The error is safe to show users.
+// ValidateName checks that name, which labels a CA for people, is valid UTF-8
+// of 1 to 64 characters without control characters. The error is safe to show
+// users.
 func ValidateName(name string) error {
-	if !namePattern.MatchString(name) {
-		return errors.New("the name must have 1 to 32 lowercase letters, digits and hyphens, starting with a letter or digit")
+	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxNameLen ||
+		strings.ContainsFunc(name, unicode.IsControl) {
+		return fmt.Errorf("the name must have 1 to %d characters without control characters", maxNameLen)
 	}
 	return nil
 }
 
 // Authority is the stored record of a CA.
 type Authority struct {
-	ID int64 `json:"id"`
-	// Name identifies the CA in requests and URLs; it never changes.
+	// ID identifies the CA in requests, URLs and the audit log. It is
+	// generated before the CA is stored, since its key is sealed bound to it.
+	ID uuid.UUID `json:"id"`
+	// Name labels the CA for people; it is unique and never changes.
 	Name string `json:"name"`
 	Settings
 	// CertPEM is the CA certificate, optionally followed by the certificates above it.
 	CertPEM string `json:"certificate_pem"`
 	// KeyCiphertext is the PKCS#8 PEM private key, sealed with pki.KeyCipher
-	// bound to Name.
+	// bound to ID.
 	KeyCiphertext []byte `json:"-"`
 	// Fingerprint is the SHA-256 hash of the CA certificate, unique among CAs.
 	Fingerprint []byte `json:"-"`

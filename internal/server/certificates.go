@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
@@ -42,7 +43,7 @@ const (
 type crlCache struct {
 	mu sync.Mutex
 	// signed maps CA IDs to their CRL; nil until the first CRL is signed.
-	signed map[int64]signedCRL
+	signed map[uuid.UUID]signedCRL
 }
 
 // signedCRL is a DER CRL, served until expires.
@@ -205,10 +206,12 @@ type issueCertificateInput struct {
 	// Prefix, when set, precedes the username in the common name of a user's
 	// own certificate (see pki.Subject).
 	Prefix string `json:"prefix"`
-	// CA names the CA to sign the certificate. When empty, the default CA
-	// signs if it issues certificates for the account, otherwise the first
-	// CA that does (see issuingAuthority).
-	CA string `json:"ca"`
+	// CAID is the UUID of the CA to sign the certificate. When empty, the
+	// default CA signs if it issues certificates for the account, otherwise
+	// the first CA that does (see issuingAuthority).
+	CAID string `json:"ca_id"`
+	// caID is CAID parsed by validate; the nil UUID when it is empty.
+	caID uuid.UUID
 }
 
 // validate checks in, trimming its prefix, and returns the public key of its
@@ -216,7 +219,13 @@ type issueCertificateInput struct {
 // otherwise.
 func (in *issueCertificateInput) validate() (crypto.PublicKey, map[string][]string) {
 	in.Prefix = strings.TrimSpace(in.Prefix)
-	in.CA = strings.TrimSpace(in.CA)
+	if in.CAID = strings.TrimSpace(in.CAID); in.CAID != "" {
+		id, err := uuid.Parse(in.CAID)
+		if err != nil {
+			return nil, map[string][]string{"ca_id": {"must be the UUID of a certificate authority"}}
+		}
+		in.caID = id
+	}
 	if in.Prefix != "" {
 		if err := pki.ValidateCNPrefix(in.Prefix); err != nil {
 			return nil, map[string][]string{"prefix": {err.Error()}}
@@ -301,7 +310,7 @@ func (s *Server) checkPrefixFree(w http.ResponseWriter, r *http.Request, name st
 // certificate is returned; otherwise the bundle of key and certificate is held
 // for a single download by the signed-in user (see downloadCertificateKey).
 func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authentik.User, pub crypto.PublicKey, in issueCertificateInput) {
-	ca, ok := s.issuingAuthority(w, user, in.CA)
+	ca, ok := s.issuingAuthority(w, user, in.caID)
 	if !ok {
 		return
 	}
@@ -358,7 +367,7 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		"serial":     record.Serial,
 		"not_after":  record.NotAfter.UTC().Format(time.RFC3339),
 		"key_source": string(source),
-		"ca":         ca.Name,
+		"ca_id":      ca.ID.String(),
 	}
 	if in.Prefix != "" {
 		details["cn_prefix"] = in.Prefix
@@ -690,7 +699,7 @@ func (s *Server) importCertificate(
 	details := map[string]string{
 		"serial":    record.Serial,
 		"not_after": record.NotAfter.UTC().Format(time.RFC3339),
-		"ca":        ca.Name,
+		"ca_id":     ca.ID.String(),
 	}
 	if opts.Revoke {
 		details["revoked"] = "true"
@@ -879,8 +888,8 @@ func (s *Server) revokeUserCertificates(ctx context.Context, r *http.Request, us
 	return nil
 }
 
-// getCRL serves the DER certificate revocation list of the CA named by the
-// {ca} path value, or of the legacy CA (see authority.Registry.Legacy) when
+// getCRL serves the DER certificate revocation list of the CA whose UUID is
+// the {ca} path value, or of the legacy CA (see authority.Registry.Legacy) when
 // there is none. It is public, so that relying parties can check
 // certificates without signing in.
 func (s *Server) getCRL(w http.ResponseWriter, r *http.Request) {
@@ -902,7 +911,7 @@ func (s *Server) getCRLPEM(w http.ResponseWriter, r *http.Request) {
 }
 
 // publishedAuthority returns the CA whose CRL or chain r requests: the one
-// named by the {ca} path value, or the legacy CA when there is none. Disabled
+// whose UUID is the {ca} path value, or the legacy CA when there is none. Disabled
 // CAs are included, since certificates they issued may still be valid. It
 // answers r with 404 and reports false when there is no such CA.
 func (s *Server) publishedAuthority(w http.ResponseWriter, r *http.Request) (*authority.Entry, bool) {
@@ -910,8 +919,11 @@ func (s *Server) publishedAuthority(w http.ResponseWriter, r *http.Request) (*au
 		e  *authority.Entry
 		ok bool
 	)
-	if name := r.PathValue("ca"); name != "" {
-		e, ok = s.cas.ByName(name)
+	if v := r.PathValue("ca"); v != "" {
+		// An invalid UUID names no CA, so it is not found either.
+		if id, err := uuid.Parse(v); err == nil {
+			e, ok = s.cas.ByID(id)
+		}
 	} else {
 		e, ok = s.cas.Legacy()
 	}
@@ -933,7 +945,7 @@ func (s *Server) currentCRLOrError(w http.ResponseWriter, r *http.Request) ([]by
 	der, err := s.currentCRL(r.Context(), ca)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			s.logger.ErrorContext(r.Context(), "generating crl", slog.String("ca", ca.Name), slog.Any("error", err))
+			s.logger.ErrorContext(r.Context(), "generating crl", slog.String("ca_id", ca.ID.String()), slog.Any("error", err))
 		}
 		http.Error(w, "generating the CRL failed", http.StatusInternalServerError)
 		return nil, false
@@ -975,7 +987,7 @@ func (s *Server) currentCRL(ctx context.Context, ca *authority.Entry) ([]byte, e
 		return nil, err
 	}
 	if s.crl.signed == nil {
-		s.crl.signed = map[int64]signedCRL{}
+		s.crl.signed = map[uuid.UUID]signedCRL{}
 	}
 	s.crl.signed[ca.ID] = signedCRL{der: der, expires: now.Add(crlCacheTTL)}
 	return der, nil
@@ -999,7 +1011,7 @@ func (s *Server) getCAChain(w http.ResponseWriter, r *http.Request) {
 	// The unnamed URL keeps the file name it always had.
 	filename := "ca.pem"
 	if r.PathValue("ca") != "" {
-		filename = ca.Name + ".pem"
+		filename = ca.ID.String() + ".pem"
 	}
 	h := w.Header()
 	h.Set("Content-Type", "application/x-pem-file")

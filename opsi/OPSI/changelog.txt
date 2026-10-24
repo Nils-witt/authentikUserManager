@@ -1,3 +1,13 @@
+authentik-manager-cert (1.1.0-1)
+
+  * Supports several certificate authorities: the script asks the server which
+    CA to use, checks stored certificates against that CA's chain at
+    /pki/<ca id>/ca.pem and names it when requesting a certificate, so renewals
+    keep working when the default CA changes.
+  * New property certificate_authority_id pins the CA by its UUID; empty
+    follows the server.
+  * Needs an authentik-manager version with certificate authority support.
+
 authentik-manager-cert (1.0.0-1)
 
   * Initial package: runs Update-ServiceCertificate.ps1 once per setup from the

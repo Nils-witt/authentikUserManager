@@ -34,7 +34,7 @@ Set these environment variables (see `.env.example`):
 | `AUDIT_RETENTION_DAYS` | no |                | Days to keep [audit log](#audit-log) entries; kept forever when unset |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
 | `CA_ENCRYPTION_KEY` | no     |                  | 32 random bytes, base64-encoded (`openssl rand -base64 32`), encrypting the private keys of the [certificate authorities](#certificate-authorities) in the database; [client certificates](#client-certificates) are disabled when unset. Keep it secret and backed up: without it, the stored CAs cannot sign |
-| `CA_CERT_FILE`    | no       |                  | PEM file of a CA certificate, optionally followed by the certificates above it, imported at startup as the CA named `default` unless it is stored already |
+| `CA_CERT_FILE`    | no       |                  | PEM file of a CA certificate, optionally followed by the certificates above it, imported at startup as a CA named `default` unless it is stored already |
 | `CA_KEY_FILE`     | with `CA_CERT_FILE` |       | PEM file of the CA's unencrypted private key (PKCS#8, PKCS#1 or SEC 1) |
 | `CERT_VALIDITY_DAYS` | no    | `365`            | Initial setting of the CA of `CA_CERT_FILE`: days client certificates are valid (at most 3650, and never beyond the CA's expiry) |
 | `CERT_CRL_URL`    | no       |                  | Initial setting of the CA of `CA_CERT_FILE`: public URL of `/pki/crl`, embedded in client certificates as their CRL distribution point |
@@ -96,9 +96,9 @@ so revoke the certificates here as well. Access administrators can review every 
 certificate under **Issued certificates**, download it (the certificate only, never its key;
 not for certificates issued before this was added) and revoke it, including the certificates of
 deleted users. Revoked
-certificates are listed in the CRL of the CA that signed them at `/pki/<ca>/crl` (as PEM at
-`/pki/<ca>/crl.pem`) until they expire; each CRL is valid for the CA's CRL validity (30 days by
-default). The CA chain is at `/pki/<ca>/ca.pem`. The unnamed `/pki/crl`, `/pki/crl.pem` and
+certificates are listed in the CRL of the CA that signed them at `/pki/<ca id>/crl` (as PEM at
+`/pki/<ca id>/crl.pem`), by the CA's UUID, until they expire; each CRL is valid for the CA's CRL
+validity (30 days by default). The CA chain is at `/pki/<ca id>/ca.pem`. The unnamed `/pki/crl`, `/pki/crl.pem` and
 `/pki/ca.pem` serve the CA imported from `CA_CERT_FILE` (or the default CA when there is none),
 so certificates issued before several CAs were supported keep working. All are public, so
 relying parties can fetch them without a login.
@@ -137,9 +137,11 @@ Access administrators manage the CAs under **Certificate authorities**. **Add CA
 certificate (optionally followed by the certificates above it) and its unencrypted private key;
 the CA certificate must be allowed to sign certificates and CRLs (key usages `keyCertSign` and
 `cRLSign`). The key is stored in the database encrypted with AES-256-GCM under
-`CA_ENCRYPTION_KEY` and is never shown again. Each CA has a name, which appears in its URLs and
-cannot be changed, and its own settings: description, certificate validity, CRL validity, CRL
-URL (**Use this app** fills in `/pki/<name>/crl`), and the common name suffixes of user and
+`CA_ENCRYPTION_KEY`, bound to the CA's id, and is never shown again. Each CA is identified by a
+UUID, generated when it is added, which requests, its URLs and the audit log use. Its name (up to
+64 characters, unique, never changed) only labels it for people. Each CA has its own settings:
+description, certificate validity, CRL validity, CRL URL (once the CA is added, **Use this app**
+fills in `/pki/<ca id>/crl`), and the common name suffixes of user and
 service account certificates. **Issues certificates for members of** restricts it to the direct
 members of some authentik groups; the account the certificate is for must be in one of them,
 whoever requests it. Leave it empty to issue for every account.
@@ -150,7 +152,7 @@ the account; otherwise the first CA by name that does. The first CA added become
 issued stay published: a **disabled** CA issues no certificates, but still serves its CRL and
 chain, and its certificates can still be imported and revoked. The default CA cannot be disabled.
 
-When `CA_CERT_FILE` is set, its CA is imported at startup as the CA named `default` with the
+When `CA_CERT_FILE` is set, its CA is imported at startup as a CA named `default` with the
 `CERT_*` settings, unless its certificate is stored already; afterwards change its settings here,
 since the `CERT_*` variables are only read on that first import. The first CA imported this way
 also takes over the certificates recorded before several CAs were supported, and serves the
@@ -204,9 +206,9 @@ its private key.
 | Method | Path                                           | Body                                                         |
 | ------ | ---------------------------------------------- | ------------------------------------------------------------ |
 | GET    | `/service-api/v1/certificates`                 | the service account's certificates: `{certificates}`         |
-| POST   | `/service-api/v1/certificates`                 | `{csr, ca?}`; `ca` names the CA, the account's default one when omitted; returns `{certificate, certificate_pem, chain_pem}` |
+| POST   | `/service-api/v1/certificates`                 | `{csr, ca_id?}`; `ca_id` is the UUID of the CA, the account's default one when omitted; returns `{certificate, certificate_pem, chain_pem}` |
 | POST   | `/service-api/v1/certificates/{serial}/revoke` | revokes a certificate of the service account; returns it     |
-| GET    | `/service-api/v1/certificate-authorities`      | the CAs that issue for the service account, the one used when a request names none first: `{authorities: [{name, description, default, cn_suffix, not_after}]}` |
+| GET    | `/service-api/v1/certificate-authorities`      | the CAs that issue for the service account, the one used when a request names none first: `{authorities: [{id, name, description, default, cn_suffix, not_after}]}` |
 
 ```sh
 openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
@@ -222,11 +224,12 @@ a certificate in `Cert:\LocalMachine\My`: it renews it once 10% or less of its l
 with a new non-exportable key, then revokes and deletes the old one. Run it elevated, e.g. daily
 from a scheduled task: `Update-ServiceCertificate.ps1 -BaseUrl https://<app-host> -ApiKeyFile
 C:\ProgramData\am\api-key.txt` (`-WhatIf` shows what it would do). It uses the CA the server
-lists first for the service account, or the one named with `-CertificateAuthority`.
+lists first for the service account, or the one whose UUID is given with `-CertificateAuthorityId`.
 
 The opsi product in [`opsi/`](opsi) (`authentik-manager-cert`) runs it once per setup, from the
 depot: it installs nothing and does not store the API key on the client. Set the product to setup
-again to renew. Set the properties `base_url` and `api_key` per client. Build it with
+again to renew. Set the properties `base_url` and `api_key` per client, and optionally
+`certificate_authority_id` to pin a CA by its UUID (empty follows the server, see above). Build it with
 `opsi/build.sh` (needs Docker): it copies the script into the package and runs `opsi-makepackage`
 in a container, writing `opsi/authentik-manager-cert_<version>.opsi`; install it on the opsi server
 with `opsi-package-manager -i`.
@@ -461,8 +464,8 @@ the frontend, run `make build` again.
 | DELETE | `/api/users/{id}`          | admins only                                              |
 | PUT    | `/api/users/{id}/groups`   | `{groups, primary_group?}`: the group names the user should be in, and the name of their primary group (one of `groups`; empty removes it, omitted keeps it). Restricted operators may only add or remove their target groups, and the user must keep one of them. The primary group cannot be removed |
 | GET    | `/api/certificates/mine`   | the caller's certificates: `{certificates}`, each with `downloadable` while its key can be downloaded |
-| POST   | `/api/certificates/mine`   | issues a certificate for the caller: `{csr}`, or `{format: "pem"}`, or `{format: "pkcs12", password}`, each with optional `prefix` and `ca` (the CA's name; the caller's default CA when omitted); returns `{certificate, certificate_pem, chain_pem}` for a CSR, `{certificate, download_url, download_expires_at}` otherwise |
-| GET    | `/api/certificates/mine/authorities` | the CAs that issue certificates for the caller, the default one first: `{authorities: [{name, description, default, cn_suffix, not_after}]}` |
+| POST   | `/api/certificates/mine`   | issues a certificate for the caller: `{csr}`, or `{format: "pem"}`, or `{format: "pkcs12", password}`, each with optional `prefix` and `ca_id` (the CA's UUID; the caller's default CA when omitted); returns `{certificate, certificate_pem, chain_pem}` for a CSR, `{certificate, download_url, download_expires_at}` otherwise |
+| GET    | `/api/certificates/mine/authorities` | the CAs that issue certificates for the caller, the default one first: `{authorities: [{id, name, description, default, cn_suffix, not_after}]}` |
 | GET    | `/api/certificates/mine/{serial}/download` | the generated key bundle, once, for the user who requested it (also an operator who issued it for a service account); 410 afterwards |
 | GET    | `/api/users/{id}/certificates` | the user's certificates, for the user and the operators who may change them |
 | POST   | `/api/users/{id}/certificates/{serial}/revoke` | revokes a certificate of the user |
@@ -472,11 +475,11 @@ the frontend, run `make build` again.
 | POST   | `/api/certificates/{serial}/revoke` | access administrators only; revokes a certificate of any user, including deleted ones |
 | POST   | `/api/certificates/import` | access administrators only; imports certificates the CA signed elsewhere: `{pem, allow_unassigned}`; returns `{results}`, each `{serial, subject}` with `certificate` when imported (and `unassigned`, the reason, when assigned to no user; its `user_pk` is 0 and `username` empty) or `error` otherwise |
 | POST   | `/api/certificates/{serial}/assign` | access administrators only; assigns an unassigned imported certificate to an active user or service account: `{username}`; returns the certificate; 409 when it is already assigned or there is no such active account |
-| GET    | `/api/certificate-authorities` | access administrators only; every CA, disabled ones included, without keys: `{authorities}` |
+| GET    | `/api/certificate-authorities` | access administrators only; every CA, disabled ones included, without keys: `{authorities}`, each identified by its UUID `id` |
 | POST   | `/api/certificate-authorities` | access administrators only; adds a CA: `{name, certificate_pem, key_pem, description?, crl_url?, validity_days?, crl_validity_days?, user_cn_suffix?, service_account_cn_suffix?, allowed_groups?}`; 409 when the name or certificate is taken |
 | PUT    | `/api/certificate-authorities/{id}` | access administrators only; replaces the settings of a CA and enables or disables it: the optional fields above and `disabled`; 409 when disabling the default CA |
 | POST   | `/api/certificate-authorities/{id}/default` | access administrators only; makes an enabled CA the default one |
-| GET    | `/pki/{ca}/crl`            | DER certificate revocation list of the CA named `{ca}`; no login required |
+| GET    | `/pki/{ca}/crl`            | DER certificate revocation list of the CA whose UUID is `{ca}`; no login required |
 | GET    | `/pki/{ca}/crl.pem`        | The same revocation list as PEM; no login required       |
 | GET    | `/pki/{ca}/ca.pem`         | The CA's certificate chain; no login required            |
 | GET    | `/pki/crl`, `/pki/crl.pem`, `/pki/ca.pem` | the same for the CA imported from `CA_CERT_FILE`, or the default CA when there is none |
