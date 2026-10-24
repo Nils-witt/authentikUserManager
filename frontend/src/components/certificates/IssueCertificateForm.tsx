@@ -2,6 +2,7 @@ import UploadFileIcon from '@mui/icons-material/UploadFile'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
 import FormControlLabel from '@mui/material/FormControlLabel'
+import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Radio from '@mui/material/Radio'
 import RadioGroup from '@mui/material/RadioGroup'
@@ -10,9 +11,14 @@ import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
-import { useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import * as api from '../../api'
-import { ApiError, type IssueCertificateInput, type IssuedCertificate } from '../../api'
+import {
+  ApiError,
+  type IssueCertificateInput,
+  type IssuedCertificate,
+  type UsableAuthority,
+} from '../../api'
 import { errorMessage } from '../../errors'
 import { useAppContext } from '../../hooks/useAppContext'
 import { CN_PREFIX_PATTERN, CN_PREFIX_SEPARATOR } from './subject'
@@ -31,6 +37,11 @@ interface IssueCertificateFormProps {
   owner?: string
   /** Issues the certificate; defaults to one for the signed-in user. */
   issue?: (input: IssueCertificateInput) => Promise<IssuedCertificate>
+  /**
+   * Lists the CAs that issue certificates for the account; defaults to the signed-in user's. It
+   * must keep its identity across renders, since the list is loaded again when it changes.
+   */
+  listAuthorities?: () => Promise<UsableAuthority[]>
   /** Called once a certificate was issued, with the format a generated key is downloaded in. */
   onIssued: (issued: IssuedCertificate, format: Format | null) => void
 }
@@ -39,8 +50,13 @@ interface IssueCertificateFormProps {
 export function IssueCertificateForm({
   owner,
   issue = api.issueCertificate,
+  listAuthorities = api.listMyAuthorities,
   onIssued,
 }: IssueCertificateFormProps) {
+  // The CAs available to the account, the default one first, or null while loading.
+  const [authorities, setAuthorities] = useState<UsableAuthority[] | null>(null)
+  // The chosen CA's name; empty for the default one.
+  const [caName, setCaName] = useState('')
   const [mode, setMode] = useState<Mode>('generate')
   const [format, setFormat] = useState<Format>('pkcs12')
   const [password, setPassword] = useState('')
@@ -53,7 +69,9 @@ export function IssueCertificateForm({
 
   const mismatch = format === 'pkcs12' && confirmation !== '' && password !== confirmation
   const tooShort = format === 'pkcs12' && password.length < MIN_PASSWORD_LENGTH
-  const { me, access } = useAppContext()
+  const { me } = useAppContext()
+  const authority = authorities?.find((a) => a.name === caName) ?? authorities?.[0]
+  const noAuthority = authorities !== null && authorities.length === 0
   // Only users choose a prefix, for their own certificates.
   const ownCertificate = owner === undefined
   const trimmedPrefix = ownCertificate ? prefix.trim() : ''
@@ -61,9 +79,28 @@ export function IssueCertificateForm({
   const commonNamePreview =
     (trimmedPrefix ? trimmedPrefix + CN_PREFIX_SEPARATOR : '') +
     me.username +
-    (access?.certificate_user_cn_suffix ?? '')
+    (authority?.cn_suffix ?? '')
   const invalid =
-    badPrefix || (mode === 'csr' ? csr.trim() === '' : tooShort || password !== confirmation)
+    !authority ||
+    badPrefix ||
+    (mode === 'csr' ? csr.trim() === '' : tooShort || password !== confirmation)
+
+  useEffect(() => {
+    let cancelled = false
+    listAuthorities()
+      .then((list) => {
+        if (!cancelled) setAuthorities(list)
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setAuthorities([])
+          setError(errorMessage(err))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [listAuthorities])
 
   async function loadFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -84,6 +121,7 @@ export function IssueCertificateForm({
     else if (format === 'pkcs12') input = { format, password }
     else input = { format }
     if (trimmedPrefix) input.prefix = trimmedPrefix
+    if (authority) input.ca = authority.name
     setBusy(true)
     setError(null)
     setFields({})
@@ -115,6 +153,28 @@ export function IssueCertificateForm({
           <Tab value="csr" label="Sign CSR" />
         </Tabs>
         {error && <Alert severity="error">{error}</Alert>}
+        {noAuthority && !error && (
+          <Alert severity="warning">
+            No certificate authority issues certificates for {owner ?? 'your account'}. An access
+            administrator can allow one for {owner ? 'its' : 'your'} groups.
+          </Alert>
+        )}
+        {authorities && authorities.length > 1 && (
+          <TextField
+            select
+            label="Certificate authority"
+            value={authority?.name ?? ''}
+            onChange={(e) => setCaName(e.target.value)}
+            error={!!fieldError('ca')}
+            helperText={fieldError('ca') ?? (authority?.description || ' ')}
+          >
+            {authorities.map((a) => (
+              <MenuItem key={a.name} value={a.name}>
+                {a.default ? `${a.name} (default)` : a.name}
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
         {ownCertificate && (
           <TextField
             label="Common name prefix (optional)"

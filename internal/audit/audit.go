@@ -68,6 +68,14 @@ const (
 	// ActionAPIKeyDeleted is recorded when an operator deletes an API key of a service account,
 	// or its keys are deleted with the service account.
 	ActionAPIKeyDeleted Action = "service_account.api_key_deleted"
+	// ActionAuthorityCreated is recorded when an access administrator adds a certificate authority.
+	ActionAuthorityCreated Action = "certificate_authority.created"
+	// ActionAuthorityUpdated is recorded when an access administrator changes the settings of a
+	// certificate authority, or enables or disables it.
+	ActionAuthorityUpdated Action = "certificate_authority.updated"
+	// ActionAuthorityDefaultChanged is recorded when an access administrator makes a certificate
+	// authority the default one.
+	ActionAuthorityDefaultChanged Action = "certificate_authority.default_changed"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -81,7 +89,8 @@ func (a Action) Valid() bool {
 		ActionCertificateIssued, ActionCertificateKeyDownloaded, ActionCertificateRevoked, ActionCertificateImported,
 		ActionCertificateAssigned,
 		ActionServiceAccountCreated, ActionServiceAccountUpdated, ActionServiceAccountDeleted,
-		ActionTokenCreated, ActionTokenDeleted, ActionAPIKeyCreated, ActionAPIKeyDeleted:
+		ActionTokenCreated, ActionTokenDeleted, ActionAPIKeyCreated, ActionAPIKeyDeleted,
+		ActionAuthorityCreated, ActionAuthorityUpdated, ActionAuthorityDefaultChanged:
 		return true
 	}
 	return false
@@ -97,8 +106,9 @@ type Entry struct {
 	Actor  string `json:"actor"`
 	Action Action `json:"action"`
 	// Target is the username of the affected user or service account, the operator group of the
-	// affected rule, or the (new) name of the affected group. For join requests
-	// it is the username of the requesting user.
+	// affected rule, the (new) name of the affected group, or the name of the
+	// affected certificate authority. For join requests it is the username of
+	// the requesting user.
 	Target string `json:"target"`
 	// Details holds action-specific values, such as the user ID or the changed fields.
 	Details map[string]string `json:"details"`

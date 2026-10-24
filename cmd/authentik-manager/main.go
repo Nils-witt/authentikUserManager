@@ -20,9 +20,16 @@
 //	ACCESS_ADMIN_GROUPS  comma-separated authentik groups with full access that may edit
 //	                     the access rules (required)
 //
-//	CA_CERT_FILE         PEM file of the CA certificate signing user certificates, optionally
-//	                     followed by the certificates above it; certificates are disabled when unset
+//	CA_ENCRYPTION_KEY    32 random bytes, base64-encoded (openssl rand -base64 32), encrypting the
+//	                     private keys of the certificate authorities stored in the database;
+//	                     certificates are disabled when unset. Access administrators add CAs in the app.
+//	CA_CERT_FILE         PEM file of a CA certificate, optionally followed by the certificates above
+//	                     it, imported as the CA named "default" unless stored already (optional)
 //	CA_KEY_FILE          PEM file of the CA's unencrypted private key (required with CA_CERT_FILE)
+//
+//	The following settings only apply when CA_CERT_FILE is first imported; access
+//	administrators change them in the app afterwards:
+//
 //	CERT_VALIDITY_DAYS   days user certificates are valid (default 365)
 //	CERT_CRL_URL         public URL of this app's /pki/crl, embedded in user certificates (optional)
 //	CERT_CRL_VALIDITY_DAYS days each CRL is valid until its next update (default 30)
@@ -57,6 +64,7 @@ import (
 	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
+	"authentikManager/internal/authority"
 	"authentikManager/internal/config"
 	"authentikManager/internal/mail"
 	"authentikManager/internal/notification"
@@ -106,12 +114,12 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	ca, err := loadCA(cfg)
+	cas, err := loadAuthorities(ctx, cfg, db, logger)
 	if err != nil {
 		return err
 	}
 	keyDownloads := pki.NewPending(time.Now)
-	if ca != nil {
+	if cas != nil {
 		// Deferred after db.Close like the audit pruning, so it stops before the pool closes.
 		pruneCtx, stopPruning := context.WithCancel(ctx)
 		var pruning sync.WaitGroup
@@ -165,7 +173,8 @@ func run(logger *slog.Logger) error {
 			Static:       static,
 
 			RecoveryEmailStage: cfg.RecoveryEmailStage,
-			CA:                 ca,
+			CAs:                cas,
+			Authorities:        db,
 			Certificates:       db,
 			KeyDownloads:       keyDownloads,
 			Notifications:      notifier,
@@ -228,30 +237,78 @@ func newNotifier(cfg config.Config, db *store.Store, logger *slog.Logger) (*noti
 	return notification.NewNotifier(db, logger, receivers...)
 }
 
-// loadCA reads the CA that signs user certificates, or returns nil when none is configured.
-func loadCA(cfg config.Config) (*pki.CA, error) {
-	if cfg.CACertFile == "" {
+// legacyCAName is the name of the CA imported from CA_CERT_FILE.
+const legacyCAName = "default"
+
+// loadAuthorities returns the registry of the stored CAs, after importing the
+// CA of CA_CERT_FILE unless it is stored already, or nil when certificates are
+// disabled.
+func loadAuthorities(ctx context.Context, cfg config.Config, db *store.Store, logger *slog.Logger) (*authority.Registry, error) {
+	if len(cfg.CAEncryptionKey) == 0 {
 		return nil, nil
 	}
+	cipher, err := pki.NewKeyCipher(cfg.CAEncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	cas := authority.NewRegistry(cipher)
+	if cfg.CACertFile != "" {
+		if err := importCAFile(ctx, cfg, db, cas, logger); err != nil {
+			return nil, err
+		}
+	}
+	list, err := db.ListAuthorities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := cas.Load(list); err != nil {
+		return nil, fmt.Errorf("loading certificate authorities: %w", err)
+	}
+	logger.Info("loaded certificate authorities", slog.Int("count", len(list)))
+	return cas, nil
+}
+
+// importCAFile stores the CA of CA_CERT_FILE and CA_KEY_FILE with the CERT_*
+// settings, unless its certificate is stored already.
+func importCAFile(ctx context.Context, cfg config.Config, db *store.Store, cas *authority.Registry, logger *slog.Logger) error {
 	certPEM, err := os.ReadFile(cfg.CACertFile)
 	if err != nil {
-		return nil, fmt.Errorf("reading CA_CERT_FILE: %w", err)
+		return fmt.Errorf("reading CA_CERT_FILE: %w", err)
 	}
 	keyPEM, err := os.ReadFile(cfg.CAKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("reading CA_KEY_FILE: %w", err)
+		return fmt.Errorf("reading CA_KEY_FILE: %w", err)
 	}
 	defer clear(keyPEM)
-	ca, err := pki.LoadCA(certPEM, keyPEM, pki.Options{
-		Validity:    cfg.CertValidity,
-		CRLURL:      cfg.CertCRLURL,
-		CRLValidity: cfg.CertCRLValidity,
-
+	settings, err := authority.Settings{
+		CRLURL:                 cfg.CertCRLURL,
+		ValidityDays:           int(cfg.CertValidity / (24 * time.Hour)),
+		CRLValidityDays:        int(cfg.CertCRLValidity / (24 * time.Hour)),
 		UserCNSuffix:           cfg.CertUserCNSuffix,
 		ServiceAccountCNSuffix: cfg.CertServiceAccountCNSuffix,
-	})
+	}.Normalize()
 	if err != nil {
-		return nil, fmt.Errorf("loading certificate authority: %w", err)
+		return fmt.Errorf("certificate settings: %w", err)
 	}
-	return ca, nil
+	a := authority.Authority{Name: legacyCAName, Settings: settings, CreatedBy: "CA_CERT_FILE"}
+	ca, err := pki.LoadCA(certPEM, keyPEM, a.Options())
+	if err != nil {
+		return fmt.Errorf("loading certificate authority of CA_CERT_FILE: %w", err)
+	}
+	a.CertPEM = string(ca.ChainPEM())
+	a.Fingerprint = pki.Fingerprint(ca.Certificate())
+	if a.KeyCiphertext, err = cas.SealKey(a.Name, keyPEM); err != nil {
+		return err
+	}
+	stored, err := db.ImportLegacyAuthority(ctx, a)
+	if errors.Is(err, authority.ErrExists) {
+		return fmt.Errorf("importing CA_CERT_FILE: another certificate authority is named %q; "+
+			"add the new CA in the app instead and unset CA_CERT_FILE", legacyCAName)
+	}
+	if err != nil {
+		return err
+	}
+	logger.Info("certificate authority of CA_CERT_FILE is stored",
+		slog.String("ca", stored.Name), slog.Bool("legacy", stored.Legacy))
+	return nil
 }

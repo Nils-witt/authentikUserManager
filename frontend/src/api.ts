@@ -87,12 +87,10 @@ export interface Access {
   admin: boolean
   /** Password recovery emails can be sent. */
   recovery_email: boolean
-  /** Users can issue client certificates for their own account. */
+  /** Certificates are configured; users may issue them from the CAs available to them. */
   certificates: boolean
-  /** Suffixes appended to usernames in the common names of issued certificates, longest first. */
+  /** Suffixes the CAs append to usernames in the common names of issued certificates, longest first. */
   certificate_cn_suffixes: string[]
-  /** The suffix of user certificates alone, for previewing their common name. */
-  certificate_user_cn_suffix: string
 }
 
 /** Members of operator_group may manage members of target_groups ('*': all users). */
@@ -135,6 +133,9 @@ export type AuditAction =
   | 'service_account.token_deleted'
   | 'service_account.api_key_created'
   | 'service_account.api_key_deleted'
+  | 'certificate_authority.created'
+  | 'certificate_authority.updated'
+  | 'certificate_authority.default_changed'
 
 /** One record in the audit log. */
 export interface AuditEntry {
@@ -212,6 +213,9 @@ export interface Certificate {
   revoked_by: string
   /** The certificate itself is stored and can be downloaded; not for those issued before it was stored. */
   stored: boolean
+  /** ID and name of the CA that signed it; 0 and empty for certificates recorded before CAs were stored. */
+  ca_id: number
+  ca: string
 }
 
 /** The state of a certificate: usable, revoked, or expired without being revoked. */
@@ -229,6 +233,64 @@ export type IssueCertificateInput = (
 ) & {
   /** Precedes the username in the common name, joined by "+"; own certificates only. */
   prefix?: string
+  /** Name of the CA to sign; the account's default CA when omitted. */
+  ca?: string
+}
+
+/** A certificate authority that issues certificates for an account. */
+export interface UsableAuthority {
+  name: string
+  description: string
+  /** Signs when an issue request names no CA. */
+  default: boolean
+  /** Appended to the username in the common name of the account's certificates. */
+  cn_suffix: string
+  /** When the CA certificate expires; certificates it issues expire by then. */
+  not_after: string
+}
+
+/** The settings of a certificate authority that access administrators may change. */
+export interface AuthoritySettings {
+  description: string
+  /** Embedded in issued certificates as their CRL distribution point; empty for none. */
+  crl_url: string
+  /** How long issued certificates are valid, shortened to the CA's expiry. */
+  validity_days: number
+  /** How long each signed CRL is valid until its next update. */
+  crl_validity_days: number
+  user_cn_suffix: string
+  service_account_cn_suffix: string
+  /** Groups an account must be a direct member of; empty allows every account. */
+  allowed_groups: string[]
+}
+
+/** A certificate authority, as access administrators see it. Its key is never sent. */
+export interface CertificateAuthority extends AuthoritySettings {
+  id: number
+  /** Identifies the CA in requests and in its URLs, e.g. /pki/{name}/crl; it never changes. */
+  name: string
+  /** The CA certificate, followed by the certificates above it. */
+  certificate_pem: string
+  subject: string
+  issuer: string
+  not_before: string
+  not_after: string
+  fingerprint_sha256: string
+  /** Signs when an issue request names no CA. */
+  default: boolean
+  /** Imported from CA_CERT_FILE; /pki/crl and /pki/ca.pem serve it. */
+  legacy: boolean
+  /** Issues no certificates, but still publishes its CRL. */
+  disabled: boolean
+  created_at: string
+  created_by: string
+}
+
+/** Adds a certificate authority from its certificate and unencrypted private key. */
+export interface CreateAuthorityInput extends AuthoritySettings {
+  name: string
+  certificate_pem: string
+  key_pem: string
 }
 
 /** The result of issuing a certificate. */
@@ -594,6 +656,13 @@ export const listServiceAccountCertificates = (id: number) =>
     `/api/service-accounts/${id}/certificates`,
   ).then((res) => res.certificates)
 
+/** The CAs that issue certificates for a service account, its default one first. */
+export const listServiceAccountAuthorities = (id: number) =>
+  request<{ authorities: UsableAuthority[] }>(
+    'GET',
+    `/api/service-accounts/${id}/certificate-authorities`,
+  ).then((res) => res.authorities)
+
 /** Issues a certificate for a service account; the issuing operator downloads a generated key. */
 export const issueServiceAccountCertificate = (id: number, input: IssueCertificateInput) =>
   request<IssuedCertificate>('POST', `/api/service-accounts/${id}/certificates`, input)
@@ -608,6 +677,12 @@ export const revokeServiceAccountCertificate = (id: number, serial: string) =>
 export const listMyCertificates = () =>
   request<{ certificates: OwnCertificate[] }>('GET', '/api/certificates/mine').then(
     (res) => res.certificates,
+  )
+
+/** The CAs that issue certificates for the signed-in user, their default one first. */
+export const listMyAuthorities = () =>
+  request<{ authorities: UsableAuthority[] }>('GET', '/api/certificates/mine/authorities').then(
+    (res) => res.authorities,
   )
 
 /** Issues a certificate for the signed-in user's own account. */
@@ -706,6 +781,24 @@ export const importCertificates = (pem: string, options: ImportOptions) =>
     allow_unassigned: options.allowUnassigned,
     revoke: options.revoke,
   }).then((res) => res.results)
+
+/** Lists every certificate authority, disabled ones included; only for access administrators. */
+export const listAuthorities = () =>
+  request<{ authorities: CertificateAuthority[] }>('GET', '/api/certificate-authorities').then(
+    (res) => res.authorities,
+  )
+
+/** Adds a certificate authority; it becomes the default one when there is none. */
+export const createAuthority = (input: CreateAuthorityInput) =>
+  request<CertificateAuthority>('POST', '/api/certificate-authorities', input)
+
+/** Replaces the settings of a certificate authority and enables or disables it. */
+export const updateAuthority = (id: number, settings: AuthoritySettings & { disabled: boolean }) =>
+  request<CertificateAuthority>('PUT', `/api/certificate-authorities/${id}`, settings)
+
+/** Makes an enabled certificate authority the one that signs when a request names none. */
+export const setDefaultAuthority = (id: number) =>
+  request<CertificateAuthority>('POST', `/api/certificate-authorities/${id}/default`)
 
 export const version = () => request<BuildInfo>('GET', '/api/version')
 

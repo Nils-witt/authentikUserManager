@@ -25,6 +25,13 @@ func createTestCertificate(t *testing.T, s *store.Store, userPK int, notAfter ti
 // createUserCertificate stores a certificate of username with a fresh serial.
 func createUserCertificate(t *testing.T, s *store.Store, userPK int, username string, notAfter time.Time) certificate.Certificate {
 	t.Helper()
+	return createCACertificate(t, s, 0, userPK, username, notAfter)
+}
+
+// createCACertificate stores a certificate of username signed by the CA with
+// caID, none when 0, with a fresh serial.
+func createCACertificate(t *testing.T, s *store.Store, caID int64, userPK int, username string, notAfter time.Time) certificate.Certificate {
+	t.Helper()
 	serial := make([]byte, 16)
 	if _, err := rand.Read(serial); err != nil {
 		t.Fatal(err)
@@ -38,6 +45,7 @@ func createUserCertificate(t *testing.T, s *store.Store, userPK int, username st
 		NotAfter:  notAfter,
 		IssuedBy:  "ann",
 		KeySource: certificate.KeySourceGenerated,
+		CAID:      caID,
 	})
 	if err != nil {
 		t.Fatalf("CreateCertificate: %v", err)
@@ -284,8 +292,14 @@ func TestStore_revokeCertificate(t *testing.T) {
 	ctx := t.Context()
 	userPK := uniqueUserPK()
 
-	valid := createTestCertificate(t, s, userPK, time.Now().Add(time.Hour))
-	expired := createTestCertificate(t, s, userPK, time.Now().Add(-time.Second))
+	ca := createTestAuthority(t, s)
+	other := createTestAuthority(t, s)
+	valid := createCACertificate(t, s, ca.ID, userPK, "ann", time.Now().Add(time.Hour))
+	expired := createCACertificate(t, s, ca.ID, userPK, "ann", time.Now().Add(-time.Second))
+	ofOther := createCACertificate(t, s, other.ID, userPK, "ann", time.Now().Add(time.Hour))
+	if valid.CAID != ca.ID || valid.CA != ca.Name {
+		t.Errorf("created CA = %d %q, want %d %q", valid.CAID, valid.CA, ca.ID, ca.Name)
+	}
 
 	revoked, err := s.RevokeCertificate(ctx, valid.Serial, "admin")
 	if err != nil || revoked.RevokedAt == nil || revoked.RevokedBy != "admin" {
@@ -300,16 +314,19 @@ func TestStore_revokeCertificate(t *testing.T) {
 	if _, err := s.RevokeCertificate(ctx, expired.Serial, "admin"); err != nil {
 		t.Fatalf("RevokeCertificate(expired): %v", err)
 	}
+	if _, err := s.RevokeCertificate(ctx, ofOther.Serial, "admin"); err != nil {
+		t.Fatalf("RevokeCertificate(of other CA): %v", err)
+	}
 
-	list, err := s.ListRevokedCertificates(ctx, time.Now())
+	list, err := s.ListRevokedCertificates(ctx, ca.ID, time.Now())
 	if err != nil {
 		t.Fatalf("ListRevokedCertificates: %v", err)
 	}
 	hasSerial := func(serial string) bool {
 		return slices.ContainsFunc(list, func(r certificate.Revoked) bool { return r.Serial == serial })
 	}
-	if !hasSerial(valid.Serial) || hasSerial(expired.Serial) {
-		t.Errorf("ListRevokedCertificates = %+v, want the valid revoked certificate only", list)
+	if !hasSerial(valid.Serial) || hasSerial(expired.Serial) || hasSerial(ofOther.Serial) {
+		t.Errorf("ListRevokedCertificates = %+v, want the valid revoked certificate of the CA only", list)
 	}
 }
 

@@ -1,13 +1,14 @@
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
 import Stack from '@mui/material/Stack'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import * as api from '../../api'
 import type {
   Certificate,
   IssueCertificateInput,
   IssuedCertificate,
   OwnCertificate,
+  UsableAuthority,
 } from '../../api'
 import { saveFile } from '../../download'
 import { errorMessage } from '../../errors'
@@ -20,12 +21,14 @@ interface CertificateCalls {
   list: () => Promise<OwnCertificate[]>
   issue: (input: IssueCertificateInput) => Promise<IssuedCertificate>
   revoke: (c: Certificate) => Promise<Certificate>
+  authorities: () => Promise<UsableAuthority[]>
 }
 
 const ownCalls: CertificateCalls = {
   list: api.listMyCertificates,
   issue: api.issueCertificate,
   revoke: (c) => api.revokeCertificate(c.user_pk, c.serial),
+  authorities: api.listMyAuthorities,
 }
 
 function serviceAccountCalls(id: number): CertificateCalls {
@@ -33,6 +36,7 @@ function serviceAccountCalls(id: number): CertificateCalls {
     list: () => api.listServiceAccountCertificates(id),
     issue: (input) => api.issueServiceAccountCertificate(id, input),
     revoke: (c) => api.revokeServiceAccountCertificate(id, c.serial),
+    authorities: () => api.listServiceAccountAuthorities(id),
   }
 }
 
@@ -58,7 +62,11 @@ export function CertificateManager({ username, serviceAccountId }: CertificateMa
   // Bumped after every change, to reload the certificates.
   const [version, setVersion] = useState(0)
   const [confirm, confirmDialog] = useConfirm()
-  const calls = serviceAccountId === undefined ? ownCalls : serviceAccountCalls(serviceAccountId)
+  // Memoized, so the issue form loads the CAs once per account.
+  const calls = useMemo(
+    () => (serviceAccountId === undefined ? ownCalls : serviceAccountCalls(serviceAccountId)),
+    [serviceAccountId],
+  )
   const isOwn = serviceAccountId === undefined
 
   useEffect(() => {
@@ -156,6 +164,7 @@ export function CertificateManager({ username, serviceAccountId }: CertificateMa
       <IssueCertificateForm
         owner={isOwn ? undefined : username}
         issue={calls.issue}
+        listAuthorities={calls.authorities}
         onIssued={issued}
       />
       <CertificateTable

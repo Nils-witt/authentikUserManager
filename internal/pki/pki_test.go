@@ -332,7 +332,7 @@ func TestCA_CheckIssued(t *testing.T) {
 		wantErr string
 	}{
 		{name: "issued by the ca", cert: issue(loaded, now)},
-		{name: "issued by another ca", cert: issue(other, now), wantErr: "not signed by the configured CA"},
+		{name: "issued by another ca", cert: issue(other, now), wantErr: "not signed by the CA"},
 		{name: "expired", cert: issue(loaded, now.Add(-2*time.Hour)), wantErr: "expired"},
 		{name: "ca certificate", cert: ca.cert, wantErr: "CA certificate"},
 	}

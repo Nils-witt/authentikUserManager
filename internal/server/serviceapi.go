@@ -42,6 +42,7 @@ func (s *Server) serviceAPI() http.Handler {
 	mux.Handle("GET /service-api/v1/certificates", s.requireCertificates(s.listCallerCertificates))
 	mux.Handle("POST /service-api/v1/certificates", s.requireCertificates(s.issueCallerCertificate))
 	mux.Handle("POST /service-api/v1/certificates/{serial}/revoke", s.requireCertificates(s.revokeCallerCertificate))
+	mux.Handle("GET /service-api/v1/certificate-authorities", s.requireCertificates(s.listCallerAuthorities))
 	mux.HandleFunc("/service-api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", nil)
 	})
@@ -131,6 +132,8 @@ func (s *Server) listCallerCertificates(w http.ResponseWriter, r *http.Request) 
 // The service account keeps its key; the server never generates one here.
 type issueCallerCertificateInput struct {
 	CSR string `json:"csr"`
+	// CA optionally names the CA to sign; see issueCertificateInput.CA.
+	CA string `json:"ca"`
 }
 
 // issueCallerCertificate issues a client certificate for the public key of a
@@ -144,13 +147,18 @@ func (s *Server) issueCallerCertificate(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "validation failed", map[string][]string{"csr": {"a CSR is required"}})
 		return
 	}
-	in := issueCertificateInput{CSR: body.CSR}
+	in := issueCertificateInput{CSR: body.CSR, CA: body.CA}
 	pub, fields := in.validate()
 	if fields != nil {
 		writeError(w, http.StatusBadRequest, "validation failed", fields)
 		return
 	}
 	s.issueFor(w, r, callerAccount(r), pub, in)
+}
+
+// listCallerAuthorities returns the CAs that issue certificates for the calling service account.
+func (s *Server) listCallerAuthorities(w http.ResponseWriter, r *http.Request) {
+	s.writeUsableAuthorities(w, callerAccount(r))
 }
 
 // revokeCallerCertificate revokes the certificate with the {serial} path value

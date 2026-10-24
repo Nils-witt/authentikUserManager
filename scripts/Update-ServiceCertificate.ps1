@@ -10,16 +10,17 @@ using namespace System.Security.Cryptography.X509Certificates
     Uses the service API of authentik-manager with an API key of the service account:
 
     1. Looks in Cert:\LocalMachine\My for a certificate of the service account issued by the
-       authentik-manager CA. Without one, it continues with step 3.
+       authentik-manager CA it uses (see CertificateAuthority). Without one, it continues with
+       step 3.
     2. Keeps that certificate while more than RenewThresholdPercent (default 10) percent of its
        lifetime remains; otherwise it continues with step 3.
     3. Creates a new non-exportable key in the machine key store, requests a certificate for it
        and stores the certificate with the key in Cert:\LocalMachine\My. Only then it revokes the
        old certificates of the service account found in the store and deletes them with their keys.
 
-    A certificate counts as the service account's when it chains to the CA served at /pki/ca.pem
-    and its serial number is among the service account's certificates on the server. Other
-    certificates, including other certificates of the same CA, are never touched.
+    A certificate counts as the service account's when it chains to the CA served at
+    /pki/<ca>/ca.pem and its serial number is among the service account's certificates on the
+    server. Other certificates, including other certificates of the same CA, are never touched.
 
     Run it elevated (or as SYSTEM, e.g. from a scheduled task): it writes to the machine store.
     Requires Windows PowerShell 5.1 with .NET Framework 4.7.2 or later, or PowerShell 7.
@@ -33,6 +34,10 @@ using namespace System.Security.Cryptography.X509Certificates
 
 .PARAMETER ApiKeyFile
     A file holding the API key, e.g. readable by SYSTEM and Administrators only.
+
+.PARAMETER CertificateAuthority
+    The name of the authentik-manager CA to request certificates from. Defaults to the one the
+    server uses for the service account when a request names none, usually the default CA.
 
 .PARAMETER RenewThresholdPercent
     The certificate is renewed once no more than this percentage of its lifetime remains.
@@ -61,6 +66,9 @@ param(
 
     [Parameter(Mandatory, ParameterSetName = 'KeyFile')]
     [string] $ApiKeyFile,
+
+    [ValidatePattern('^[a-z0-9][a-z0-9-]{0,31}$')]
+    [string] $CertificateAuthority,
 
     [ValidateRange(1, 99)]
     [int] $RenewThresholdPercent = 10,
@@ -215,11 +223,19 @@ $BaseUrl = $BaseUrl.TrimEnd('/')
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 try {
+    if (-not $CertificateAuthority) {
+        # The server lists the CA it signs with when a request names none first.
+        $available = @((Invoke-ServiceApi GET '/service-api/v1/certificate-authorities').authorities)
+        if ($available.Count -eq 0) { throw 'No certificate authority issues certificates for the service account.' }
+        $CertificateAuthority = $available[0].name
+    }
+    Write-Log "Using the certificate authority $CertificateAuthority."
+    $caUrl = "$BaseUrl/pki/$CertificateAuthority/ca.pem"
     # Served as application/x-pem-file, which PowerShell may return as bytes.
-    $caPem = (Invoke-WebRequest -Uri "$BaseUrl/pki/ca.pem" -UseBasicParsing).Content
+    $caPem = (Invoke-WebRequest -Uri $caUrl -UseBasicParsing).Content
     if ($caPem -is [byte[]]) { $caPem = [Text.Encoding]::ASCII.GetString($caPem) }
     $caCertificates = @(ConvertFrom-Pem $caPem 'CERTIFICATE' | ForEach-Object { [X509Certificate2]::new([byte[]] $_) })
-    if ($caCertificates.Count -eq 0) { throw "$BaseUrl/pki/ca.pem holds no certificate" }
+    if ($caCertificates.Count -eq 0) { throw "$caUrl holds no certificate" }
 
     $records = @{}
     foreach ($record in @((Invoke-ServiceApi GET '/service-api/v1/certificates').certificates)) {
@@ -261,7 +277,10 @@ try {
     }
     $key = New-MachineKey $KeyAlgorithm
     try {
-        $issued = Invoke-ServiceApi POST '/service-api/v1/certificates' @{ csr = (New-SigningRequest $key) }
+        $issued = Invoke-ServiceApi POST '/service-api/v1/certificates' @{
+            csr = (New-SigningRequest $key)
+            ca  = $CertificateAuthority
+        }
         $der = @(ConvertFrom-Pem $issued.certificate_pem 'CERTIFICATE')[0]
         $stored = Add-CertificateWithKey ([X509Certificate2]::new([byte[]] $der)) $key
     } catch {

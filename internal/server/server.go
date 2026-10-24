@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
+	"sync"
 	"time"
 
 	"authentikManager/internal/access"
@@ -20,6 +22,7 @@ import (
 	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
+	"authentikManager/internal/authority"
 	"authentikManager/internal/buildinfo"
 	"authentikManager/internal/certificate"
 	"authentikManager/internal/joinrequest"
@@ -142,8 +145,22 @@ type CertificateStore interface {
 	AssignCertificate(ctx context.Context, serial string, userPK int, username string) (certificate.Certificate, error)
 	// RevokeUserCertificates revokes every unrevoked certificate of a user and returns their serials.
 	RevokeUserCertificates(ctx context.Context, userPK int, actor string) ([]string, error)
-	// ListRevokedCertificates returns the revoked certificates still valid at now.
-	ListRevokedCertificates(ctx context.Context, now time.Time) ([]certificate.Revoked, error)
+	// ListRevokedCertificates returns the revoked certificates of a CA still valid at now.
+	ListRevokedCertificates(ctx context.Context, caID int64, now time.Time) ([]certificate.Revoked, error)
+}
+
+// AuthorityStore keeps the certificate authorities.
+type AuthorityStore interface {
+	// ListAuthorities returns every CA, ordered by name.
+	ListAuthorities(ctx context.Context) ([]authority.Authority, error)
+	// CreateAuthority returns authority.ErrExists when the name or certificate is already stored.
+	CreateAuthority(ctx context.Context, a authority.Authority) (authority.Authority, error)
+	// UpdateAuthority returns authority.ErrNotFound when there is no CA and
+	// authority.ErrDefaultDisabled when disabling the default CA.
+	UpdateAuthority(ctx context.Context, id int64, settings authority.Settings, disabled bool) (authority.Authority, error)
+	// SetDefaultAuthority returns authority.ErrNotFound when there is no CA
+	// and authority.ErrDefaultDisabled when it is disabled.
+	SetDefaultAuthority(ctx context.Context, id int64) error
 }
 
 // APIKeyStore keeps the API keys with which service accounts issue and revoke
@@ -205,12 +222,13 @@ type Deps struct {
 	// RecoveryEmailStage is the UUID of the email stage that sends password
 	// recovery emails. When empty, sending them is disabled.
 	RecoveryEmailStage string
-	// CA issues user certificates. When nil, certificates are disabled and
-	// KeyDownloads is not used.
-	CA *pki.CA
+	// CAs are the loaded certificate authorities, which Authorities stores.
+	// When nil, certificates are disabled and KeyDownloads is not used.
+	CAs         *authority.Registry
+	Authorities AuthorityStore
 	// Certificates keeps the records of the issued certificates. When set, a
 	// user's certificates are revoked when the user is deleted, deactivated or
-	// renamed, even while CA is nil.
+	// renamed, even while CAs is nil.
 	Certificates CertificateStore
 	// KeyDownloads holds generated keys until their single download.
 	KeyDownloads *pki.Pending
@@ -234,8 +252,11 @@ type Server struct {
 	logger       *slog.Logger
 	// recoveryEmailStage is the email stage for recovery emails; empty disables them.
 	recoveryEmailStage string
-	// ca issues user certificates; nil disables them.
-	ca           *pki.CA
+	// cas issue user certificates; nil disables them.
+	cas         *authority.Registry
+	authorities AuthorityStore
+	// reloading serializes reloads of cas after authorities changed.
+	reloading    sync.Mutex
 	certificates CertificateStore
 	keyDownloads *pki.Pending
 	// notifications tells users about changes to their account; nil disables them.
@@ -261,7 +282,8 @@ func New(d Deps) *Server {
 		joinRequests:       d.JoinRequests,
 		logger:             d.Logger,
 		recoveryEmailStage: d.RecoveryEmailStage,
-		ca:                 d.CA,
+		cas:                d.CAs,
+		authorities:        d.Authorities,
 		certificates:       d.Certificates,
 		keyDownloads:       d.KeyDownloads,
 		notifications:      d.Notifications,
@@ -325,6 +347,7 @@ func New(d Deps) *Server {
 	// user may list and revoke the user's certificates.
 	api.Handle("GET /api/certificates/mine", s.requireCertificates(s.listMyCertificates))
 	api.Handle("POST /api/certificates/mine", s.requireCertificates(s.issueCertificate))
+	api.Handle("GET /api/certificates/mine/authorities", s.requireCertificates(s.listMyAuthorities))
 	api.Handle("GET /api/certificates/mine/{serial}/download", s.requireCertificates(s.downloadCertificateKey))
 	api.Handle("GET /api/users/{id}/certificates", s.requireCertificates(s.listUserCertificates))
 	api.Handle("POST /api/users/{id}/certificates/{serial}/revoke",
@@ -332,6 +355,7 @@ func New(d Deps) *Server {
 	// Operators who may change a service account also issue its certificates.
 	api.Handle("GET /api/service-accounts/{id}/certificates", s.requireCertificates(s.listServiceAccountCertificates))
 	api.Handle("POST /api/service-accounts/{id}/certificates", s.requireCertificates(s.issueServiceAccountCertificate))
+	api.Handle("GET /api/service-accounts/{id}/certificate-authorities", s.requireCertificates(s.listServiceAccountAuthorities))
 	api.Handle("POST /api/service-accounts/{id}/certificates/{serial}/revoke",
 		s.requireCertificates(s.revokeAccountCertificate(serviceAccounts)))
 	// Access administrators may list, download and revoke the certificates of
@@ -343,6 +367,12 @@ func New(d Deps) *Server {
 	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.importCertificates).ServeHTTP))
 	// They may assign an imported certificate to its account once the account exists.
 	api.Handle("POST /api/certificates/{serial}/assign", s.requireCertificates(s.requireAdmin(s.assignCertificate).ServeHTTP))
+	// Access administrators manage the certificate authorities; see authorities.go.
+	api.Handle("GET /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.listAuthorities).ServeHTTP))
+	api.Handle("POST /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.createAuthority).ServeHTTP))
+	api.Handle("PUT /api/certificate-authorities/{id}", s.requireCertificates(s.requireAdmin(s.updateAuthority).ServeHTTP))
+	api.Handle("POST /api/certificate-authorities/{id}/default",
+		s.requireCertificates(s.requireAdmin(s.setDefaultAuthority).ServeHTTP))
 	// Every signed-in internal user reads their own notifications and chooses
 	// which ones they receive; see notifications.go.
 	api.Handle("GET /api/notifications", s.requireNotifications(s.listNotifications))
@@ -363,10 +393,15 @@ func New(d Deps) *Server {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.Handle("/auth/", d.Auth.Handler())
-	// The CRL and the CA certificate are public, for relying parties.
+	// The CRL and the chain of each CA are public, for relying parties. The
+	// unnamed URLs serve the CA imported from CA_CERT_FILE, whose certificates
+	// may embed them.
 	mux.Handle("GET /pki/crl", s.requireCertificates(s.getCRL))
 	mux.Handle("GET /pki/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/ca.pem", s.requireCertificates(s.getCAChain))
+	mux.Handle("GET /pki/{ca}/crl", s.requireCertificates(s.getCRL))
+	mux.Handle("GET /pki/{ca}/crl.pem", s.requireCertificates(s.getCRLPEM))
+	mux.Handle("GET /pki/{ca}/ca.pem", s.requireCertificates(s.getCAChain))
 	mux.Handle("/api/", d.Auth.Require(api))
 	// Service accounts authenticate to the service API with an API key
 	// instead of a session; see serviceapi.go.
@@ -450,38 +485,34 @@ func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
 		RecoveryEmail bool `json:"recovery_email"`
 		// Certificates is set when users can issue certificates.
 		Certificates bool `json:"certificates"`
-		// CertificateCNSuffixes are the suffixes appended to usernames in the
-		// common names of issued certificates, longest first.
+		// CertificateCNSuffixes are the suffixes the CAs append to usernames
+		// in the common names of issued certificates, longest first.
 		CertificateCNSuffixes []string `json:"certificate_cn_suffixes"`
-		// CertificateUserCNSuffix is the suffix of user certificates alone,
-		// for previewing their common name.
-		CertificateUserCNSuffix string `json:"certificate_user_cn_suffix"`
 	}{
-		Scope:                   scope,
-		Admin:                   s.policy.IsAdmin(operatorGroups(r)),
-		RecoveryEmail:           s.recoveryEmailStage != "",
-		Certificates:            s.ca != nil,
-		CertificateCNSuffixes:   s.certificateCNSuffixes(),
-		CertificateUserCNSuffix: s.certificateUserCNSuffix(),
+		Scope:                 scope,
+		Admin:                 s.policy.IsAdmin(operatorGroups(r)),
+		RecoveryEmail:         s.recoveryEmailStage != "",
+		Certificates:          s.cas != nil,
+		CertificateCNSuffixes: s.certificateCNSuffixes(),
 	})
 }
 
-// certificateCNSuffixes returns the CA's common name suffixes, none when
-// certificates are disabled.
+// certificateCNSuffixes returns the distinct common name suffixes of all
+// CAs, longest first; none when certificates are disabled.
 func (s *Server) certificateCNSuffixes() []string {
-	if s.ca == nil {
-		return []string{}
+	suffixes := []string{}
+	if s.cas == nil {
+		return suffixes
 	}
-	return s.ca.CNSuffixes()
-}
-
-// certificateUserCNSuffix returns the CA's user common name suffix, empty
-// when certificates are disabled.
-func (s *Server) certificateUserCNSuffix() string {
-	if s.ca == nil {
-		return ""
+	for _, e := range s.cas.All() {
+		for _, suffix := range e.CA.CNSuffixes() {
+			if !slices.Contains(suffixes, suffix) {
+				suffixes = append(suffixes, suffix)
+			}
+		}
 	}
-	return s.ca.UserCNSuffix()
+	slices.SortStableFunc(suffixes, func(a, b string) int { return len(b) - len(a) })
+	return suffixes
 }
 
 // getVersion reports the repository, commit and tag the server was built from.

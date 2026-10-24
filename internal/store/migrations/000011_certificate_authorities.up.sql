@@ -1,0 +1,42 @@
+-- Certificate authorities that sign client certificates. Access administrators
+-- add them; the CA of CA_CERT_FILE is imported at startup. Their private keys
+-- are stored encrypted with CA_ENCRYPTION_KEY, never in the clear.
+CREATE TABLE certificate_authorities (
+    id                        bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    -- Names appear in URLs such as /pki/{name}/crl; they never change.
+    name                      text        NOT NULL UNIQUE CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,31}$'),
+    description               text        NOT NULL DEFAULT '',
+    -- The CA certificate, optionally followed by the certificates above it.
+    cert_pem                  text        NOT NULL,
+    -- The AES-256-GCM sealed PKCS#8 PEM private key, bound to the name.
+    key_ciphertext            bytea       NOT NULL,
+    -- SHA-256 of the CA certificate, so a CA is stored once.
+    fingerprint               bytea       NOT NULL UNIQUE CHECK (length(fingerprint) = 32),
+    crl_url                   text        NOT NULL DEFAULT '',
+    validity_days             integer     NOT NULL CHECK (validity_days > 0),
+    crl_validity_days         integer     NOT NULL CHECK (crl_validity_days > 0),
+    user_cn_suffix            text        NOT NULL DEFAULT '',
+    service_account_cn_suffix text        NOT NULL DEFAULT '',
+    -- Groups an account must be a direct member of; empty allows every account.
+    allowed_groups            text[]      NOT NULL DEFAULT '{}',
+    -- The CA that signs when a request names none.
+    is_default                boolean     NOT NULL DEFAULT false,
+    -- The CA of CA_CERT_FILE, served at the unnamed /pki/crl and /pki/ca.pem.
+    legacy                    boolean     NOT NULL DEFAULT false,
+    -- Disabled CAs issue nothing but still publish their CRL.
+    disabled                  boolean     NOT NULL DEFAULT false,
+    created_at                timestamptz NOT NULL DEFAULT now(),
+    created_by                text        NOT NULL CHECK (created_by <> ''),
+    CONSTRAINT certificate_authorities_default_enabled CHECK (NOT (is_default AND disabled))
+);
+
+CREATE UNIQUE INDEX certificate_authorities_one_default ON certificate_authorities ((true)) WHERE is_default;
+CREATE UNIQUE INDEX certificate_authorities_one_legacy ON certificate_authorities ((true)) WHERE legacy;
+
+-- The CA that signed each certificate. Certificates recorded before CAs were
+-- stored are assigned to the CA imported from CA_CERT_FILE at startup.
+ALTER TABLE certificates ADD COLUMN ca_id bigint REFERENCES certificate_authorities (id);
+
+-- Each CA's CRL lists its own revoked certificates.
+DROP INDEX certificates_revoked;
+CREATE INDEX certificates_revoked ON certificates (ca_id, not_after) WHERE revoked_at IS NOT NULL;

@@ -28,6 +28,7 @@ import (
 	"authentikManager/internal/access"
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
+	"authentikManager/internal/authority"
 	"authentikManager/internal/certificate"
 	"authentikManager/internal/pki"
 	"authentikManager/internal/server"
@@ -170,13 +171,13 @@ func (f *fakeCertificates) RevokeUserCertificates(_ context.Context, userPK int,
 	return serials, nil
 }
 
-func (f *fakeCertificates) ListRevokedCertificates(_ context.Context, now time.Time) ([]certificate.Revoked, error) {
+func (f *fakeCertificates) ListRevokedCertificates(_ context.Context, caID int64, now time.Time) ([]certificate.Revoked, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	var out []certificate.Revoked
 	for _, c := range f.certs {
-		if c.RevokedAt != nil && c.NotAfter.After(now) {
+		if c.CAID == caID && c.RevokedAt != nil && c.NotAfter.After(now) {
 			out = append(out, certificate.Revoked{Serial: c.Serial, RevokedAt: *c.RevokedAt})
 		}
 	}
@@ -201,15 +202,111 @@ func (c *testClock) Advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
+// fakeAuthorities is an in-memory CA store. Each test uses its own instance.
+type fakeAuthorities struct {
+	mu   sync.Mutex
+	list []authority.Authority
+	err  error
+}
+
+func (f *fakeAuthorities) index(id int64) (int, error) {
+	i := slices.IndexFunc(f.list, func(a authority.Authority) bool { return a.ID == id })
+	if i < 0 {
+		return 0, authority.ErrNotFound
+	}
+	return i, nil
+}
+
+func (f *fakeAuthorities) ListAuthorities(context.Context) ([]authority.Authority, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	list := slices.Clone(f.list)
+	slices.SortFunc(list, func(a, b authority.Authority) int { return strings.Compare(a.Name, b.Name) })
+	return list, nil
+}
+
+func (f *fakeAuthorities) CreateAuthority(_ context.Context, a authority.Authority) (authority.Authority, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return authority.Authority{}, f.err
+	}
+	if slices.ContainsFunc(f.list, func(b authority.Authority) bool {
+		return b.Name == a.Name || slices.Equal(b.Fingerprint, a.Fingerprint)
+	}) {
+		return authority.Authority{}, authority.ErrExists
+	}
+	a.ID = int64(len(f.list) + 1)
+	a.CreatedAt = time.Now()
+	a.Default = !a.Disabled && !slices.ContainsFunc(f.list, func(b authority.Authority) bool { return b.Default })
+	f.list = append(f.list, a)
+	return a, nil
+}
+
+func (f *fakeAuthorities) UpdateAuthority(_ context.Context, id int64, settings authority.Settings, disabled bool) (authority.Authority, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return authority.Authority{}, f.err
+	}
+	i, err := f.index(id)
+	if err != nil {
+		return authority.Authority{}, err
+	}
+	if disabled && f.list[i].Default {
+		return authority.Authority{}, authority.ErrDefaultDisabled
+	}
+	f.list[i].Settings, f.list[i].Disabled = settings, disabled
+	return f.list[i], nil
+}
+
+func (f *fakeAuthorities) SetDefaultAuthority(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	i, err := f.index(id)
+	if err != nil {
+		return err
+	}
+	if f.list[i].Disabled {
+		return authority.ErrDefaultDisabled
+	}
+	for j := range f.list {
+		f.list[j].Default = j == i
+	}
+	return nil
+}
+
+// testCipher encrypts the keys of the test CAs.
+func testCipher(t *testing.T) *pki.KeyCipher {
+	t.Helper()
+	cipher, err := pki.NewKeyCipher(make([]byte, pki.KeyCipherKeyLen))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cipher
+}
+
 // certEnv is a server with certificates enabled and its collaborators.
 type certEnv struct {
-	srv       *server.Server
-	ca        *pki.CA
-	caCert    *x509.Certificate
-	certs     *fakeCertificates
-	downloads *pki.Pending
-	clock     *testClock
-	log       *fakeAudit
+	srv *server.Server
+	// ca signs like the default CA "main", but with the pki.Options the
+	// server was created with, e.g. validities shorter than a day.
+	ca     *pki.CA
+	caCert *x509.Certificate
+	// caID is the ID of "main".
+	caID        int64
+	cas         *authority.Registry
+	authorities *fakeAuthorities
+	certs       *fakeCertificates
+	downloads   *pki.Pending
+	clock       *testClock
+	log         *fakeAudit
 	// notes records the notifications sent.
 	notes *memoryNotifications
 	// keys are the API keys of the service API.
@@ -222,13 +319,24 @@ var testCAOptions = pki.Options{Validity: time.Hour}
 // newTestCA returns a self-signed CA with opts and its certificate.
 func newTestCA(t *testing.T, opts pki.Options) (*pki.CA, *x509.Certificate) {
 	t.Helper()
+	certPEM, keyPEM := newTestCAPEM(t, "Test CA")
+	ca, err := pki.LoadCA(certPEM, keyPEM, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ca, ca.Certificate()
+}
+
+// newTestCAPEM returns the certificate and key of a new self-signed CA named cn as PEM.
+func newTestCAPEM(t *testing.T, cn string) (certPEM, keyPEM []byte) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "Test CA"},
+		Subject:               pkix.Name{CommonName: cn},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		IsCA:                  true,
@@ -239,23 +347,64 @@ func newTestCA(t *testing.T, opts pki.Options) (*pki.CA, *x509.Certificate) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := pki.LoadCA(
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
-		opts,
-	)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+}
+
+// settingsFor returns the CA settings closest to opts: validities are whole days.
+func settingsFor(opts pki.Options) authority.Settings {
+	const day = 24 * time.Hour
+	return authority.Settings{
+		CRLURL:                 opts.CRLURL,
+		ValidityDays:           max(1, int((opts.Validity+day-1)/day)),
+		CRLValidityDays:        max(1, int((opts.CRLValidity+day-1)/day)),
+		UserCNSuffix:           opts.UserCNSuffix,
+		ServiceAccountCNSuffix: opts.ServiceAccountCNSuffix,
+	}
+}
+
+// addCA stores the CA of certPEM and keyPEM named name with settings and
+// loads it into the server, returning its record. The first CA becomes the
+// default one.
+func (env *certEnv) addCA(t *testing.T, name string, settings authority.Settings, certPEM, keyPEM []byte) authority.Authority {
+	t.Helper()
+	sealed, err := env.cas.SealKey(name, keyPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ca, cert
+	ca, err := pki.LoadCA(certPEM, keyPEM, pki.Options{Validity: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := env.authorities.CreateAuthority(t.Context(), authority.Authority{
+		Name:          name,
+		Settings:      settings,
+		CertPEM:       string(certPEM),
+		KeyCiphertext: sealed,
+		Fingerprint:   pki.Fingerprint(ca.Certificate()),
+		CreatedBy:     "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.reload(t)
+	return a
+}
+
+// reload loads the stored CAs into the server, as it does after changes.
+func (env *certEnv) reload(t *testing.T) {
+	t.Helper()
+	list, err := env.authorities.ListAuthorities(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.cas.Load(list); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // newCertServer returns a server with certificates enabled for the signed-in
@@ -268,20 +417,27 @@ func newCertServer(t *testing.T, users server.UserService, groups ...string) *ce
 // newCertServerWithOptions is newCertServer with a CA configured by opts.
 func newCertServerWithOptions(t *testing.T, opts pki.Options, users server.UserService, groups ...string) *certEnv {
 	t.Helper()
-	ca, caCert := newTestCA(t, opts)
+	certPEM, keyPEM := newTestCAPEM(t, "Test CA")
+	ca, err := pki.LoadCA(certPEM, keyPEM, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rules := newFakeRules()
 	policy, err := access.NewPolicy([]string{"admins"}, rules)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := &certEnv{
-		ca:     ca,
-		caCert: caCert,
-		certs:  &fakeCertificates{},
-		clock:  &testClock{t: time.Now()},
-		log:    &fakeAudit{},
-		keys:   &fakeAPIKeys{},
+		ca:          ca,
+		caCert:      ca.Certificate(),
+		cas:         authority.NewRegistry(testCipher(t)),
+		authorities: &fakeAuthorities{},
+		certs:       &fakeCertificates{},
+		clock:       &testClock{t: time.Now()},
+		log:         &fakeAudit{},
+		keys:        &fakeAPIKeys{},
 	}
+	env.caID = env.addCA(t, "main", settingsFor(opts), certPEM, keyPEM).ID
 	env.downloads = pki.NewPending(env.clock.Now)
 	notifier, notes, _, _ := newNotifier(t)
 	env.notes = notes
@@ -292,7 +448,8 @@ func newCertServerWithOptions(t *testing.T, opts pki.Options, users server.UserS
 		Rules:         rules,
 		Audit:         env.log,
 		Logger:        slog.New(slog.DiscardHandler),
-		CA:            ca,
+		CAs:           env.cas,
+		Authorities:   env.authorities,
 		Certificates:  env.certs,
 		KeyDownloads:  env.downloads,
 		Notifications: notifier,
@@ -867,7 +1024,7 @@ func TestCertificates_import(t *testing.T) {
 		`there is no user or service account named "zoe"`,
 		`there is no user or service account named "ext"`,
 		"it has expired",
-		"it is not signed by the configured CA",
+		"it is not signed by any configured CA",
 		"it is already recorded",
 	}
 	if len(out.Results) != len(wantErrors) {
@@ -892,6 +1049,7 @@ func TestCertificates_import(t *testing.T) {
 		IssuedBy:  "admin",
 		KeySource: certificate.KeySourceImported,
 		Stored:    true,
+		CAID:      env.caID,
 	}
 	if !reflect.DeepEqual(*ann, want) {
 		t.Errorf("imported = %+v, want %+v", *ann, want)
@@ -1364,8 +1522,8 @@ func TestCertificates_assignRejected(t *testing.T) {
 
 func addCertificates(env *certEnv) {
 	env.certs.certs = append(env.certs.certs,
-		certificate.Certificate{Serial: "ab", UserPK: 5, Username: "bob", NotAfter: time.Now().Add(time.Hour)},
-		certificate.Certificate{Serial: "cd", UserPK: 6, Username: "cat", NotAfter: time.Now().Add(time.Hour)},
+		certificate.Certificate{Serial: "ab", UserPK: 5, Username: "bob", NotAfter: time.Now().Add(time.Hour), CAID: env.caID},
+		certificate.Certificate{Serial: "cd", UserPK: 6, Username: "cat", NotAfter: time.Now().Add(time.Hour), CAID: env.caID},
 	)
 }
 

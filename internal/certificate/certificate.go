@@ -67,6 +67,11 @@ type Certificate struct {
 	// Stored is set when DER is stored, so the certificate can be downloaded.
 	// Certificates issued before encodings were stored have none.
 	Stored bool `json:"stored"`
+	// CAID is the ID of the CA that signed the certificate, and CA its name.
+	// Both are empty for a certificate recorded before CAs were stored that
+	// no CA was imported for.
+	CAID int64  `json:"ca_id"`
+	CA   string `json:"ca"`
 }
 
 // Assigned reports whether the certificate belongs to a user. Only imported

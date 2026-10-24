@@ -72,7 +72,7 @@ export function CertificateTable({
     onDownload !== undefined ||
     onDownloadCertificate !== undefined ||
     onAssign !== undefined
-  const columns = 5 + Number(showUser) + Number(showCommonName) + Number(hasActions)
+  const columns = 6 + Number(showUser) + Number(showCommonName) + Number(hasActions)
   return (
     <TableContainer component={Paper} variant="outlined" aria-busy={certificates === null}>
       <Box sx={{ height: 4 }}>{certificates === null && !loadFailed && <LinearProgress />}</Box>
@@ -82,6 +82,7 @@ export function CertificateTable({
             {showUser && <TableCell>User</TableCell>}
             {showCommonName && <TableCell>Common name</TableCell>}
             <TableCell>Serial</TableCell>
+            <TableCell>CA</TableCell>
             <TableCell>Issued</TableCell>
             <TableCell>Expires</TableCell>
             <TableCell>Key</TableCell>
@@ -112,6 +113,7 @@ export function CertificateTable({
               >
                 {c.serial}
               </TableCell>
+              <TableCell sx={{ whiteSpace: 'nowrap' }}>{c.ca || '–'}</TableCell>
               <TableCell sx={{ whiteSpace: 'nowrap' }}>
                 {new Date(c.issued_at).toLocaleString()}
               </TableCell>

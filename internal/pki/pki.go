@@ -111,7 +111,7 @@ func LoadCA(certPEM, keyPEM []byte, opts Options) (*CA, error) {
 		opts.CRLValidity = DefaultCRLValidity
 	}
 	for _, suffix := range []string{opts.UserCNSuffix, opts.ServiceAccountCNSuffix} {
-		if err := validateCNSuffix(suffix); err != nil {
+		if err := ValidateCNSuffix(suffix); err != nil {
 			return nil, err
 		}
 	}
@@ -142,9 +142,9 @@ func LoadCA(certPEM, keyPEM []byte, opts Options) (*CA, error) {
 	return &CA{cert: cert, chain: chain, chainPEM: chainPEM.Bytes(), signer: signer, opts: opts}, nil
 }
 
-// validateCNSuffix checks that suffix is valid UTF-8 of at most
-// maxCNSuffixLen characters without control characters.
-func validateCNSuffix(suffix string) error {
+// ValidateCNSuffix checks that suffix is valid UTF-8 of at most 64
+// characters without control characters.
+func ValidateCNSuffix(suffix string) error {
 	if !utf8.ValidString(suffix) || utf8.RuneCountInString(suffix) > maxCNSuffixLen {
 		return fmt.Errorf("pki: common name suffix must be valid UTF-8 of at most %d characters", maxCNSuffixLen)
 	}
@@ -216,6 +216,16 @@ func parsePrivateKey(data []byte) (crypto.Signer, error) {
 // ChainPEM returns the CA certificate and the certificates above it, as PEM.
 func (ca *CA) ChainPEM() []byte {
 	return bytes.Clone(ca.chainPEM)
+}
+
+// Certificate returns the CA certificate. Callers must not modify it.
+func (ca *CA) Certificate() *x509.Certificate {
+	return ca.cert
+}
+
+// Signed reports whether the CA signed cert.
+func (ca *CA) Signed(cert *x509.Certificate) bool {
+	return cert.CheckSignatureFrom(ca.cert) == nil
 }
 
 // Subject identifies the user a certificate is issued to. The user's email
@@ -391,8 +401,8 @@ func (ca *CA) CheckIssued(cert *x509.Certificate, now time.Time) error {
 	if cert.IsCA {
 		return errors.New("it is a CA certificate")
 	}
-	if err := cert.CheckSignatureFrom(ca.cert); err != nil {
-		return errors.New("it is not signed by the configured CA")
+	if !ca.Signed(cert) {
+		return errors.New("it is not signed by the CA")
 	}
 	if _, ok := ParseSerial(SerialText(cert.SerialNumber)); !ok {
 		return errors.New("its serial number is not a positive number of at most 160 bits")

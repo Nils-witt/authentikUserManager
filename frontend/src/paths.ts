@@ -6,6 +6,7 @@ export const pagePaths = {
   serviceAccounts: '/service-accounts',
   certificates: '/certificates',
   issuedCertificates: '/issued-certificates',
+  certificateAuthorities: '/certificate-authorities',
   accessRules: '/access-rules',
   audit: '/audit',
   notifications: '/notifications',

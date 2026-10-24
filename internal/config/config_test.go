@@ -1,7 +1,9 @@
 package config_test
 
 import (
+	"encoding/base64"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +106,9 @@ func TestFromEnv_certificateCNSuffixes(t *testing.T) {
 	}
 }
 
+// testEncryptionKey is a valid CA_ENCRYPTION_KEY.
+var testEncryptionKey = base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
+
 func TestFromEnv_certificates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -111,17 +116,32 @@ func TestFromEnv_certificates(t *testing.T) {
 		overrides    map[string]string
 		wantValidity time.Duration
 		wantCRL      time.Duration
+		wantKey      bool
 		wantErr      bool
 	}{
 		{name: "disabled", wantValidity: 365 * 24 * time.Hour, wantCRL: 30 * 24 * time.Hour},
 		{
-			name:         "enabled",
-			overrides:    map[string]string{"CA_CERT_FILE": "ca.crt", "CA_KEY_FILE": "ca.key", "CERT_VALIDITY_DAYS": "30", "CERT_CRL_URL": "https://am.example.com/pki/crl", "CERT_CRL_VALIDITY_DAYS": "7"},
+			name:         "enabled without a ca file",
+			overrides:    map[string]string{"CA_ENCRYPTION_KEY": testEncryptionKey},
+			wantValidity: 365 * 24 * time.Hour,
+			wantCRL:      30 * 24 * time.Hour,
+			wantKey:      true,
+		},
+		{
+			name: "enabled with a ca file",
+			overrides: map[string]string{
+				"CA_ENCRYPTION_KEY": testEncryptionKey, "CA_CERT_FILE": "ca.crt", "CA_KEY_FILE": "ca.key",
+				"CERT_VALIDITY_DAYS": "30", "CERT_CRL_URL": "https://am.example.com/pki/crl", "CERT_CRL_VALIDITY_DAYS": "7",
+			},
 			wantValidity: 30 * 24 * time.Hour,
 			wantCRL:      7 * 24 * time.Hour,
+			wantKey:      true,
 		},
-		{name: "cert without key", overrides: map[string]string{"CA_CERT_FILE": "ca.crt"}, wantErr: true},
-		{name: "key without cert", overrides: map[string]string{"CA_KEY_FILE": "ca.key"}, wantErr: true},
+		{name: "ca file without encryption key", overrides: map[string]string{"CA_CERT_FILE": "ca.crt", "CA_KEY_FILE": "ca.key"}, wantErr: true},
+		{name: "short encryption key", overrides: map[string]string{"CA_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString([]byte("short"))}, wantErr: true},
+		{name: "encryption key not base64", overrides: map[string]string{"CA_ENCRYPTION_KEY": "not base64!"}, wantErr: true},
+		{name: "cert without key", overrides: map[string]string{"CA_ENCRYPTION_KEY": testEncryptionKey, "CA_CERT_FILE": "ca.crt"}, wantErr: true},
+		{name: "key without cert", overrides: map[string]string{"CA_ENCRYPTION_KEY": testEncryptionKey, "CA_KEY_FILE": "ca.key"}, wantErr: true},
 		{name: "zero validity", overrides: map[string]string{"CERT_VALIDITY_DAYS": "0"}, wantErr: true},
 		{name: "validity too long", overrides: map[string]string{"CERT_VALIDITY_DAYS": "3651"}, wantErr: true},
 		{name: "zero crl validity", overrides: map[string]string{"CERT_CRL_VALIDITY_DAYS": "0"}, wantErr: true},
@@ -142,6 +162,9 @@ func TestFromEnv_certificates(t *testing.T) {
 			}
 			if !tt.wantErr && cfg.CertCRLValidity != tt.wantCRL {
 				t.Errorf("CertCRLValidity = %v, want %v", cfg.CertCRLValidity, tt.wantCRL)
+			}
+			if !tt.wantErr && (len(cfg.CAEncryptionKey) == 32) != tt.wantKey {
+				t.Errorf("CAEncryptionKey has %d bytes, want key %v", len(cfg.CAEncryptionKey), tt.wantKey)
 			}
 		})
 	}

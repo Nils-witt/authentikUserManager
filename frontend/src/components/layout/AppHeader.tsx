@@ -36,7 +36,7 @@ interface AppHeaderProps {
   joinRequestCount: number
   /** Show the tab of the signed-in user's own certificates, and the issued certificates tab to administrators. */
   showCertificates: boolean
-  /** Show the access rules, audit log and issued certificates tabs. */
+  /** Show the access rules, audit log, issued certificates and certificate authorities tabs. */
   showAdmin: boolean
   /** Show the notifications button; the user receives notifications. */
   showNotifications: boolean
@@ -84,6 +84,11 @@ export function AppHeader({
       showCertificates && {
         path: pagePaths.issuedCertificates,
         label: 'Issued certificates',
+      },
+    showAdmin &&
+      showCertificates && {
+        path: pagePaths.certificateAuthorities,
+        label: 'Certificate authorities',
       },
   ].filter((tab) => tab !== false)
   // The user list's dialogs have their own paths; they belong to the users tab. The

@@ -19,6 +19,7 @@ import (
 
 	"authentikManager/internal/audit"
 	"authentikManager/internal/authentik"
+	"authentikManager/internal/authority"
 	"authentikManager/internal/certificate"
 	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
@@ -37,17 +38,23 @@ const (
 	formatPKCS12 = "pkcs12"
 )
 
-// crlCache holds the last signed CRL.
+// crlCache holds the last signed CRL of each CA.
 type crlCache struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// signed maps CA IDs to their CRL; nil until the first CRL is signed.
+	signed map[int64]signedCRL
+}
+
+// signedCRL is a DER CRL, served until expires.
+type signedCRL struct {
 	der     []byte
 	expires time.Time
 }
 
-// requireCertificates answers 501 for h while no CA is configured.
+// requireCertificates answers 501 for h while certificates are not configured.
 func (s *Server) requireCertificates(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.ca == nil {
+		if s.cas == nil {
 			writeError(w, http.StatusNotImplemented, "certificates are not configured", nil)
 			return
 		}
@@ -198,6 +205,10 @@ type issueCertificateInput struct {
 	// Prefix, when set, precedes the username in the common name of a user's
 	// own certificate (see pki.Subject).
 	Prefix string `json:"prefix"`
+	// CA names the CA to sign the certificate. When empty, the default CA
+	// signs if it issues certificates for the account, otherwise the first
+	// CA that does (see issuingAuthority).
+	CA string `json:"ca"`
 }
 
 // validate checks in, trimming its prefix, and returns the public key of its
@@ -205,6 +216,7 @@ type issueCertificateInput struct {
 // otherwise.
 func (in *issueCertificateInput) validate() (crypto.PublicKey, map[string][]string) {
 	in.Prefix = strings.TrimSpace(in.Prefix)
+	in.CA = strings.TrimSpace(in.CA)
 	if in.Prefix != "" {
 		if err := pki.ValidateCNPrefix(in.Prefix); err != nil {
 			return nil, map[string][]string{"prefix": {err.Error()}}
@@ -289,6 +301,10 @@ func (s *Server) checkPrefixFree(w http.ResponseWriter, r *http.Request, name st
 // certificate is returned; otherwise the bundle of key and certificate is held
 // for a single download by the signed-in user (see downloadCertificateKey).
 func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authentik.User, pub crypto.PublicKey, in issueCertificateInput) {
+	ca, ok := s.issuingAuthority(w, user, in.CA)
+	if !ok {
+		return
+	}
 	var key crypto.Signer
 	if pub == nil {
 		var err error
@@ -300,7 +316,7 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		pub = key.Public()
 	}
 
-	cert, err := s.ca.Issue(pub, pki.Subject{
+	cert, err := ca.CA.Issue(pub, pki.Subject{
 		Username:       user.Username,
 		UUID:           user.UUID,
 		ServiceAccount: user.Type.IsServiceAccount(),
@@ -332,6 +348,7 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		IssuedBy:  actorName(r),
 		KeySource: source,
 		DER:       cert.Raw,
+		CAID:      ca.ID,
 	})
 	if err != nil {
 		s.writeCertificateError(w, r, err)
@@ -341,25 +358,26 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 		"serial":     record.Serial,
 		"not_after":  record.NotAfter.UTC().Format(time.RFC3339),
 		"key_source": string(source),
+		"ca":         ca.Name,
 	}
 	if in.Prefix != "" {
 		details["cn_prefix"] = in.Prefix
 	}
 	s.recordUser(r, audit.ActionCertificateIssued, user, details)
 	s.notify(r, user, notification.CategoryCertificate, "Certificate issued", fmt.Sprintf(
-		"A certificate was issued to your account by %s.\n- Serial number: %s\n- Subject: %s\n- Valid until: %s",
-		changedBy(r, user), record.Serial, record.Subject, record.NotAfter.UTC().Format("2006-01-02 15:04 MST"),
+		"A certificate was issued to your account by %s.\n- Serial number: %s\n- Subject: %s\n- Certificate authority: %s\n- Valid until: %s",
+		changedBy(r, user), record.Serial, record.Subject, ca.Name, record.NotAfter.UTC().Format("2006-01-02 15:04 MST"),
 	))
 
 	out := issuedCertificate{Certificate: record}
 	if key == nil {
 		out.CertificatePEM = string(pki.EncodeCertificate(cert))
-		out.ChainPEM = string(s.ca.ChainPEM())
+		out.ChainPEM = string(ca.CA.ChainPEM())
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusCreated, out)
 		return
 	}
-	expires, err := s.holdKey(user, actorName(r), cert, key, in)
+	expires, err := s.holdKey(ca.CA, user, actorName(r), cert, key, in)
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "holding generated key", slog.String("serial", record.Serial), slog.Any("error", err))
 		status := http.StatusInternalServerError
@@ -374,10 +392,11 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 	writeJSON(w, http.StatusCreated, out)
 }
 
-// holdKey encodes the key, the certificate and the CA chain of user as
-// requested and holds the file for a single download by the user named
-// downloader. It returns when the download expires.
+// holdKey encodes the key, the certificate and the chain of ca, which signed
+// it, of user as requested and holds the file for a single download by the
+// user named downloader. It returns when the download expires.
 func (s *Server) holdKey(
+	ca *pki.CA,
 	user *authentik.User,
 	downloader string,
 	cert *x509.Certificate,
@@ -388,10 +407,10 @@ func (s *Server) holdKey(
 	var err error
 	if in.Format == formatPKCS12 {
 		d.Filename, d.ContentType = user.Username+".p12", "application/x-pkcs12"
-		d.Data, err = s.ca.PKCS12(cert, key, in.Password)
+		d.Data, err = ca.PKCS12(cert, key, in.Password)
 	} else {
 		d.Filename, d.ContentType = user.Username+".pem", "application/x-pem-file"
-		d.Data, err = s.ca.PEMBundle(cert, key)
+		d.Data, err = ca.PEMBundle(cert, key)
 	}
 	if err != nil {
 		return time.Time{}, err
@@ -535,7 +554,7 @@ func (s *Server) revokeAnyCertificate(w http.ResponseWriter, r *http.Request) {
 // maxImport bounds the number of certificates imported by one request.
 const maxImport = 100
 
-// importCertificatesInput holds PEM certificates the CA signed outside this
+// importCertificatesInput holds PEM certificates the CAs signed outside this
 // application, and how to import them.
 type importCertificatesInput struct {
 	PEM string `json:"pem"`
@@ -565,14 +584,14 @@ type importResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// importCertificates records certificates the CA signed elsewhere, e.g. with
+// importCertificates records certificates a CA signed elsewhere, e.g. with
 // openssl before this application was used, so that access administrators can
 // list, download and revoke them. Each certificate is assigned to the user or
 // service account named by its common name, which must be active and, when
 // the certificate holds a urn:uuid SAN, have that UUID. Certificates without
 // such an account are rejected, or imported without a user when the request
-// allows it. They are revoked right away when the request asks for it. The CA
-// certificates of a bundle are skipped. Every certificate is imported or
+// allows it. They are revoked right away when the request asks for it. The
+// certificates of the CAs and their chains in a bundle are skipped. Every certificate is imported or
 // rejected on its own; the response lists the outcome of each.
 func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 	var in importCertificatesInput
@@ -589,7 +608,7 @@ func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 	owners := map[string]*authentik.User{}
 	results := make([]importResult, 0, len(certs))
 	for _, cert := range certs {
-		if s.ca.InChain(cert) {
+		if s.inAnyChain(cert) {
 			continue
 		}
 		res := importResult{Serial: pki.SerialText(cert.SerialNumber), Subject: cert.Subject.String()}
@@ -614,8 +633,8 @@ func (s *Server) importCertificates(w http.ResponseWriter, r *http.Request) {
 	}{Results: results})
 }
 
-// importCertificate records cert for the account its subject names, looking
-// accounts up through owners. When there is no such account and
+// importCertificate records cert, signed by one of the CAs, disabled ones
+// included, for the account its subject names, looking accounts up through owners. When there is no such account and
 // opts.AllowUnassigned is set, it records cert without a user and returns why
 // as unassigned. With opts.Revoke, cert is recorded as revoked at now. Both
 // errors are safe to show users.
@@ -626,10 +645,14 @@ func (s *Server) importCertificate(
 	owners map[string]*authentik.User,
 	opts importOptions,
 ) (record certificate.Certificate, unassigned, err error) {
-	if err := s.ca.CheckIssued(cert, now); err != nil {
+	ca := s.signingAuthority(cert)
+	if ca == nil {
+		return certificate.Certificate{}, nil, errors.New("it is not signed by any configured CA")
+	}
+	if err := ca.CA.CheckIssued(cert, now); err != nil {
 		return certificate.Certificate{}, nil, err
 	}
-	user, unassigned, err := s.certificateOwner(r, s.ca.IssuedSubject(cert), owners)
+	user, unassigned, err := s.certificateOwner(r, ca.CA.IssuedSubject(cert), owners)
 	if err != nil {
 		return certificate.Certificate{}, nil, err
 	}
@@ -645,6 +668,7 @@ func (s *Server) importCertificate(
 		IssuedBy:  actorName(r),
 		KeySource: certificate.KeySourceImported,
 		DER:       cert.Raw,
+		CAID:      ca.ID,
 	}
 	if user != nil {
 		c.UserPK, c.Username = user.PK, user.Username
@@ -666,6 +690,7 @@ func (s *Server) importCertificate(
 	details := map[string]string{
 		"serial":    record.Serial,
 		"not_after": record.NotAfter.UTC().Format(time.RFC3339),
+		"ca":        ca.Name,
 	}
 	if opts.Revoke {
 		details["revoked"] = "true"
@@ -854,8 +879,10 @@ func (s *Server) revokeUserCertificates(ctx context.Context, r *http.Request, us
 	return nil
 }
 
-// getCRL serves the CA's DER certificate revocation list. It is public, so
-// that relying parties can check certificates without signing in.
+// getCRL serves the DER certificate revocation list of the CA named by the
+// {ca} path value, or of the legacy CA (see authority.Registry.Legacy) when
+// there is none. It is public, so that relying parties can check
+// certificates without signing in.
 func (s *Server) getCRL(w http.ResponseWriter, r *http.Request) {
 	der, ok := s.currentCRLOrError(w, r)
 	if !ok {
@@ -874,13 +901,39 @@ func (s *Server) getCRLPEM(w http.ResponseWriter, r *http.Request) {
 	writeCRL(w, "application/x-pem-file", pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: der}))
 }
 
-// currentCRLOrError returns the current DER CRL, or answers r with an error and
-// reports false when it cannot be generated.
+// publishedAuthority returns the CA whose CRL or chain r requests: the one
+// named by the {ca} path value, or the legacy CA when there is none. Disabled
+// CAs are included, since certificates they issued may still be valid. It
+// answers r with 404 and reports false when there is no such CA.
+func (s *Server) publishedAuthority(w http.ResponseWriter, r *http.Request) (*authority.Entry, bool) {
+	var (
+		e  *authority.Entry
+		ok bool
+	)
+	if name := r.PathValue("ca"); name != "" {
+		e, ok = s.cas.ByName(name)
+	} else {
+		e, ok = s.cas.Legacy()
+	}
+	if !ok {
+		http.Error(w, "certificate authority not found", http.StatusNotFound)
+		return nil, false
+	}
+	return e, true
+}
+
+// currentCRLOrError returns the current DER CRL of the CA r requests, or
+// answers r with an error and reports false when there is no such CA or the
+// CRL cannot be generated.
 func (s *Server) currentCRLOrError(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	der, err := s.currentCRL(r.Context())
+	ca, ok := s.publishedAuthority(w, r)
+	if !ok {
+		return nil, false
+	}
+	der, err := s.currentCRL(r.Context(), ca)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			s.logger.ErrorContext(r.Context(), "generating crl", slog.Any("error", err))
+			s.logger.ErrorContext(r.Context(), "generating crl", slog.String("ca", ca.Name), slog.Any("error", err))
 		}
 		http.Error(w, "generating the CRL failed", http.StatusInternalServerError)
 		return nil, false
@@ -897,15 +950,15 @@ func writeCRL(w http.ResponseWriter, contentType string, body []byte) {
 	_, _ = w.Write(body)
 }
 
-// currentCRL returns the cached CRL, signing a new one when it has expired.
-func (s *Server) currentCRL(ctx context.Context) ([]byte, error) {
+// currentCRL returns the cached CRL of ca, signing a new one when it has expired.
+func (s *Server) currentCRL(ctx context.Context, ca *authority.Entry) ([]byte, error) {
 	s.crl.mu.Lock()
 	defer s.crl.mu.Unlock()
 	now := time.Now()
-	if s.crl.der != nil && now.Before(s.crl.expires) {
-		return s.crl.der, nil
+	if c, ok := s.crl.signed[ca.ID]; ok && now.Before(c.expires) {
+		return c.der, nil
 	}
-	list, err := s.certificates.ListRevokedCertificates(ctx, now)
+	list, err := s.certificates.ListRevokedCertificates(ctx, ca.ID, now)
 	if err != nil {
 		return nil, err
 	}
@@ -917,28 +970,42 @@ func (s *Server) currentCRL(ctx context.Context) ([]byte, error) {
 		}
 		revoked = append(revoked, pki.Revoked{Serial: serial, RevokedAt: c.RevokedAt})
 	}
-	der, err := s.ca.CRL(revoked, now)
+	der, err := ca.CA.CRL(revoked, now)
 	if err != nil {
 		return nil, err
 	}
-	s.crl.der, s.crl.expires = der, now.Add(crlCacheTTL)
+	if s.crl.signed == nil {
+		s.crl.signed = map[int64]signedCRL{}
+	}
+	s.crl.signed[ca.ID] = signedCRL{der: der, expires: now.Add(crlCacheTTL)}
 	return der, nil
 }
 
-// invalidateCRL discards the cached CRL, so the next request lists a new revocation.
+// invalidateCRL discards the cached CRLs, so the next request lists a new
+// revocation or signs with changed settings.
 func (s *Server) invalidateCRL() {
 	s.crl.mu.Lock()
 	defer s.crl.mu.Unlock()
-	s.crl.der = nil
+	clear(s.crl.signed)
 }
 
-// getCAChain serves the CA certificate and the certificates above it as PEM.
-func (s *Server) getCAChain(w http.ResponseWriter, _ *http.Request) {
+// getCAChain serves the certificate of the CA r requests and the certificates
+// above it as PEM (see publishedAuthority).
+func (s *Server) getCAChain(w http.ResponseWriter, r *http.Request) {
+	ca, ok := s.publishedAuthority(w, r)
+	if !ok {
+		return
+	}
+	// The unnamed URL keeps the file name it always had.
+	filename := "ca.pem"
+	if r.PathValue("ca") != "" {
+		filename = ca.Name + ".pem"
+	}
 	h := w.Header()
 	h.Set("Content-Type", "application/x-pem-file")
-	h.Set("Content-Disposition", `attachment; filename="ca.pem"`)
+	h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
 	// The status line is already sent; a write error here means the client went away.
-	_, _ = w.Write(s.ca.ChainPEM())
+	_, _ = w.Write(ca.CA.ChainPEM())
 }
 
 // writeCertificateError translates a certificate store error into a response.

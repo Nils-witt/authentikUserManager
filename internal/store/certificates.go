@@ -16,26 +16,28 @@ import (
 // certificateColumns are the columns scanned by scanCertificate, in order.
 // Unassigned certificates have neither user_pk nor username; see certificate.Certificate.Assigned.
 const certificateColumns = `serial, COALESCE(user_pk, 0), COALESCE(username, ''), subject, not_before, not_after,
-	issued_at, issued_by, key_source, revoked_at, COALESCE(revoked_by, ''), der IS NOT NULL`
+	issued_at, issued_by, key_source, revoked_at, COALESCE(revoked_by, ''), der IS NOT NULL,
+	COALESCE(ca_id, 0), COALESCE((SELECT a.name FROM certificate_authorities a WHERE a.id = certificates.ca_id), '')`
 
 func scanCertificate(row pgx.CollectableRow) (certificate.Certificate, error) {
 	var c certificate.Certificate
 	err := row.Scan(&c.Serial, &c.UserPK, &c.Username, &c.Subject, &c.NotBefore, &c.NotAfter,
-		&c.IssuedAt, &c.IssuedBy, &c.KeySource, &c.RevokedAt, &c.RevokedBy, &c.Stored)
+		&c.IssuedAt, &c.IssuedBy, &c.KeySource, &c.RevokedAt, &c.RevokedBy, &c.Stored, &c.CAID, &c.CA)
 	return c, err
 }
 
 // CreateCertificate stores the record of a newly issued or imported
-// certificate, with its DER encoding when set, revoked when RevokedAt and
-// RevokedBy are set, and returns it with its issue time set. It returns certificate.ErrExists when the serial is already recorded.
+// certificate, with its DER encoding when set, signed by the CA with CAID
+// when set, revoked when RevokedAt and RevokedBy are set, and returns it with
+// its issue time and CA name set. It returns certificate.ErrExists when the serial is already recorded.
 func (s *Store) CreateCertificate(ctx context.Context, c certificate.Certificate) (certificate.Certificate, error) {
 	rows, err := s.pool.Query(ctx, `
 		INSERT INTO certificates (serial, user_pk, username, subject, not_before, not_after, issued_by, key_source, der,
-			revoked_at, revoked_by)
-		VALUES ($1, NULLIF($2, 0), NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''))
+			revoked_at, revoked_by, ca_id)
+		VALUES ($1, NULLIF($2, 0), NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), NULLIF($12, 0))
 		RETURNING `+certificateColumns,
 		c.Serial, c.UserPK, c.Username, c.Subject, c.NotBefore, c.NotAfter, c.IssuedBy, c.KeySource, c.DER,
-		c.RevokedAt, c.RevokedBy,
+		c.RevokedAt, c.RevokedBy, c.CAID,
 	)
 	if err != nil {
 		return certificate.Certificate{}, fmt.Errorf("store: creating certificate: %w", err)
@@ -225,14 +227,14 @@ func (s *Store) RevokeUserCertificates(ctx context.Context, userPK int, actor st
 	return serials, nil
 }
 
-// ListRevokedCertificates returns the revoked certificates that are still
-// valid at now, for the CRL.
-func (s *Store) ListRevokedCertificates(ctx context.Context, now time.Time) ([]certificate.Revoked, error) {
+// ListRevokedCertificates returns the revoked certificates the CA with caID
+// signed that are still valid at now, for its CRL.
+func (s *Store) ListRevokedCertificates(ctx context.Context, caID int64, now time.Time) ([]certificate.Revoked, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT serial, revoked_at FROM certificates
-		WHERE revoked_at IS NOT NULL AND not_after > $1
+		WHERE ca_id = $1 AND revoked_at IS NOT NULL AND not_after > $2
 		ORDER BY serial`,
-		now,
+		caID, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: listing revoked certificates: %w", err)

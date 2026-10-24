@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -42,10 +43,18 @@ type Config struct {
 	// edit the access rules.
 	AccessAdminGroups []string
 
-	// CACertFile and CAKeyFile are the PEM files of the CA certificate and its
-	// private key that sign user certificates. Both empty disables certificates.
+	// CAEncryptionKey encrypts the private keys of the CAs stored in the
+	// database. Empty disables certificates.
+	CAEncryptionKey []byte
+	// CACertFile and CAKeyFile are the PEM files of a CA certificate and its
+	// private key, imported into the database at startup unless stored
+	// already. Both may be empty.
 	CACertFile string
 	CAKeyFile  string
+	// CertValidity, CertCRLURL, CertCRLValidity, CertUserCNSuffix and
+	// CertServiceAccountCNSuffix are the initial settings of the CA imported
+	// from CACertFile; access administrators change them afterwards.
+	//
 	// CertValidity is how long issued user certificates are valid.
 	CertValidity time.Duration
 	// CertCRLURL, when set, is the public URL of the CRL (this app's /pki/crl),
@@ -87,6 +96,9 @@ const (
 
 // defaultSMTPPorts are the default SMTP_PORT values per SMTP_TLS mode.
 var defaultSMTPPorts = map[string]int{"starttls": 587, "tls": 465, "none": 25}
+
+// caEncryptionKeyLen is the length of the decoded CA_ENCRYPTION_KEY (AES-256).
+const caEncryptionKeyLen = 32
 
 // Bounds and default of CERT_CRL_VALIDITY_DAYS.
 const (
@@ -153,7 +165,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.AuditRetention = retention
-	errs = append(errs, cfg.parseCertificates(getenv("CERT_VALIDITY_DAYS"), getenv("CERT_CRL_VALIDITY_DAYS"))...)
+	errs = append(errs, cfg.parseCertificates(getenv("CA_ENCRYPTION_KEY"), getenv("CERT_VALIDITY_DAYS"), getenv("CERT_CRL_VALIDITY_DAYS"))...)
 	errs = append(errs, cfg.parseSMTP(getenv("SMTP_PORT"))...)
 	if cfg.StaticDir != "" {
 		if fi, err := os.Stat(cfg.StaticDir); err != nil || !fi.IsDir() {
@@ -171,13 +183,26 @@ func parseRetention(v string) (time.Duration, error) {
 	return parseDays("AUDIT_RETENTION_DAYS", v, 0, maxAuditRetentionDays)
 }
 
-// parseCertificates validates the CA files and the CRL URL, and sets
+// parseCertificates sets CAEncryptionKey from encryptionKey
+// (CA_ENCRYPTION_KEY), validates the CA files and the CRL URL, and sets
 // CertValidity from validityDays (CERT_VALIDITY_DAYS) and CertCRLValidity from
 // crlValidityDays (CERT_CRL_VALIDITY_DAYS).
-func (cfg *Config) parseCertificates(validityDays, crlValidityDays string) []error {
+func (cfg *Config) parseCertificates(encryptionKey, validityDays, crlValidityDays string) []error {
 	var errs []error
+	if encryptionKey = strings.TrimSpace(encryptionKey); encryptionKey != "" {
+		key, err := base64.StdEncoding.DecodeString(encryptionKey)
+		if err != nil || len(key) != caEncryptionKeyLen {
+			// The value is a secret; do not echo it.
+			errs = append(errs, fmt.Errorf("CA_ENCRYPTION_KEY must be %d random bytes, base64-encoded (openssl rand -base64 %d)",
+				caEncryptionKeyLen, caEncryptionKeyLen))
+		}
+		cfg.CAEncryptionKey = key
+	}
 	if (cfg.CACertFile == "") != (cfg.CAKeyFile == "") {
 		errs = append(errs, errors.New("CA_CERT_FILE and CA_KEY_FILE must be set together"))
+	}
+	if cfg.CACertFile != "" && encryptionKey == "" {
+		errs = append(errs, errors.New("CA_ENCRYPTION_KEY is required with CA_CERT_FILE"))
 	}
 	validity, err := parseDays("CERT_VALIDITY_DAYS", validityDays, defaultCertValidityDays, maxCertValidityDays)
 	if err != nil {
