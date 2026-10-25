@@ -43,6 +43,12 @@ type Config struct {
 	// SessionIdleTimeout ends sessions that were not used for this long. It is
 	// at most SessionLifetime.
 	SessionIdleTimeout time.Duration
+	// ReauthMaxAge is how long ago operators may have authenticated at
+	// authentik to make critical changes. Zero disables the check.
+	ReauthMaxAge time.Duration
+	// RequireMFA restricts critical changes to operators who authenticated
+	// with more than one factor.
+	RequireMFA bool
 
 	// DatabaseURL is the PostgreSQL connection URL that stores the access rules
 	// and the audit log.
@@ -116,6 +122,7 @@ const (
 	maxSessionLifetimeHours       = 7 * 24
 	defaultSessionIdleTimeoutMins = 30
 	maxSessionIdleTimeoutMins     = 24 * 60
+	defaultReauthMaxAgeMins       = 15
 )
 
 // Bounds and default of CERT_CRL_VALIDITY_DAYS.
@@ -185,6 +192,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	}
 	cfg.AuditRetention = retention
 	errs = append(errs, cfg.parseSessions(getenv("SESSION_LIFETIME_HOURS"), getenv("SESSION_IDLE_TIMEOUT_MINUTES"))...)
+	errs = append(errs, cfg.parseReauth(getenv("REAUTH_MAX_AGE_MINUTES"), getenv("REQUIRE_MFA"))...)
 	errs = append(errs, cfg.parseCertificates(getenv("CA_ENCRYPTION_KEY"), getenv("CERT_VALIDITY_DAYS"), getenv("CERT_CRL_VALIDITY_DAYS"))...)
 	errs = append(errs, cfg.parseSMTP(getenv("SMTP_PORT"))...)
 	if _, err := clientip.NewResolver(cfg.TrustedProxies); err != nil {
@@ -220,6 +228,32 @@ func (cfg *Config) parseSessions(lifetimeHours, idleMinutes string) []error {
 		errs = append(errs, err)
 	}
 	cfg.SessionIdleTimeout = min(time.Duration(minutes)*time.Minute, cfg.SessionLifetime)
+	return errs
+}
+
+// parseReauth sets ReauthMaxAge from maxAgeMinutes (REAUTH_MAX_AGE_MINUTES,
+// where 0 disables the check) and RequireMFA from requireMFA (REQUIRE_MFA).
+func (cfg *Config) parseReauth(maxAgeMinutes, requireMFA string) []error {
+	var errs []error
+	minutes := defaultReauthMaxAgeMins
+	if v := strings.TrimSpace(maxAgeMinutes); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > maxSessionIdleTimeoutMins {
+			errs = append(errs, fmt.Errorf("REAUTH_MAX_AGE_MINUTES must be a number of minutes between 0 and %d", maxSessionIdleTimeoutMins))
+		}
+		minutes = n
+	}
+	cfg.ReauthMaxAge = time.Duration(minutes) * time.Minute
+	if v := strings.TrimSpace(requireMFA); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, errors.New("REQUIRE_MFA must be true or false"))
+		}
+		cfg.RequireMFA = b
+	}
+	if cfg.RequireMFA && cfg.ReauthMaxAge == 0 {
+		errs = append(errs, errors.New("REQUIRE_MFA needs REAUTH_MAX_AGE_MINUTES above 0"))
+	}
 	return errs
 }
 

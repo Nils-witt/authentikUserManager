@@ -370,11 +370,19 @@ export interface CreatedApiKey {
 export class ApiError extends Error {
   readonly status: number
   readonly fields: Record<string, string[]>
+  /** The change requires signing in again (a recent login, or one with MFA) first. */
+  readonly reauthenticate: boolean
 
-  constructor(status: number, message: string, fields: Record<string, string[]> = {}) {
+  constructor(
+    status: number,
+    message: string,
+    fields: Record<string, string[]> = {},
+    reauthenticate = false,
+  ) {
     super(message)
     this.status = status
     this.fields = fields
+    this.reauthenticate = reauthenticate
   }
 }
 
@@ -398,9 +406,16 @@ export interface BuildInfo {
   modified: boolean
 }
 
-/** Starts the OIDC login; the backend redirects to authentik and back. */
-export function redirectToLogin(): never {
-  window.location.assign('/auth/login')
+/**
+ * Starts the OIDC login; the backend redirects to authentik and back to the current page. With
+ * `reauth`, authentik asks for the credentials again even when the user is still signed in there.
+ */
+export function redirectToLogin({ reauth = false } = {}): never {
+  const params = new URLSearchParams({
+    return: window.location.pathname + window.location.search,
+  })
+  if (reauth) params.set('reauth', '1')
+  window.location.assign(`/auth/login?${params}`)
   throw new ApiError(401, 'Redirecting to login…')
 }
 
@@ -447,14 +462,26 @@ async function send(
   if (!res.ok) {
     let message = `Request failed (${res.status})`
     let fields: Record<string, string[]> = {}
+    let reauthenticate = false
     try {
-      const data = (await res.json()) as { error?: string; fields?: Record<string, string[]> }
+      const data = (await res.json()) as {
+        error?: string
+        fields?: Record<string, string[]>
+        reauthenticate?: boolean
+      }
       message = data.error ?? message
       fields = data.fields ?? {}
+      reauthenticate = data.reauthenticate ?? false
     } catch {
       // Non-JSON error body; keep the generic message.
     }
-    throw new ApiError(res.status, message, fields)
+    if (
+      reauthenticate &&
+      window.confirm(`${message}\n\nSign in now? Afterwards, make the change again.`)
+    ) {
+      redirectToLogin({ reauth: true })
+    }
+    throw new ApiError(res.status, message, fields, reauthenticate)
   }
   return res
 }

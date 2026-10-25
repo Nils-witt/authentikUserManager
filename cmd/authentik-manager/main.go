@@ -18,6 +18,8 @@
 //	OIDC_REDIRECT_URL    public callback URL, ending in /auth/callback (required)
 //	SESSION_LIFETIME_HOURS        maximum lifetime of a login session (default 8)
 //	SESSION_IDLE_TIMEOUT_MINUTES  ends sessions unused for this long (default 30)
+//	REAUTH_MAX_AGE_MINUTES        critical changes require a login this recent (default 15; 0 disables)
+//	REQUIRE_MFA                   critical changes require a login with multi-factor authentication
 //
 //	DATABASE_URL         PostgreSQL URL storing the access rules and the audit log (required)
 //	AUDIT_RETENTION_DAYS days to keep audit log entries; they are kept forever when unset (optional)
@@ -201,8 +203,10 @@ func run(logger *slog.Logger) error {
 			Notifications:      notifier,
 			APIKeys:            db,
 			// The public URL tells whether a TLS-terminating proxy serves the app.
-			HTTPS:    strings.HasPrefix(cfg.OIDCRedirectURL, "https://"),
-			ClientIP: clientIPs.IP,
+			HTTPS:        strings.HasPrefix(cfg.OIDCRedirectURL, "https://"),
+			ClientIP:     clientIPs.IP,
+			ReauthMaxAge: cfg.ReauthMaxAge,
+			RequireMFA:   cfg.RequireMFA,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

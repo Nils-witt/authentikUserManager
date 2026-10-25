@@ -7,6 +7,7 @@
 package auth
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -17,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -291,13 +293,22 @@ type loginState struct {
 	State    string `json:"s"`
 	Nonce    string `json:"n"`
 	Verifier string `json:"v"`
+	// Return is the local path the callback redirects to.
+	Return string `json:"r,omitempty"`
 }
 
+// login starts a login at the provider. With the query parameter reauth=1 the
+// provider must authenticate the user again even when they have a session
+// there, so the app can confirm the user for critical changes. The query
+// parameter return names the local path to come back to; other targets are
+// ignored, so the login cannot redirect elsewhere.
 func (a *Authenticator) login(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
 	st := loginState{
 		State:    rand.Text(),
 		Nonce:    rand.Text(),
 		Verifier: oauth2.GenerateVerifier(),
+		Return:   localPath(q.Get("return")),
 	}
 	buf, err := json.Marshal(st)
 	if err != nil {
@@ -306,8 +317,24 @@ func (a *Authenticator) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.setCookie(w, loginCookieName, base64.RawURLEncoding.EncodeToString(buf), loginCookiePath, int(loginTTL.Seconds()))
-	target := a.oauth.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier))
-	http.Redirect(w, r, target, http.StatusFound)
+	opts := []oauth2.AuthCodeOption{oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier)}
+	if q.Get("reauth") == "1" {
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", "0"))
+	}
+	http.Redirect(w, r, a.oauth.AuthCodeURL(st.State, opts...), http.StatusFound)
+}
+
+// localPath returns p when it is a path on this host, such as "/users?page=2",
+// and "/" otherwise, e.g. for "//evil.example" or "https://evil.example".
+func localPath(p string) string {
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.ContainsAny(p, "\\\r\n") {
+		return "/"
+	}
+	u, err := url.Parse(p)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil {
+		return "/"
+	}
+	return p
 }
 
 func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
@@ -333,10 +360,14 @@ func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Login failed.", http.StatusBadGateway)
 		return
 	}
+	// A new login replaces the browser's previous session.
+	if c, err := r.Cookie(a.sessionCookie); err == nil {
+		a.sessions.delete(c.Value)
+	}
 	id := a.sessions.create(user, rawIDToken, sid)
 	a.setCookie(w, a.sessionCookie, id, "/", 0)
-	a.logger.InfoContext(r.Context(), "login", slog.String("username", user.Username))
-	http.Redirect(w, r, "/", http.StatusFound)
+	a.logger.InfoContext(r.Context(), "login", slog.String("username", user.Username), slog.Bool("mfa", user.MFA()))
+	http.Redirect(w, r, cmp.Or(st.Return, "/"), http.StatusFound)
 }
 
 // takeLoginState reads and clears the login cookie.
@@ -382,9 +413,17 @@ func (a *Authenticator) exchange(ctx context.Context, code string, st loginState
 		Email             string   `json:"email"`
 		Groups            []string `json:"groups"`
 		SID               string   `json:"sid"`
+		AuthTime          int64    `json:"auth_time"`
+		AMR               []string `json:"amr"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return User{}, "", "", fmt.Errorf("decoding id token claims: %w", err)
+	}
+	// Without auth_time, the user authenticated for this login. A provider
+	// clock running ahead must not make the authentication look fresher.
+	authTime := time.Now()
+	if t := time.Unix(claims.AuthTime, 0); claims.AuthTime > 0 && t.Before(authTime) {
+		authTime = t
 	}
 	return User{
 		Subject:  idToken.Subject,
@@ -392,6 +431,8 @@ func (a *Authenticator) exchange(ctx context.Context, code string, st loginState
 		Name:     claims.Name,
 		Email:    claims.Email,
 		Groups:   claims.Groups,
+		AuthTime: authTime,
+		AMR:      claims.AMR,
 	}, rawIDToken, claims.SID, nil
 }
 

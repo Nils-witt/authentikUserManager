@@ -273,3 +273,41 @@ func TestFromEnv_sessions(t *testing.T) {
 		})
 	}
 }
+
+func TestFromEnv_reauth(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		env        map[string]string
+		wantErr    bool
+		wantMaxAge time.Duration
+		wantMFA    bool
+	}{
+		{name: "defaults", env: validEnv(nil), wantMaxAge: 15 * time.Minute},
+		{name: "disabled", env: validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "0"}), wantMaxAge: 0},
+		{
+			name:       "mfa",
+			env:        validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "5", "REQUIRE_MFA": "true"}),
+			wantMaxAge: 5 * time.Minute,
+			wantMFA:    true,
+		},
+		{name: "negative", env: validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "-1"}), wantErr: true},
+		{name: "invalid mfa", env: validEnv(map[string]string{"REQUIRE_MFA": "yes please"}), wantErr: true},
+		{name: "mfa without reauth", env: validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "0", "REQUIRE_MFA": "1"}), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.FromEnv(func(k string) string { return tt.env[k] })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FromEnv error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if cfg.ReauthMaxAge != tt.wantMaxAge || cfg.RequireMFA != tt.wantMFA {
+				t.Errorf("ReauthMaxAge = %v, RequireMFA = %v, want %v and %v", cfg.ReauthMaxAge, cfg.RequireMFA, tt.wantMaxAge, tt.wantMFA)
+			}
+		})
+	}
+}

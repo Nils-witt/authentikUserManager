@@ -251,6 +251,12 @@ type Deps struct {
 	// ClientIP returns the IP address of the client of a request, for rate
 	// limits and logs. When nil, it is the address of the peer.
 	ClientIP func(*http.Request) string
+	// ReauthMaxAge, when positive, is how long ago operators may have
+	// authenticated at authentik to make critical changes; see requireRecentAuth.
+	ReauthMaxAge time.Duration
+	// RequireMFA restricts critical changes to operators who authenticated
+	// with more than one factor.
+	RequireMFA bool
 }
 
 // Server is the HTTP handler for the application.
@@ -284,6 +290,9 @@ type Server struct {
 	clientIP func(*http.Request) string
 	// limits are the rate limits; see ratelimit.go.
 	limits limiters
+	// reauthMaxAge and requireMFA guard critical changes; see requireRecentAuth.
+	reauthMaxAge time.Duration
+	requireMFA   bool
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
@@ -310,16 +319,19 @@ func New(d Deps) *Server {
 		https:              d.HTTPS,
 		clientIP:           d.ClientIP,
 		limits:             newLimiters(time.Now),
+		reauthMaxAge:       d.ReauthMaxAge,
+		requireMFA:         d.RequireMFA,
 	}
 	if s.clientIP == nil {
 		s.clientIP = clientip.Resolver{}.IP
 	}
 
+	// Critical changes require a recent login; see requireRecentAuth.
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/access", s.getAccess)
 	api.Handle("GET /api/access/rules", s.requireAdmin(s.listRules))
-	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
-	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
+	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.requireRecentAuth(s.putRule)))
+	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.requireRecentAuth(s.deleteRule)))
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
 	api.Handle("POST /api/groups", s.requireAdmin(s.createGroup))
 	// Every signed-in user may list the visible groups, their own groups and
@@ -347,9 +359,9 @@ func New(d Deps) *Server {
 	api.HandleFunc("GET /api/users/paths", s.listAccountPaths(userAccounts))
 	api.HandleFunc("GET /api/users/{id}", s.getAccount(userAccounts))
 	api.HandleFunc("PATCH /api/users/{id}", s.updateAccount(userAccounts))
-	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteAccount(userAccounts)))
+	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.requireRecentAuth(s.deleteAccount(userAccounts))))
 	api.HandleFunc("PUT /api/users/{id}/groups", s.setAccountGroups(userAccounts))
-	api.HandleFunc("POST /api/users/{id}/recovery-email", s.sendRecoveryEmail)
+	api.HandleFunc("POST /api/users/{id}/recovery-email", s.requireRecentAuth(s.sendRecoveryEmail))
 	// Operators who may see a user may list the applications the user may access.
 	api.HandleFunc("GET /api/users/{id}/applications", s.listUserApplications)
 	// Service accounts follow the access rules of users; see serviceaccounts.go.
@@ -358,14 +370,14 @@ func New(d Deps) *Server {
 	api.HandleFunc("GET /api/service-accounts/paths", s.listAccountPaths(serviceAccounts))
 	api.HandleFunc("GET /api/service-accounts/{id}", s.getAccount(serviceAccounts))
 	api.HandleFunc("PATCH /api/service-accounts/{id}", s.updateAccount(serviceAccounts))
-	api.Handle("DELETE /api/service-accounts/{id}", s.requireAdmin(s.deleteAccount(serviceAccounts)))
+	api.Handle("DELETE /api/service-accounts/{id}", s.requireAdmin(s.requireRecentAuth(s.deleteAccount(serviceAccounts))))
 	api.HandleFunc("PUT /api/service-accounts/{id}/groups", s.setAccountGroups(serviceAccounts))
 	api.HandleFunc("GET /api/service-accounts/{id}/tokens", s.listServiceAccountTokens)
-	api.HandleFunc("POST /api/service-accounts/{id}/tokens", s.createServiceAccountToken)
+	api.HandleFunc("POST /api/service-accounts/{id}/tokens", s.requireRecentAuth(s.createServiceAccountToken))
 	api.HandleFunc("DELETE /api/service-accounts/{id}/tokens/{identifier}", s.deleteServiceAccountToken)
 	// The same operators manage the API keys of the service API; see apikeys.go.
 	api.Handle("GET /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.listAPIKeys))
-	api.Handle("POST /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.createAPIKey))
+	api.Handle("POST /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.requireRecentAuth(s.createAPIKey)))
 	api.Handle("DELETE /api/service-accounts/{id}/api-keys/{keyID}", s.requireAPIKeys(s.deleteAPIKey))
 	// Users issue certificates for their own account only and download the
 	// generated key once; see certificates.go. Operators who may change a
@@ -389,16 +401,16 @@ func New(d Deps) *Server {
 	api.Handle("GET /api/certificates/{serial}/pem", s.requireCertificates(s.requireAdmin(s.downloadCertificate).ServeHTTP))
 	api.Handle("POST /api/certificates/{serial}/revoke", s.requireCertificates(s.requireAdmin(s.revokeAnyCertificate).ServeHTTP))
 	// Access administrators may import certificates the CA signed elsewhere, so they can be revoked.
-	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.importCertificates).ServeHTTP))
+	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.importCertificates)).ServeHTTP))
 	// They may assign an imported certificate to its account once the account exists.
 	api.Handle("POST /api/certificates/{serial}/assign", s.requireCertificates(s.requireAdmin(s.assignCertificate).ServeHTTP))
 	// Every signed-in user may view the certificate authorities; access
 	// administrators manage them. See authorities.go.
 	api.Handle("GET /api/certificate-authorities", s.requireCertificates(s.listAuthorities))
-	api.Handle("POST /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.createAuthority).ServeHTTP))
-	api.Handle("PUT /api/certificate-authorities/{id}", s.requireCertificates(s.requireAdmin(s.updateAuthority).ServeHTTP))
+	api.Handle("POST /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.createAuthority)).ServeHTTP))
+	api.Handle("PUT /api/certificate-authorities/{id}", s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.updateAuthority)).ServeHTTP))
 	api.Handle("POST /api/certificate-authorities/{id}/default",
-		s.requireCertificates(s.requireAdmin(s.setDefaultAuthority).ServeHTTP))
+		s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.setDefaultAuthority)).ServeHTTP))
 	// Every signed-in internal user reads their own notifications and chooses
 	// which ones they receive; see notifications.go.
 	api.Handle("GET /api/notifications", s.requireNotifications(s.listNotifications))
@@ -614,6 +626,9 @@ func OpenStatic(dir string) (fs.FS, error) {
 type errorBody struct {
 	Error  string              `json:"error"`
 	Fields map[string][]string `json:"fields,omitempty"`
+	// Reauthenticate is set when the operator must sign in again before
+	// repeating the request; see requireRecentAuth.
+	Reauthenticate bool `json:"reauthenticate,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

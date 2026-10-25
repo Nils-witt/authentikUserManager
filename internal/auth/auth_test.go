@@ -42,6 +42,11 @@ type fakeProvider struct {
 	mu        sync.Mutex
 	nonce     string
 	challenge string
+	// query is the query of the last authorize request.
+	query url.Values
+	// authTime and amr, when set, are the auth_time and amr claims of ID tokens.
+	authTime int64
+	amr      []string
 }
 
 func newFakeProvider(t *testing.T, groups []string) *fakeProvider {
@@ -95,6 +100,7 @@ func (p *fakeProvider) authorize(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	p.nonce = q.Get("nonce")
 	p.challenge = q.Get("code_challenge")
+	p.query = q
 	p.mu.Unlock()
 	back := q.Get("redirect_uri") + "?" + url.Values{"code": {"the-code"}, "state": {q.Get("state")}}.Encode()
 	http.Redirect(w, r, back, http.StatusFound)
@@ -106,14 +112,14 @@ func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 	p.mu.Lock()
-	nonce, challenge := p.nonce, p.challenge
+	nonce, challenge, authTime, amr := p.nonce, p.challenge, p.authTime, p.amr
 	p.mu.Unlock()
 	if base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
 		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 		return
 	}
 
-	idToken := p.sign(map[string]any{
+	claims := map[string]any{
 		"iss":                p.srv.URL,
 		"aud":                clientID,
 		"sub":                "user-1",
@@ -125,7 +131,14 @@ func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
 		"email":              "alice@example.com",
 		"groups":             p.groups,
 		"sid":                providerSID,
-	})
+	}
+	if authTime != 0 {
+		claims["auth_time"] = authTime
+	}
+	if amr != nil {
+		claims["amr"] = amr
+	}
+	idToken := p.sign(claims)
 	writeJSON(p.t, w, map[string]any{
 		"access_token": "access",
 		"token_type":   "Bearer",
@@ -566,5 +579,93 @@ func TestRequire_checksAccountEveryInterval(t *testing.T) {
 	defer state.mu.Unlock()
 	if state.calls != 0 {
 		t.Errorf("account checked %d times within the interval after login, want 0", state.calls)
+	}
+}
+
+// lastQuery returns the query of the last authorize request.
+func (p *fakeProvider) lastQuery() url.Values {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.query
+}
+
+// loginRedirect logs in through login, a path of the app, and returns where
+// the callback redirects to.
+func loginRedirect(t *testing.T, client *http.Client, appURL, login string) string {
+	t.Helper()
+	c := *client
+	// Stop at the redirect back into the app, to see where it leads.
+	c.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if strings.HasPrefix(req.URL.String(), appURL) && req.URL.Path != "/auth/callback" {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, appURL+login, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.Header.Get("Location")
+}
+
+func TestLogin_reauth(t *testing.T) {
+	t.Parallel()
+	provider := newFakeProvider(t, []string{"admins"})
+	authTime := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+	provider.authTime = authTime.Unix()
+	provider.amr = []string{"pwd", "mfa"}
+	appURL, client := newApp(t, provider)
+
+	if got := loginRedirect(t, client, appURL, "/auth/login?reauth=1&return="+url.QueryEscape("/users?page=2")); got != "/users?page=2" {
+		t.Errorf("redirect after login = %q, want the return path", got)
+	}
+	if q := provider.lastQuery(); q.Get("prompt") != "login" || q.Get("max_age") != "0" {
+		t.Errorf("authorize query %v, want prompt=login and max_age=0", q)
+	}
+	code, body := get(t, client, appURL+"/auth/me")
+	var me auth.User
+	if err := json.Unmarshal([]byte(body), &me); err != nil || code != http.StatusOK {
+		t.Fatalf("/auth/me = %d %q", code, body)
+	}
+	if !me.AuthTime.Equal(authTime) || !me.MFA() {
+		t.Errorf("/auth/me auth_time %v, amr %v, want %v with mfa", me.AuthTime, me.AMR, authTime)
+	}
+}
+
+func TestLogin_returnOnlyToLocalPaths(t *testing.T) {
+	t.Parallel()
+	provider := newFakeProvider(t, []string{"admins"})
+	appURL, client := newApp(t, provider)
+	for _, target := range []string{"//evil.example/x", "https://evil.example/", "/\\evil.example", "users"} {
+		if got := loginRedirect(t, client, appURL, "/auth/login?return="+url.QueryEscape(target)); got != "/" {
+			t.Errorf("return %q: redirect after login = %q, want /", target, got)
+		}
+	}
+	if q := provider.lastQuery(); q.Has("prompt") || q.Has("max_age") {
+		t.Errorf("authorize query %v of a normal login, want no prompt or max_age", q)
+	}
+}
+
+func TestUser_MFA(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		amr  []string
+		want bool
+	}{
+		{amr: nil, want: false},
+		{amr: []string{"pwd"}, want: false},
+		{amr: []string{"pwd", "pwd"}, want: false},
+		{amr: []string{"mfa"}, want: true},
+		{amr: []string{"pwd", "otp"}, want: true},
+	}
+	for _, tt := range tests {
+		if got := (auth.User{AMR: tt.amr}).MFA(); got != tt.want {
+			t.Errorf("MFA with amr %v = %v, want %v", tt.amr, got, tt.want)
+		}
 	}
 }

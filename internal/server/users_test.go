@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"authentikManager/internal/access"
 	"authentikManager/internal/audit"
@@ -25,6 +26,9 @@ import (
 type fakeAuth struct {
 	deny   bool
 	groups []string
+	// authTime and amr describe the user's last authentication.
+	authTime time.Time
+	amr      []string
 }
 
 func (fakeAuth) Handler() http.Handler { return http.NotFoundHandler() }
@@ -35,7 +39,8 @@ func (f fakeAuth) Require(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), auth.User{Username: "admin", Groups: f.groups})))
+		u := auth.User{Username: "admin", Groups: f.groups, AuthTime: f.authTime, AMR: f.amr}
+		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), u)))
 	})
 }
 

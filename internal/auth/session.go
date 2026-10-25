@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"slices"
 	"sync"
 	"time"
 )
@@ -14,6 +15,24 @@ type User struct {
 	Name     string   `json:"name"`
 	Email    string   `json:"email"`
 	Groups   []string `json:"groups"`
+	// AuthTime is when the user last authenticated at the provider: the ID
+	// token's auth_time, or the time of the login when it has none. It is zero
+	// for callers that did not log in, such as service accounts.
+	AuthTime time.Time `json:"auth_time"`
+	// AMR lists the authentication methods of that authentication (the ID
+	// token's amr claim, RFC 8176), e.g. "pwd" and "mfa".
+	AMR []string `json:"amr"`
+}
+
+// MFA reports whether the user authenticated with more than one factor:
+// the provider says so with "mfa", or names several methods.
+func (u User) MFA() bool {
+	if slices.Contains(u.AMR, "mfa") {
+		return true
+	}
+	methods := slices.Clone(u.AMR)
+	slices.Sort(methods)
+	return len(slices.Compact(methods)) >= 2
 }
 
 type ctxKey struct{}
