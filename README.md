@@ -268,6 +268,9 @@ they are stored in PostgreSQL.
   per-user route.
 - Restricted operators must pick one of their target groups when creating a user.
   Groups that grant superuser rights are refused.
+- Only access administrators may change their own groups. Other operators ask another operator
+  to, so nobody grants themselves a group (separation of duties); the attempt is recorded in the
+  audit log.
 - Rule changes apply immediately. An operator's own groups are read at login, so changes to
   their membership apply after the next login.
 

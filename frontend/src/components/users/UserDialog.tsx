@@ -1,5 +1,6 @@
 import * as api from '../../api'
 import type { Access, User } from '../../api'
+import { useAppContext } from '../../hooks/useAppContext'
 import { UserForm } from './UserForm'
 
 /** The dialog open on the user admin page, if any. */
@@ -29,6 +30,7 @@ export function UserDialog({
   // Restricted operators may only use the groups they manage.
   const groups = access && !access.all ? access.groups : undefined
   const canHide = access?.admin ?? false
+  const { me } = useAppContext()
 
   switch (dialog?.kind) {
     case 'create':
@@ -52,6 +54,8 @@ export function UserDialog({
           groups={groups}
           groupSuggestions={groupSuggestions}
           canHide={canHide}
+          // Only access administrators may change their own groups.
+          groupsLocked={user.username === me.username && !access?.admin}
           onClose={onClose}
           onSubmit={async (input, memberOf, primaryGroup) => {
             // Groups first: they are the likelier to be rejected, and then nothing has changed yet.

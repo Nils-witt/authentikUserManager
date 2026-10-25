@@ -1704,6 +1704,46 @@ func TestServer_setUserGroups_accessAdminGroup(t *testing.T) {
 	}
 }
 
+func TestServer_setUserGroups_own(t *testing.T) {
+	t.Parallel()
+	known := map[string]authentik.Group{"students": {PK: "pk-students", Name: "students"}}
+	tests := []struct {
+		name       string
+		operator   string
+		wantStatus int
+	}{
+		{name: "restricted", operator: "helpdesk", wantStatus: http.StatusForbidden},
+		{name: "full access", operator: "superhelp", wantStatus: http.StatusForbidden},
+		{name: "access administrator", operator: "admins", wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// The test operator is named "admin".
+			self := member("staff")
+			self.Username = "admin"
+			fake := &fakeUsers{user: self, groups: known}
+			log := &fakeAudit{}
+			h := newAuditedServer(t, fake, newFakeRules(), log, fakeAuth{groups: []string{tt.operator}})
+			rec := do(t, h, http.MethodPut, "/api/users/4/groups", `{"groups":["staff","students"]}`)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus != http.StatusOK {
+				if fake.mutated {
+					t.Errorf("groups changed on a rejected request: added %v", fake.added)
+				}
+				if !strings.Contains(rec.Body.String(), `"groups":[`) {
+					t.Errorf("body %s, want a message for the groups field", rec.Body)
+				}
+				if !slices.ContainsFunc(log.recorded, func(e audit.Entry) bool { return e.Action == audit.ActionAccessDenied }) {
+					t.Errorf("audit = %v, want an access denied entry", log.recorded)
+				}
+			}
+		})
+	}
+}
+
 func TestServer_createUser_accessAdminGroup(t *testing.T) {
 	t.Parallel()
 	fake := &fakeUsers{groups: map[string]authentik.Group{"admins": {PK: "pk-admins", Name: "admins"}}}

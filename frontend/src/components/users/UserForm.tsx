@@ -28,6 +28,8 @@ interface UserFormProps {
   groupSuggestions?: string[]
   /** The operator may hide the user from operators who are not access administrators. */
   canHide?: boolean
+  /** The operator may not change the user's groups and primary group: it is their own account. */
+  groupsLocked?: boolean
   /**
    * Receives the user's groups and the name of their primary group ('' for none) too; they are only
    * edited for an existing user.
@@ -44,6 +46,7 @@ export function UserForm({
   groups,
   groupSuggestions,
   canHide = false,
+  groupsLocked = false,
   onSubmit,
   onClose,
 }: UserFormProps) {
@@ -156,7 +159,12 @@ export function UserForm({
                 groups={groups}
                 suggestions={groupSuggestions}
                 primary={primary}
-                errorProps={fieldError('groups')}
+                disabled={groupsLocked}
+                errorProps={
+                  groupsLocked
+                    ? { helperText: 'Another operator must change your own groups.' }
+                    : fieldError('groups')
+                }
               />
             )}
             {user && (
@@ -165,7 +173,7 @@ export function UserForm({
                 label="Primary group"
                 value={primary}
                 onChange={(e) => setPrimary(e.target.value)}
-                disabled={!primaryEditable}
+                disabled={groupsLocked || !primaryEditable}
                 helperText="Choose another primary group before removing this one from the groups."
                 {...fieldError('primary_group')}
               >

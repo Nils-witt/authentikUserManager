@@ -13,6 +13,8 @@ interface UserGroupsFieldProps {
   suggestions?: string[]
   /** Name of the user's primary group; it is marked and cannot be removed. */
   primary?: string
+  /** Shows the groups without letting them be changed. */
+  disabled?: boolean
   /** Validation error shown on the field. */
   errorProps?: Pick<TextFieldProps, 'error' | 'helperText'>
 }
@@ -27,6 +29,7 @@ export function UserGroupsField({
   groups,
   suggestions,
   primary,
+  disabled = false,
   errorProps,
 }: UserGroupsFieldProps) {
   const removable = (g: string) => g !== primary && (!groups || groups.includes(g))
@@ -35,6 +38,7 @@ export function UserGroupsField({
   return (
     <Autocomplete
       multiple
+      disabled={disabled}
       freeSolo={!groups}
       disableClearable
       options={(groups ?? suggestions ?? []).filter((g) => !value.includes(g))}
