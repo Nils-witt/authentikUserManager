@@ -42,6 +42,8 @@ func TestFromEnv(t *testing.T) {
 		{name: "missing static dir", env: validEnv(map[string]string{"STATIC_DIR": "/does/not/exist"}), wantErr: true},
 		{name: "missing database url", env: validEnv(map[string]string{"DATABASE_URL": ""}), wantErr: true},
 		{name: "blank admin groups", env: validEnv(map[string]string{"ACCESS_ADMIN_GROUPS": " , "}), wantErr: true},
+		{name: "trusted proxies", env: validEnv(map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, ::1"}), wantListen: "127.0.0.1:8080"},
+		{name: "invalid trusted proxy", env: validEnv(map[string]string{"TRUSTED_PROXIES": "proxy.local"}), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

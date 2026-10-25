@@ -25,6 +25,7 @@ Set these environment variables (see `.env.example`):
 | `AUTHENTIK_TOKEN` | yes      |                  | API token (Directory → Tokens, intent "API")            |
 | `LISTEN_ADDR`     | no       | `127.0.0.1:8080` | Address the server listens on                           |
 | `STATIC_DIR`      | no       |                  | Serve the frontend from this directory instead of the embedded build |
+| `TRUSTED_PROXIES` | no       |                  | Comma-separated IP addresses or CIDR prefixes of the reverse proxies in front of the app, e.g. `172.16.0.0/12` for Docker networks; their `X-Forwarded-For` header names the client for [rate limits](#rate-limits) and logs. Without it, the proxy's address counts as the client |
 | `AUTHENTIK_RECOVERY_EMAIL_STAGE` | no |              | UUID of the email stage that sends [recovery emails](#password-recovery-emails); disabled when unset |
 | `OIDC_ISSUER`     | yes      |                  | Issuer of the OIDC provider, `https://<host>/application/o/<slug>/` |
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
@@ -457,6 +458,24 @@ the frontend, run `make build` again.
 - Responses of `/api/` and `/service-api/` carry `Cache-Control: no-store`, so browsers and proxies do not store the personal data and keys they hold. The CRLs and CA chains under `/pki/` stay cacheable.
 - Changes to users go to authentik with `AUTHENTIK_TOKEN`, not as the logged-in user. The app logs each change with the operator's username (`actor`).
 - The app speaks plain http, so it must be served through a TLS-terminating reverse proxy (e.g. Caddy, Traefik or nginx); keep the app's port off the network. `compose.yaml` publishes it on `127.0.0.1` only (`EXPOSE_ADDR`, `EXPOSE_PORT`). When `OIDC_REDIRECT_URL` is an https URL, every response carries `Strict-Transport-Security: max-age=31536000; includeSubDomains`, so browsers use only https for the host and its subdomains for a year.
+
+## Rate limits
+
+The app limits requests to protect itself and authentik against automated use. Each limit allows
+a burst of requests and then one more per interval; further requests get 429 with a
+`Retry-After` header and are logged as `rate limit exceeded`.
+
+| What | Per | Burst | Then |
+| --- | --- | --- | --- |
+| `/auth/login` and `/auth/callback` | client IP | 30 | one every 2 s |
+| `/service-api/`, before the API key is checked | client IP | 60 | one per second |
+| `/api/` | signed-in user | 300 | ten per second |
+| Issuing certificates, in the app and the service API | user or service account | 20 | one every 3 minutes |
+
+In addition, each user may have at most 5 generated keys waiting for download; a sixth is refused
+before a certificate is issued for it. Behind a reverse proxy, set `TRUSTED_PROXIES`, or all
+clients share the proxy's limit. Failed logins are limited by authentik; set up its reputation
+policies and the failed-attempt limits of its authenticator stages.
 
 ## API
 

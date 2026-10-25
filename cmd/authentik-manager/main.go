@@ -7,6 +7,8 @@
 //	AUTHENTIK_TOKEN  authentik API token (required)
 //	LISTEN_ADDR      listen address (default 127.0.0.1:8080)
 //	STATIC_DIR       serve the frontend from this directory instead of the embedded build (optional)
+//	TRUSTED_PROXIES  comma-separated IP addresses or CIDR prefixes of reverse proxies whose
+//	                 X-Forwarded-For header names the client (optional)
 //	AUTHENTIK_RECOVERY_EMAIL_STAGE  UUID of the email stage for password recovery emails;
 //	                                sending them is disabled when unset (optional)
 //
@@ -69,6 +71,7 @@ import (
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/authority"
+	"authentikManager/internal/clientip"
 	"authentikManager/internal/config"
 	"authentikManager/internal/mail"
 	"authentikManager/internal/notification"
@@ -163,6 +166,11 @@ func run(logger *slog.Logger) error {
 	defer stopSessions()
 	sessionPruning.Go(func() { authn.Run(sessionCtx, auth.PruneInterval) })
 
+	clientIPs, err := clientip.NewResolver(cfg.TrustedProxies)
+	if err != nil {
+		return err
+	}
+
 	var static fs.FS
 	if cfg.StaticDir != "" {
 		static, err = server.OpenStatic(cfg.StaticDir)
@@ -193,7 +201,8 @@ func run(logger *slog.Logger) error {
 			Notifications:      notifier,
 			APIKeys:            db,
 			// The public URL tells whether a TLS-terminating proxy serves the app.
-			HTTPS: strings.HasPrefix(cfg.OIDCRedirectURL, "https://"),
+			HTTPS:    strings.HasPrefix(cfg.OIDCRedirectURL, "https://"),
+			ClientIP: clientIPs.IP,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

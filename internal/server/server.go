@@ -27,6 +27,7 @@ import (
 	"authentikManager/internal/authority"
 	"authentikManager/internal/buildinfo"
 	"authentikManager/internal/certificate"
+	"authentikManager/internal/clientip"
 	"authentikManager/internal/joinrequest"
 	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
@@ -247,6 +248,9 @@ type Deps struct {
 	// HTTPS is set when the app is served over https (behind a TLS-terminating
 	// proxy), so responses ask browsers to use only https (HSTS).
 	HTTPS bool
+	// ClientIP returns the IP address of the client of a request, for rate
+	// limits and logs. When nil, it is the address of the peer.
+	ClientIP func(*http.Request) string
 }
 
 // Server is the HTTP handler for the application.
@@ -276,6 +280,10 @@ type Server struct {
 	crl crlCache
 	// https adds the Strict-Transport-Security header.
 	https bool
+	// clientIP returns the IP address of a request's client.
+	clientIP func(*http.Request) string
+	// limits are the rate limits; see ratelimit.go.
+	limits limiters
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
@@ -300,6 +308,11 @@ func New(d Deps) *Server {
 		notifications:      d.Notifications,
 		apiKeys:            d.APIKeys,
 		https:              d.HTTPS,
+		clientIP:           d.ClientIP,
+		limits:             newLimiters(time.Now),
+	}
+	if s.clientIP == nil {
+		s.clientIP = clientip.Resolver{}.IP
 	}
 
 	api := http.NewServeMux()
@@ -405,7 +418,7 @@ func New(d Deps) *Server {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.Handle("/auth/", d.Auth.Handler())
+	mux.Handle("/auth/", s.limitLogins(d.Auth.Handler()))
 	// The CRL and the chain of each CA are public, for relying parties. The
 	// unnamed URLs serve the CA imported from CA_CERT_FILE, whose certificates
 	// may embed them.
@@ -416,10 +429,11 @@ func New(d Deps) *Server {
 	mux.Handle("GET /pki/{ca}/crl", s.requireCertificates(s.getCRL))
 	mux.Handle("GET /pki/{ca}/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/{ca}/ca.pem", s.requireCertificates(s.getCAChain))
-	mux.Handle("/api/", d.Auth.Require(api))
+	mux.Handle("/api/", d.Auth.Require(s.limitByUser(s.limits.api, "api", api)))
 	// Service accounts authenticate to the service API with an API key
-	// instead of a session; see serviceapi.go.
-	mux.Handle("/service-api/", s.serviceAPI())
+	// instead of a session; see serviceapi.go. Requests are limited before
+	// the key is checked, so guessing keys is limited too.
+	mux.Handle("/service-api/", s.limitByIP(s.limits.serviceAPI, "service-api", s.serviceAPI()))
 	if d.Static != nil {
 		mux.Handle("/", s.spaHandler(d.Static))
 	}

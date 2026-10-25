@@ -2,6 +2,7 @@ package pki_test
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"testing"
@@ -155,10 +156,43 @@ func TestPending_Put_limit(t *testing.T) {
 	p, _ := newPending()
 	var err error
 	for i := 0; err == nil && i <= 1000; i++ {
-		_, err = p.Put(strconv.Itoa(i), annDownload())
+		d := annDownload()
+		d.Downloader = "user" + strconv.Itoa(i)
+		_, err = p.Put(strconv.Itoa(i), d)
 	}
-	if err == nil {
-		t.Error("Put never hit the limit")
+	if !errors.Is(err, pki.ErrTooManyDownloads) {
+		t.Errorf("Put error = %v, want ErrTooManyDownloads", err)
+	}
+}
+
+func TestPending_Put_downloaderLimit(t *testing.T) {
+	t.Parallel()
+	p, clock := newPending()
+	for i := range pki.MaxPendingPerDownloader {
+		if _, err := p.Put(strconv.Itoa(i), annDownload()); err != nil {
+			t.Fatalf("Put %d: %v", i, err)
+		}
+	}
+	if err := p.Check("ann"); !errors.Is(err, pki.ErrTooManyDownloaderDownloads) {
+		t.Errorf("Check = %v, want ErrTooManyDownloaderDownloads", err)
+	}
+	if _, err := p.Put("next", annDownload()); !errors.Is(err, pki.ErrTooManyDownloaderDownloads) {
+		t.Errorf("Put = %v, want ErrTooManyDownloaderDownloads", err)
+	}
+	// Other downloaders are not affected.
+	if err := p.Check("bob"); err != nil {
+		t.Errorf("Check of another downloader = %v", err)
+	}
+	// A download taken or expired frees its place.
+	if _, ok := p.Take("0", "ann"); !ok {
+		t.Fatal("Take failed")
+	}
+	if err := p.Check("ann"); err != nil {
+		t.Errorf("Check after a download = %v", err)
+	}
+	clock.Advance(pki.DownloadTTL)
+	if _, err := p.Put("later", annDownload()); err != nil {
+		t.Errorf("Put after the downloads expired = %v", err)
 	}
 }
 

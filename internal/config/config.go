@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"authentikManager/internal/clientip"
 )
 
 // Config is the runtime configuration.
@@ -22,6 +24,9 @@ type Config struct {
 	ListenAddr string
 	// StaticDir, when set, is served as the frontend instead of the embedded build.
 	StaticDir string
+	// TrustedProxies are the IP addresses and CIDR prefixes of the reverse
+	// proxies whose X-Forwarded-For header names the client.
+	TrustedProxies []string
 	// RecoveryEmailStage is the UUID of the authentik email stage that sends
 	// password recovery emails. When empty, sending them is disabled.
 	RecoveryEmailStage string
@@ -127,6 +132,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		AuthentikToken: getenv("AUTHENTIK_TOKEN"),
 		ListenAddr:     getenv("LISTEN_ADDR"),
 		StaticDir:      getenv("STATIC_DIR"),
+		TrustedProxies: splitList(getenv("TRUSTED_PROXIES")),
 
 		RecoveryEmailStage: strings.TrimSpace(getenv("AUTHENTIK_RECOVERY_EMAIL_STAGE")),
 
@@ -181,6 +187,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	errs = append(errs, cfg.parseSessions(getenv("SESSION_LIFETIME_HOURS"), getenv("SESSION_IDLE_TIMEOUT_MINUTES"))...)
 	errs = append(errs, cfg.parseCertificates(getenv("CA_ENCRYPTION_KEY"), getenv("CERT_VALIDITY_DAYS"), getenv("CERT_CRL_VALIDITY_DAYS"))...)
 	errs = append(errs, cfg.parseSMTP(getenv("SMTP_PORT"))...)
+	if _, err := clientip.NewResolver(cfg.TrustedProxies); err != nil {
+		errs = append(errs, fmt.Errorf("TRUSTED_PROXIES: %w", err))
+	}
 	if cfg.StaticDir != "" {
 		if fi, err := os.Stat(cfg.StaticDir); err != nil || !fi.IsDir() {
 			errs = append(errs, fmt.Errorf("STATIC_DIR %q is not a readable directory", cfg.StaticDir))

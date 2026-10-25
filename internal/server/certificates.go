@@ -314,8 +314,16 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 	if !ok {
 		return
 	}
+	if !s.allow(w, r, s.limits.issue, "issue", "user:"+actorName(r)) {
+		return
+	}
 	var key crypto.Signer
 	if pub == nil {
+		// Refuse before issuing when the key could not be held for download.
+		if err := s.keyDownloads.Check(actorName(r)); err != nil {
+			writeKeyDownloadsFull(w, err)
+			return
+		}
 		var err error
 		if key, err = pki.GenerateKey(); err != nil {
 			s.logger.ErrorContext(r.Context(), "generating certificate key", slog.Any("error", err))
@@ -390,7 +398,10 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 	if err != nil {
 		s.logger.ErrorContext(r.Context(), "holding generated key", slog.String("serial", record.Serial), slog.Any("error", err))
 		status := http.StatusInternalServerError
-		if errors.Is(err, pki.ErrTooManyDownloads) {
+		switch {
+		case errors.Is(err, pki.ErrTooManyDownloaderDownloads):
+			status = http.StatusTooManyRequests
+		case errors.Is(err, pki.ErrTooManyDownloads):
 			status = http.StatusServiceUnavailable
 		}
 		writeError(w, status, "the certificate was issued but its key cannot be offered for download; revoke it and try again later", nil)
@@ -399,6 +410,18 @@ func (s *Server) issueFor(w http.ResponseWriter, r *http.Request, user *authenti
 	out.DownloadURL = "/api/certificates/mine/" + record.Serial + "/download"
 	out.DownloadExpiresAt = &expires
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// writeKeyDownloadsFull answers a request for a generated key that cannot be
+// held for download, err being the error of pki.Pending.Check.
+func writeKeyDownloadsFull(w http.ResponseWriter, err error) {
+	if errors.Is(err, pki.ErrTooManyDownloaderDownloads) {
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
+			"you have %d generated keys waiting for download; download them or wait until they expire",
+			pki.MaxPendingPerDownloader), nil)
+		return
+	}
+	writeError(w, http.StatusServiceUnavailable, "too many generated keys are waiting for download; try again later", nil)
 }
 
 // holdKey encodes the key, the certificate and the chain of ca, which signed
