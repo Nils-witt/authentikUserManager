@@ -57,7 +57,8 @@ func (s *Server) requestJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	// Restricted operators may not add users to superuser groups, so only
 	// access administrators could decide; they add members directly instead.
-	if group.IsSuperuser {
+	// The same holds for the access administrator groups.
+	if group.IsSuperuser || s.policy.IsAdmin([]string{group.Name}) {
 		writeError(w, http.StatusForbidden, "this group cannot be requested", nil)
 		return
 	}
@@ -232,6 +233,10 @@ func (s *Server) decideJoinRequest(w http.ResponseWriter, r *http.Request, statu
 	// Such a group would make the user an administrator the operator could not manage.
 	if status == joinrequest.StatusApproved && group.IsSuperuser && !scope.All {
 		writeError(w, http.StatusForbidden, "you may not add users to an administrator group", nil)
+		return
+	}
+	if status == joinrequest.StatusApproved && !s.mayGrantGroup(r, group) {
+		writeError(w, http.StatusForbidden, "only access administrators may add users to an access administrator group", nil)
 		return
 	}
 

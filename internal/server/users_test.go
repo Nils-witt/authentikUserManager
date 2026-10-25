@@ -1677,6 +1677,42 @@ func TestServer_setUserGroups_restrictedSuperuserGroup(t *testing.T) {
 	}
 }
 
+func TestServer_setUserGroups_accessAdminGroup(t *testing.T) {
+	t.Parallel()
+	known := map[string]authentik.Group{"admins": {PK: "pk-admins", Name: "admins"}}
+	tests := []struct {
+		name       string
+		operator   string
+		wantStatus int
+	}{
+		// Full access to the users does not make an operator an access administrator.
+		{name: "full access", operator: "superhelp", wantStatus: http.StatusBadRequest},
+		{name: "access administrator", operator: "admins", wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeUsers{user: member("staff"), groups: known}
+			rec := do(t, newScopedServer(t, fake, tt.operator), http.MethodPut, "/api/users/4/groups", `{"groups":["staff","admins"]}`)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus != http.StatusOK && fake.mutated {
+				t.Errorf("groups changed on a rejected request: added %v", fake.added)
+			}
+		})
+	}
+}
+
+func TestServer_createUser_accessAdminGroup(t *testing.T) {
+	t.Parallel()
+	fake := &fakeUsers{groups: map[string]authentik.Group{"admins": {PK: "pk-admins", Name: "admins"}}}
+	rec := do(t, newScopedServer(t, fake, "superhelp"), http.MethodPost, "/api/users", `{"username":"ann","name":"Ann","group":"admins"}`)
+	if rec.Code != http.StatusBadRequest || fake.created.Username != "" {
+		t.Errorf("status = %d (body %s), created %q, want 400 and nothing created", rec.Code, rec.Body, fake.created.Username)
+	}
+}
+
 func TestServer_setUserGroups_outOfScope(t *testing.T) {
 	t.Parallel()
 	fake := &fakeUsers{user: member("other")}

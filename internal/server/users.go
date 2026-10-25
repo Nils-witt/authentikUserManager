@@ -591,7 +591,20 @@ func (s *Server) findGroup(w http.ResponseWriter, r *http.Request, field, name s
 			map[string][]string{field: {"You may not add users to an administrator group."}})
 		return nil, false
 	}
+	if !s.mayGrantGroup(r, group) {
+		writeError(w, http.StatusBadRequest, "validation failed",
+			map[string][]string{field: {"Only access administrators may add users to an access administrator group."}})
+		return nil, false
+	}
 	return group, true
+}
+
+// mayGrantGroup reports whether the signed-in operator may add users to
+// group. Members of an access administrator group (ACCESS_ADMIN_GROUPS) become
+// access administrators, so only access administrators may add them, even
+// operators with full access to the users.
+func (s *Server) mayGrantGroup(r *http.Request, group *authentik.Group) bool {
+	return !s.policy.IsAdmin([]string{group.Name}) || s.policy.IsAdmin(operatorGroups(r))
 }
 
 // updateUserInput is the body of PATCH /api/users/{id} and PATCH

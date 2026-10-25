@@ -253,7 +253,10 @@ they are stored in PostgreSQL.
 - An operator may manage a user only if the user is a direct member of one of the target groups.
   Members of inherited (parent) groups are not matched.
 - The target "all users" (`*`) grants access to every user. Superusers are only visible to
-  operators with it and to access administrators.
+  operators with it and to access administrators. It does not make an operator an access
+  administrator: only access administrators may add users to the groups named in
+  `ACCESS_ADMIN_GROUPS`, whether in the user dialog, when creating a user or by approving a
+  [join request](#join-requests).
 - Access administrators can mark a user or service account **hidden**. Only access
   administrators see hidden users, even if a rule grants one of the user's groups or all
   users (`*`). Users still see their own account. Hidden is stored in authentik as the user
@@ -339,7 +342,7 @@ optional message of up to 500 characters. The request is stored in PostgreSQL un
   may ask again. Nobody decides their own request.
 - Users see their pending requests in **Groups** and can withdraw them there.
 - Only internal users can ask, only for visible groups, and not for groups that grant superuser
-  rights. Each user has at most one pending request per group, and none for a group they are
+  rights or are named in `ACCESS_ADMIN_GROUPS`. Each user has at most one pending request per group, and none for a group they are
   already in.
 - Requests match groups by primary key, so renaming a group keeps them. They show the group's
   name as it was when the request was made. A request for a deleted group can still be rejected
