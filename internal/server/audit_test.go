@@ -15,8 +15,10 @@ import (
 
 // fakeAudit is an in-memory audit log. Each test uses its own instance.
 type fakeAudit struct {
-	// recorded are the entries passed to RecordAudit.
-	recorded []audit.Entry
+	// recorded are the entries passed to RecordAudit, without their
+	// client_ip detail, which clientIPs holds in the same order.
+	recorded  []audit.Entry
+	clientIPs []string
 	// listed are returned by ListAudit, limited to the query's limit.
 	listed []audit.Entry
 	// query records the query passed to ListAudit.
@@ -28,6 +30,9 @@ func (f *fakeAudit) RecordAudit(_ context.Context, e audit.Entry) error {
 	if f.err != nil {
 		return f.err
 	}
+	e.Details = maps.Clone(e.Details)
+	f.clientIPs = append(f.clientIPs, e.Details["client_ip"])
+	delete(e.Details, "client_ip")
 	f.recorded = append(f.recorded, e)
 	return nil
 }

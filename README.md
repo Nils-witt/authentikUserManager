@@ -394,6 +394,9 @@ Every change made through the app is recorded in PostgreSQL with the time, the o
 the action, the affected user or rule, and details such as the changed fields or groups:
 creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing, importing, assigning and revoking certificates and downloading their keys, creating and deleting service account tokens and API keys (never their keys),
 saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
+Logins, failed logins (with the reason, e.g. an invalid state), logouts, sessions ended because
+the account was deleted or deactivated, and API keys the service API refuses (with the start of
+the key) are recorded too. Every entry names the client IP address (see `TRUSTED_PROXIES`).
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
 
@@ -402,6 +405,20 @@ back when its entry cannot be stored; the failure is logged instead.
 
 Entries are kept forever unless `AUDIT_RETENTION_DAYS` is set. Then entries older than that
 are deleted at startup and every hour after.
+
+### Application log
+
+The app writes JSON lines to stdout. Every request is logged (message `http request`) with its
+method, path, status, duration, client IP, user (or service account) and user agent. Each request
+gets an ID, returned in the `X-Request-ID` header and added as `request_id` to every record
+written for it, so a request's records can be found together.
+
+For OPS.1.1.5 (Protokollierung) of the IT-Grundschutz, ship the log to a central log system
+(e.g. with the Docker logging driver `syslog`, `gelf` or `journald`, or Loki's Docker driver), so
+it survives the container and an attacker on the host cannot quietly change it. The audit log
+lives in the application's database, which the app may change; to protect it, give the app a
+database role without `DELETE` and `UPDATE` on `audit_log` once the schema is migrated, and run
+the retention with another role, or export the table regularly to the central log system.
 
 ## Setting up the login in authentik
 

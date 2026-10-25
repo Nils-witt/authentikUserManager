@@ -46,7 +46,13 @@ type Key struct {
 // New returns a new random key, its start for Key.Start, and its hash to store.
 func New() (key, start string, hash []byte) {
 	key = Prefix + rand.Text()
-	return key, key[:shownLen], Hash(key)
+	return key, Start(key), Hash(key)
+}
+
+// Start returns the beginning of key that Key.Start keeps to tell keys apart.
+// It is not secret, so it may be logged.
+func Start(key string) string {
+	return key[:min(shownLen, len(key))]
 }
 
 // Hash returns the hash of key under which it is stored. Keys are random, so

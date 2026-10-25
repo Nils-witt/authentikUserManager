@@ -54,6 +54,11 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'group.join_withdrawn': 'Join request withdrawn',
   'group.join_approved': 'Join request approved',
   'group.join_rejected': 'Join request rejected',
+  'auth.login': 'Signed in',
+  'auth.login_failed': 'Sign-in failed',
+  'auth.logout': 'Signed out',
+  'auth.session_ended': 'Session ended (account gone)',
+  'service_api.api_key_rejected': 'API key refused',
 }
 
 const ACTIONS = Object.keys(ACTION_LABELS) as AuditAction[]
@@ -191,7 +196,7 @@ function AuditTable({ entries }: { entries: AuditEntry[] | null }) {
               <TableCell sx={{ whiteSpace: 'nowrap' }}>
                 {new Date(e.time).toLocaleString()}
               </TableCell>
-              <TableCell>{e.actor}</TableCell>
+              <TableCell>{e.actor || '—'}</TableCell>
               <TableCell sx={{ whiteSpace: 'nowrap' }}>
                 {ACTION_LABELS[e.action] ?? e.action}
               </TableCell>

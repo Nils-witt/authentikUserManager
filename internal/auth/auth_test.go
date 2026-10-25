@@ -14,11 +14,13 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 
 	"github.com/go-jose/go-jose/v4"
@@ -667,5 +669,75 @@ func TestUser_MFA(t *testing.T) {
 		if got := (auth.User{AMR: tt.amr}).MFA(); got != tt.want {
 			t.Errorf("MFA with amr %v = %v, want %v", tt.amr, got, tt.want)
 		}
+	}
+}
+
+// auditLog collects the entries an Authenticator records.
+type auditLog struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (l *auditLog) record(_ context.Context, e audit.Entry) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, e)
+}
+
+func (l *auditLog) actions() []audit.Action {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []audit.Action
+	for _, e := range l.entries {
+		if e.Details["client_ip"] != "198.51.100.7" {
+			return nil
+		}
+		out = append(out, e.Action)
+	}
+	return out
+}
+
+func TestAudit(t *testing.T) {
+	t.Parallel()
+	log := &auditLog{}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"admins"}), func(cfg *auth.Config) {
+		cfg.RecordAudit = log.record
+		cfg.ClientIP = func(*http.Request) string { return "198.51.100.7" }
+	})
+
+	// A callback without a login is refused and recorded.
+	get(t, client, appURL+"/auth/callback?code=x&state=y")
+	get(t, client, appURL+"/auth/login")
+	send(t, client, http.MethodPost, appURL+"/auth/logout")
+
+	want := []audit.Action{audit.ActionLoginFailed, audit.ActionLogin, audit.ActionLogout}
+	if got := log.actions(); !slices.Equal(got, want) {
+		t.Fatalf("audit = %v, want %v, each naming the client IP", log.entries, want)
+	}
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if failed := log.entries[0]; failed.Actor != "" || failed.Details["reason"] != "login state missing or expired" {
+		t.Errorf("failed login = %+v", failed)
+	}
+	if login := log.entries[1]; login.Actor != "alice" || login.Details["mfa"] != "false" {
+		t.Errorf("login = %+v", login)
+	}
+}
+
+func TestAudit_sessionEnded(t *testing.T) {
+	t.Parallel()
+	log := &auditLog{}
+	state := &accountState{err: auth.ErrAccountGone}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"admins"}), func(cfg *auth.Config) {
+		cfg.RecordAudit = log.record
+		cfg.ClientIP = func(*http.Request) string { return "198.51.100.7" }
+		cfg.CheckAccount = state.check
+		cfg.CheckInterval = time.Nanosecond
+	})
+	get(t, client, appURL+"/auth/login")
+	get(t, client, appURL+"/api/ping")
+	want := []audit.Action{audit.ActionLogin, audit.ActionSessionEnded}
+	if got := log.actions(); !slices.Equal(got, want) {
+		t.Errorf("audit = %v, want %v", log.entries, want)
 	}
 }

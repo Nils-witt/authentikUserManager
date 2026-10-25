@@ -31,6 +31,7 @@ import (
 	"authentikManager/internal/joinrequest"
 	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
+	"authentikManager/internal/reqlog"
 )
 
 // maxRequestBytes bounds JSON request bodies.
@@ -441,7 +442,7 @@ func New(d Deps) *Server {
 	mux.Handle("GET /pki/{ca}/crl", s.requireCertificates(s.getCRL))
 	mux.Handle("GET /pki/{ca}/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/{ca}/ca.pem", s.requireCertificates(s.getCAChain))
-	mux.Handle("/api/", d.Auth.Require(s.limitByUser(s.limits.api, "api", api)))
+	mux.Handle("/api/", d.Auth.Require(noteUser(s.limitByUser(s.limits.api, "api", api))))
 	// Service accounts authenticate to the service API with an API key
 	// instead of a session; see serviceapi.go. Requests are limited before
 	// the key is checked, so guessing keys is limited too.
@@ -455,10 +456,37 @@ func New(d Deps) *Server {
 	return s
 }
 
+// requestInfo collects what the request log names once the request is handled.
+type requestInfo struct {
+	// user is the signed-in user or the service account of the API key, set
+	// by noteUser once authenticated.
+	user string
+}
+
+type requestInfoKey struct{}
+
+// noteUser names the authenticated user of the request in the request log.
+// It must run after authentication.
+func noteUser(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if info, ok := r.Context().Value(requestInfoKey{}).(*requestInfo); ok {
+			info.user = actorName(r)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // ServeHTTP adds security headers and request logging around the router.
+// Each request gets an ID, returned as X-Request-ID and added to every log
+// record written for it (see reqlog).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	requestID := rand.Text()[:16]
+	info := &requestInfo{}
+	ctx := reqlog.WithRequestID(r.Context(), requestID)
+	r = r.WithContext(context.WithValue(ctx, requestInfoKey{}, info))
 	h := w.Header()
+	h.Set("X-Request-ID", requestID)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
@@ -480,6 +508,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.String("path", r.URL.Path),
 		slog.Int("status", rec.status),
 		slog.Duration("duration", time.Since(start)),
+		slog.String("client_ip", s.clientIP(r)),
+		slog.String("user", info.user),
+		slog.String("user_agent", truncate(r.UserAgent(), 256)),
 	)
 }
 
@@ -666,4 +697,12 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, r *http.Request, err 
 		slog.Any("error", err),
 	)
 	writeError(w, http.StatusBadGateway, "authentik request failed", nil)
+}
+
+// truncate returns s cut to at most n bytes, for untrusted values in logs.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
 }

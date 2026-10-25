@@ -106,7 +106,23 @@ func TestServiceAPI_authentication(t *testing.T) {
 			if tt.expected == http.StatusUnauthorized && rec.Header().Get("WWW-Authenticate") == "" {
 				t.Error("401 without WWW-Authenticate header")
 			}
+			// Refused keys are recorded in the audit log.
+			rejected := slices.ContainsFunc(env.log.recorded, func(e audit.Entry) bool {
+				return e.Action == audit.ActionAPIKeyRejected && e.Details["reason"] != ""
+			})
+			if rejected != (tt.expected == http.StatusUnauthorized) {
+				t.Errorf("audit = %v, want a rejected key recorded: %v", env.log.recorded, !rejected)
+			}
 		})
+	}
+}
+
+func TestServiceAPI_rejectedKeyStart(t *testing.T) {
+	t.Parallel()
+	env := newCertServer(t, &fakeUsers{user: serviceAccount("staff")})
+	callServiceAPI(t, env.srv, http.MethodGet, "/service-api/v1/certificates", "Bearer amk_AAAAAAAAAAAAAAAAAAAAAAAAAA", "")
+	if len(env.log.recorded) != 1 || env.log.recorded[0].Details["key_start"] != "amk_AAAAAAAA" || env.log.clientIPs[0] == "" {
+		t.Errorf("audit = %v from %v, want the start of the unknown key and the client IP", env.log.recorded, env.log.clientIPs)
 	}
 }
 

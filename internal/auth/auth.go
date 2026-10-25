@@ -18,12 +18,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
+
+	"authentikManager/internal/audit"
 )
 
 const (
@@ -62,6 +65,12 @@ type Config struct {
 	CheckAccount AccountChecker
 	// CheckInterval defaults to DefaultCheckInterval.
 	CheckInterval time.Duration
+	// RecordAudit, when set, records logins, failed logins, logouts and
+	// sessions ended by CheckAccount in the audit log.
+	RecordAudit func(ctx context.Context, e audit.Entry)
+	// ClientIP, when set, returns the client IP address of a request, which
+	// audit entries name.
+	ClientIP func(*http.Request) string
 }
 
 // AccountChecker returns the current groups of the account of u, or
@@ -106,6 +115,9 @@ type Authenticator struct {
 	checkInterval time.Duration
 	// checks merges the concurrent checks of one session.
 	checks singleflight.Group
+	// recordAudit and clientIP are Config.RecordAudit and Config.ClientIP.
+	recordAudit func(ctx context.Context, e audit.Entry)
+	clientIP    func(*http.Request) string
 }
 
 // New discovers the provider's configuration. ctx must outlive the
@@ -166,6 +178,8 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 		mux:            http.NewServeMux(),
 		checkAccount:   cfg.CheckAccount,
 		checkInterval:  cfg.CheckInterval,
+		recordAudit:    cfg.RecordAudit,
+		clientIP:       cfg.ClientIP,
 	}
 	a.mux.HandleFunc("GET /auth/login", a.login)
 	a.mux.HandleFunc("GET /auth/callback", a.callback)
@@ -206,7 +220,7 @@ func (a *Authenticator) Require(next http.Handler) http.Handler {
 		id, sess, ok := a.currentSession(r, r.Header.Get(BackgroundHeader) == "")
 		if ok && a.checkAccount != nil && !a.sessions.now().Before(sess.checkedAt.Add(a.checkInterval)) {
 			var err error
-			sess, ok, err = a.check(r.Context(), id)
+			sess, ok, err = a.check(r, id)
 			if err != nil {
 				a.logger.ErrorContext(r.Context(), "checking account", slog.String("username", sess.user.Username), slog.Any("error", err))
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "your account could not be checked"})
@@ -224,19 +238,20 @@ func (a *Authenticator) Require(next http.Handler) http.Handler {
 // check reads the groups of the user of session id again and stores them. It
 // ends the session and returns false when the account is gone. Concurrent
 // checks of one session share one lookup.
-func (a *Authenticator) check(ctx context.Context, id string) (session, bool, error) {
+func (a *Authenticator) check(r *http.Request, id string) (session, bool, error) {
 	v, err, _ := a.checks.Do(id, func() (any, error) {
 		sess, ok := a.sessions.get(id, false)
 		if !ok {
 			return session{}, nil
 		}
 		// The request may be cancelled while others still wait for the result.
-		ctx := context.WithoutCancel(ctx)
+		ctx := context.WithoutCancel(r.Context())
 		checkedAt := a.sessions.now()
 		groups, err := a.checkAccount(ctx, sess.user)
 		if errors.Is(err, ErrAccountGone) {
 			a.sessions.delete(id)
 			a.logger.InfoContext(ctx, "session ended: account deleted or deactivated", slog.String("username", sess.user.Username))
+			a.audit(r, audit.ActionSessionEnded, "", sess.user.Username, map[string]string{"reason": "account deleted, deactivated or renamed"})
 			return session{}, nil
 		}
 		if err != nil {
@@ -340,16 +355,19 @@ func localPath(p string) string {
 func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
 	st, ok := a.takeLoginState(w, r)
 	if !ok {
+		a.loginFailed(r, "login state missing or expired")
 		http.Error(w, "Login session expired or invalid. Please start again at /auth/login.", http.StatusBadRequest)
 		return
 	}
 	q := r.URL.Query()
 	if e := q.Get("error"); e != "" {
 		a.logger.WarnContext(r.Context(), "oidc provider returned error", slog.String("error", e))
+		a.loginFailed(r, "provider error: "+truncate(e, 64))
 		http.Error(w, "Login was not completed.", http.StatusForbidden)
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(st.State)) != 1 {
+		a.loginFailed(r, "state mismatch")
 		http.Error(w, "Login state mismatch. Please start again at /auth/login.", http.StatusBadRequest)
 		return
 	}
@@ -357,6 +375,7 @@ func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
 	user, rawIDToken, sid, err := a.exchange(r.Context(), q.Get("code"), st)
 	if err != nil {
 		a.logger.ErrorContext(r.Context(), "oidc login failed", slog.Any("error", err))
+		a.loginFailed(r, "code exchange or ID token verification failed")
 		http.Error(w, "Login failed.", http.StatusBadGateway)
 		return
 	}
@@ -367,7 +386,35 @@ func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
 	id := a.sessions.create(user, rawIDToken, sid)
 	a.setCookie(w, a.sessionCookie, id, "/", 0)
 	a.logger.InfoContext(r.Context(), "login", slog.String("username", user.Username), slog.Bool("mfa", user.MFA()))
+	a.audit(r, audit.ActionLogin, user.Username, user.Username, map[string]string{
+		"mfa":       strconv.FormatBool(user.MFA()),
+		"auth_time": user.AuthTime.UTC().Format(time.RFC3339),
+	})
 	http.Redirect(w, r, cmp.Or(st.Return, "/"), http.StatusFound)
+}
+
+// loginFailed records a login that could not be completed for reason.
+func (a *Authenticator) loginFailed(r *http.Request, reason string) {
+	a.audit(r, audit.ActionLoginFailed, "", "", map[string]string{"reason": reason})
+}
+
+// audit records an entry of r with Config.RecordAudit, naming the client IP.
+func (a *Authenticator) audit(r *http.Request, action audit.Action, actor, target string, details map[string]string) {
+	if a.recordAudit == nil {
+		return
+	}
+	if a.clientIP != nil {
+		details["client_ip"] = a.clientIP(r)
+	}
+	a.recordAudit(r.Context(), audit.Entry{Actor: actor, Action: action, Target: target, Details: details})
+}
+
+// truncate returns s cut to at most n bytes, for untrusted values in logs.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
 }
 
 // takeLoginState reads and clears the login cookie.
@@ -445,6 +492,7 @@ func (a *Authenticator) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(a.sessionCookie); err == nil {
 		if sess, ok := a.sessions.delete(c.Value); ok {
 			a.logger.InfoContext(r.Context(), "logout", slog.String("username", sess.user.Username))
+			a.audit(r, audit.ActionLogout, sess.user.Username, sess.user.Username, map[string]string{})
 			if a.endSessionURL != "" {
 				resp.LogoutURL = a.endSessionURL + "?" + url.Values{"id_token_hint": {sess.idToken}}.Encode()
 			}
@@ -473,6 +521,7 @@ func (a *Authenticator) backchannelLogout(w http.ResponseWriter, r *http.Request
 	}
 	for _, sess := range a.sessions.deleteMatching(sub, sid) {
 		a.logger.InfoContext(r.Context(), "back-channel logout", slog.String("username", sess.user.Username))
+		a.audit(r, audit.ActionLogout, sess.user.Username, sess.user.Username, map[string]string{"via": "back-channel logout"})
 	}
 	w.WriteHeader(http.StatusOK)
 }

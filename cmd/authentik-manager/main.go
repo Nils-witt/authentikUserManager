@@ -78,13 +78,15 @@ import (
 	"authentikManager/internal/mail"
 	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
+	"authentikManager/internal/reqlog"
 	"authentikManager/internal/server"
 	"authentikManager/internal/store"
 	"authentikManager/internal/web"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Records written for a request carry its ID (see reqlog).
+	logger := slog.New(reqlog.NewHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(logger); err != nil {
 		logger.Error("fatal", slog.Any("error", err))
 		os.Exit(1)
@@ -149,6 +151,10 @@ func run(logger *slog.Logger) error {
 	defer stopDelivering()
 	delivering.Go(func() { notifier.Run(deliverCtx) })
 
+	clientIPs, err := clientip.NewResolver(cfg.TrustedProxies)
+	if err != nil {
+		return err
+	}
 	authn, err := auth.New(ctx, auth.Config{
 		IssuerURL:    cfg.OIDCIssuer,
 		ClientID:     cfg.OIDCClientID,
@@ -157,6 +163,8 @@ func run(logger *slog.Logger) error {
 		SessionTTL:   cfg.SessionLifetime,
 		IdleTimeout:  cfg.SessionIdleTimeout,
 		CheckAccount: accountChecker(client),
+		RecordAudit:  auditRecorder(db, logger),
+		ClientIP:     clientIPs.IP,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("setting up oidc login: %w", err)
@@ -167,11 +175,6 @@ func run(logger *slog.Logger) error {
 	defer sessionPruning.Wait()
 	defer stopSessions()
 	sessionPruning.Go(func() { authn.Run(sessionCtx, auth.PruneInterval) })
-
-	clientIPs, err := clientip.NewResolver(cfg.TrustedProxies)
-	if err != nil {
-		return err
-	}
 
 	var static fs.FS
 	if cfg.StaticDir != "" {
@@ -261,6 +264,26 @@ func accountChecker(client *authentik.Client) auth.AccountChecker {
 			}
 		}
 		return nil, auth.ErrAccountGone
+	}
+}
+
+// auditRecorder returns the function recording the login events of the
+// auth package in the audit log of db and the application log. A failure to
+// store an entry is logged, like the server does for its entries.
+func auditRecorder(db *store.Store, logger *slog.Logger) func(context.Context, audit.Entry) {
+	return func(ctx context.Context, e audit.Entry) {
+		logger.LogAttrs(ctx, slog.LevelInfo, "audit",
+			slog.String("actor", e.Actor),
+			slog.String("action", string(e.Action)),
+			slog.String("target", e.Target),
+			slog.Any("details", e.Details),
+		)
+		// Store the entry even when the client has gone away meanwhile.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := db.RecordAudit(ctx, e); err != nil {
+			logger.ErrorContext(ctx, "recording audit entry failed", slog.String("action", string(e.Action)), slog.Any("error", err))
+		}
 	}
 }
 

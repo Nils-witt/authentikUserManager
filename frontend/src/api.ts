@@ -136,12 +136,17 @@ export type AuditAction =
   | 'certificate_authority.created'
   | 'certificate_authority.updated'
   | 'certificate_authority.default_changed'
+  | 'auth.login'
+  | 'auth.login_failed'
+  | 'auth.logout'
+  | 'auth.session_ended'
+  | 'service_api.api_key_rejected'
 
 /** One record in the audit log. */
 export interface AuditEntry {
   id: number
   time: string
-  /** Username of the operator. */
+  /** Username of the operator; empty for failed logins and refused API keys. */
   actor: string
   action: AuditAction
   /** Username of the affected user, operator group of the affected rule, or name of the affected group. */

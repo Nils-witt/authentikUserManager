@@ -21,12 +21,13 @@ const auditTimeout = 5 * time.Second
 // application log. The change it describes has already been made, so a
 // failure to store it is logged rather than reported to the client.
 func (s *Server) record(r *http.Request, action audit.Action, target string, details map[string]string) {
+	details = maps.Clone(details)
+	if details == nil {
+		details = map[string]string{}
+	}
+	details["client_ip"] = s.clientIP(r)
 	if caller, ok := apiCallerFrom(r.Context()); ok {
 		// Changes made through the service API name the API key used.
-		details = maps.Clone(details)
-		if details == nil {
-			details = map[string]string{}
-		}
 		details["api_key_id"] = strconv.FormatInt(caller.keyID, 10)
 	}
 	e := audit.Entry{Actor: actorName(r), Action: action, Target: target, Details: details}
