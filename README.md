@@ -273,8 +273,10 @@ they are stored in PostgreSQL.
 - Only access administrators may change their own groups. Other operators ask another operator
   to, so nobody grants themselves a group (separation of duties); the attempt is recorded in the
   audit log.
-- Rule changes apply immediately. An operator's own groups are read at login, so changes to
-  their membership apply after the next login.
+- Rule changes apply immediately. An operator's own groups are read at login and again from
+  authentik at most 5 minutes later while they use the app, so changes to their membership apply
+  within 5 minutes. Deleting, deactivating or renaming their account in authentik ends their
+  sessions at that check. If authentik cannot be reached for the check, requests fail with 503.
 
 The schema is created and migrated automatically at startup
 (`internal/store/migrations`, applied with golang-migrate).
@@ -297,8 +299,8 @@ attributes or whether it grants superuser rights.
 
 - Access rules match groups by name, so renaming a group renames it in every rule too, in one
   transaction. If the rules cannot be updated, the group gets its previous name back.
-- An operator's groups are read at login, so members of a renamed operator group must sign in
-  again before the renamed rule applies to them.
+- An operator's groups are read again every 5 minutes (see [access rules](#access-rules)), so the
+  renamed rule applies to the members of a renamed operator group within 5 minutes.
 - Groups named in `ACCESS_ADMIN_GROUPS` cannot be renamed, and no group can be renamed to one of
   those names, to `*`, or to the name of another group.
 - Only access administrators can create groups. A new group has no members and never grants

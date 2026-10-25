@@ -37,6 +37,8 @@ type session struct {
 	expiresAt time.Time
 	// lastSeen is when the user last used the session; it ends idleTimeout later.
 	lastSeen time.Time
+	// checkedAt is when user.Groups were last read from the provider.
+	checkedAt time.Time
 }
 
 // matchesLogout reports whether a back-channel logout for sub and sid ends
@@ -78,8 +80,24 @@ func (s *sessionStore) create(u User, idToken, sid string) string {
 	defer s.mu.Unlock()
 	s.pruneLocked()
 	now := s.now()
-	s.sessions[id] = session{user: u, idToken: idToken, sid: sid, expiresAt: now.Add(s.ttl), lastSeen: now}
+	s.sessions[id] = session{user: u, idToken: idToken, sid: sid, expiresAt: now.Add(s.ttl), lastSeen: now, checkedAt: now}
 	return id
+}
+
+// setGroups replaces the groups of the session's user with the ones read
+// from the provider at checkedAt. It returns the updated session, or false
+// when the session has ended meanwhile.
+func (s *sessionStore) setGroups(id string, groups []string, checkedAt time.Time) (session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return session{}, false
+	}
+	sess.user.Groups = groups
+	sess.checkedAt = checkedAt
+	s.sessions[id] = sess
+	return sess, true
 }
 
 // get returns the session with id unless it has ended. When touch is set, it

@@ -1,11 +1,13 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -167,16 +169,27 @@ func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 // its URL plus a browser-like client that keeps cookies and follows redirects.
 func newApp(t *testing.T, provider *fakeProvider) (string, *http.Client) {
 	t.Helper()
+	return newAppWith(t, provider, nil)
+}
+
+// newAppWith is newApp with configure applied to the auth.Config. The app
+// also serves /api/groups, listing the user's groups.
+func newAppWith(t *testing.T, provider *fakeProvider, configure func(*auth.Config)) (string, *http.Client) {
+	t.Helper()
 	mux := http.NewServeMux()
 	app := httptest.NewServer(mux)
 	t.Cleanup(app.Close)
 
-	a, err := auth.New(t.Context(), auth.Config{
+	cfg := auth.Config{
 		IssuerURL:    provider.srv.URL,
 		ClientID:     clientID,
 		ClientSecret: "secret",
 		RedirectURL:  app.URL + "/auth/callback",
-	}, slog.New(slog.DiscardHandler))
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	a, err := auth.New(t.Context(), cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
 	}
@@ -184,6 +197,10 @@ func newApp(t *testing.T, provider *fakeProvider) (string, *http.Client) {
 	mux.Handle("/api/ping", a.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, _ := auth.UserFromContext(r.Context())
 		_, _ = io.WriteString(w, "pong "+u.Username)
+	})))
+	mux.Handle("/api/groups", a.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := auth.UserFromContext(r.Context())
+		_, _ = io.WriteString(w, strings.Join(u.Groups, ","))
 	})))
 
 	jar, err := cookiejar.New(nil)
@@ -465,5 +482,89 @@ func TestBackchannelLogout(t *testing.T) {
 				t.Errorf("after back-channel logout: status = %d, want %d", code, wantPing)
 			}
 		})
+	}
+}
+
+// accountState is what a test AccountChecker reports, changeable while the app runs.
+type accountState struct {
+	mu     sync.Mutex
+	groups []string
+	err    error
+	calls  int
+}
+
+func (s *accountState) set(groups []string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.groups, s.err = groups, err
+}
+
+func (s *accountState) check(_ context.Context, u auth.User) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if u.Username != "alice" {
+		return nil, auth.ErrAccountGone
+	}
+	return s.groups, s.err
+}
+
+func TestRequire_checksAccount(t *testing.T) {
+	t.Parallel()
+	state := &accountState{groups: []string{"users", "admins"}}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"users", "admins"}), func(cfg *auth.Config) {
+		cfg.CheckAccount = state.check
+		// Every request checks the account.
+		cfg.CheckInterval = time.Nanosecond
+	})
+	if code, _ := get(t, client, appURL+"/auth/login"); code != http.StatusNotFound {
+		t.Fatalf("login flow ended with %d, want 404 from /", code)
+	}
+	if code, body := get(t, client, appURL+"/api/groups"); code != http.StatusOK || body != "users,admins" {
+		t.Fatalf("groups = %d %q, want the groups of the login", code, body)
+	}
+
+	// Groups withdrawn in the provider apply without a new login.
+	state.set([]string{"users"}, nil)
+	if code, body := get(t, client, appURL+"/api/groups"); code != http.StatusOK || body != "users" {
+		t.Errorf("groups after removal = %d %q, want \"users\"", code, body)
+	}
+
+	// A failing check fails the request instead of using the previous groups.
+	state.set([]string{"users"}, errors.New("authentik is down"))
+	if code, _ := get(t, client, appURL+"/api/groups"); code != http.StatusServiceUnavailable {
+		t.Errorf("status while the check fails = %d, want 503", code)
+	}
+
+	// A deactivated account ends the session.
+	state.set(nil, auth.ErrAccountGone)
+	if code, _ := get(t, client, appURL+"/api/groups"); code != http.StatusUnauthorized {
+		t.Errorf("status after deactivation = %d, want 401", code)
+	}
+	state.set([]string{"users"}, nil)
+	if code, _ := get(t, client, appURL+"/api/groups"); code != http.StatusUnauthorized {
+		t.Errorf("status after reactivation = %d, want 401 until the next login", code)
+	}
+}
+
+func TestRequire_checksAccountEveryInterval(t *testing.T) {
+	t.Parallel()
+	state := &accountState{groups: []string{"users"}}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"users"}), func(cfg *auth.Config) {
+		cfg.CheckAccount = state.check
+		cfg.CheckInterval = time.Hour
+	})
+	if code, _ := get(t, client, appURL+"/auth/login"); code != http.StatusNotFound {
+		t.Fatalf("login flow ended with %d, want 404 from /", code)
+	}
+	for range 3 {
+		if code, _ := get(t, client, appURL+"/api/ping"); code != http.StatusOK {
+			t.Fatalf("ping = %d, want 200", code)
+		}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.calls != 0 {
+		t.Errorf("account checked %d times within the interval after login, want 0", state.calls)
 	}
 }

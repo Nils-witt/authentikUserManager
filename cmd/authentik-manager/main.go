@@ -150,6 +150,7 @@ func run(logger *slog.Logger) error {
 		RedirectURL:  cfg.OIDCRedirectURL,
 		SessionTTL:   cfg.SessionLifetime,
 		IdleTimeout:  cfg.SessionIdleTimeout,
+		CheckAccount: accountChecker(client),
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("setting up oidc login: %w", err)
@@ -224,6 +225,27 @@ func serve(ctx context.Context, srv *http.Server, logger *slog.Logger) error {
 		return fmt.Errorf("shutting down http server: %w", err)
 	}
 	return nil
+}
+
+// accountChecker returns the auth.AccountChecker reading the groups of
+// signed-in users from authentik. Sessions are matched to accounts by
+// username, so a session ends when its user is renamed, deleted or deactivated.
+func accountChecker(client *authentik.Client) auth.AccountChecker {
+	return func(ctx context.Context, u auth.User) ([]string, error) {
+		if u.Username == "" {
+			return nil, auth.ErrAccountGone
+		}
+		list, err := client.ListUsers(ctx, authentik.ListUsersParams{Username: u.Username, PageSize: 1})
+		if err != nil {
+			return nil, fmt.Errorf("looking up user %q: %w", u.Username, err)
+		}
+		for _, account := range list.Results {
+			if account.Username == u.Username && account.IsActive {
+				return account.GroupNames(), nil
+			}
+		}
+		return nil, auth.ErrAccountGone
+	}
 }
 
 // newNotifier returns the notifier storing notifications in db and emailing

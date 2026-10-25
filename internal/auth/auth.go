@@ -21,6 +21,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -53,7 +54,24 @@ type Config struct {
 	// IdleTimeout ends sessions that were not used for this long, by default
 	// DefaultIdleTimeout. It is at most SessionTTL.
 	IdleTimeout time.Duration
+	// CheckAccount, when set, reads the current state of a signed-in user's
+	// account, so that changes to it apply during the session instead of at
+	// the next login. Require calls it at most every CheckInterval per session.
+	CheckAccount AccountChecker
+	// CheckInterval defaults to DefaultCheckInterval.
+	CheckInterval time.Duration
 }
+
+// AccountChecker returns the current groups of the account of u, or
+// ErrAccountGone when it was deleted or deactivated.
+type AccountChecker func(ctx context.Context, u User) (groups []string, err error)
+
+// ErrAccountGone is returned by an AccountChecker when the account of a
+// signed-in user was deleted or deactivated; its sessions end.
+var ErrAccountGone = errors.New("auth: account deleted or deactivated")
+
+// DefaultCheckInterval is the default of Config.CheckInterval.
+const DefaultCheckInterval = 5 * time.Minute
 
 // Defaults of Config.SessionTTL and Config.IdleTimeout.
 const (
@@ -81,6 +99,11 @@ type Authenticator struct {
 	httpClient     *http.Client
 	logger         *slog.Logger
 	mux            *http.ServeMux
+	// checkAccount, when set, refreshes the groups of sessions every checkInterval.
+	checkAccount  AccountChecker
+	checkInterval time.Duration
+	// checks merges the concurrent checks of one session.
+	checks singleflight.Group
 }
 
 // New discovers the provider's configuration. ctx must outlive the
@@ -97,6 +120,9 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 		cfg.IdleTimeout = DefaultIdleTimeout
 	}
 	cfg.IdleTimeout = min(cfg.IdleTimeout, cfg.SessionTTL)
+	if cfg.CheckInterval <= 0 {
+		cfg.CheckInterval = DefaultCheckInterval
+	}
 
 	httpClient := &http.Client{Timeout: httpTimeout}
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, httpClient), cfg.IssuerURL)
@@ -136,6 +162,8 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 		httpClient:     httpClient,
 		logger:         logger,
 		mux:            http.NewServeMux(),
+		checkAccount:   cfg.CheckAccount,
+		checkInterval:  cfg.CheckInterval,
 	}
 	a.mux.HandleFunc("GET /auth/login", a.login)
 	a.mux.HandleFunc("GET /auth/callback", a.callback)
@@ -166,9 +194,23 @@ func (a *Authenticator) Run(ctx context.Context, interval time.Duration) {
 // Require rejects requests without a valid session with 401 and otherwise
 // stores the User in the request context (see UserFromContext). Requests
 // with BackgroundHeader do not restart the session's idle timeout.
+//
+// With Config.CheckAccount, the user's groups are read again when they are
+// older than the check interval, and the session ends when the account was
+// deleted or deactivated. If the check fails, the request fails with 503
+// rather than going on with permissions that may have been withdrawn.
 func (a *Authenticator) Require(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sess, ok := a.currentSession(r, r.Header.Get(BackgroundHeader) == "")
+		id, sess, ok := a.currentSession(r, r.Header.Get(BackgroundHeader) == "")
+		if ok && a.checkAccount != nil && !a.sessions.now().Before(sess.checkedAt.Add(a.checkInterval)) {
+			var err error
+			sess, ok, err = a.check(r.Context(), id)
+			if err != nil {
+				a.logger.ErrorContext(r.Context(), "checking account", slog.String("username", sess.user.Username), slog.Any("error", err))
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "your account could not be checked"})
+				return
+			}
+		}
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 			return
@@ -177,14 +219,52 @@ func (a *Authenticator) Require(next http.Handler) http.Handler {
 	})
 }
 
-// currentSession returns the session of the request's cookie; touch restarts
-// its idle timeout (see sessionStore.get).
-func (a *Authenticator) currentSession(r *http.Request, touch bool) (session, bool) {
+// check reads the groups of the user of session id again and stores them. It
+// ends the session and returns false when the account is gone. Concurrent
+// checks of one session share one lookup.
+func (a *Authenticator) check(ctx context.Context, id string) (session, bool, error) {
+	v, err, _ := a.checks.Do(id, func() (any, error) {
+		sess, ok := a.sessions.get(id, false)
+		if !ok {
+			return session{}, nil
+		}
+		// The request may be cancelled while others still wait for the result.
+		ctx := context.WithoutCancel(ctx)
+		checkedAt := a.sessions.now()
+		groups, err := a.checkAccount(ctx, sess.user)
+		if errors.Is(err, ErrAccountGone) {
+			a.sessions.delete(id)
+			a.logger.InfoContext(ctx, "session ended: account deleted or deactivated", slog.String("username", sess.user.Username))
+			return session{}, nil
+		}
+		if err != nil {
+			return sess, err
+		}
+		if groups == nil {
+			groups = []string{}
+		}
+		if updated, ok := a.sessions.setGroups(id, groups, checkedAt); ok {
+			return updated, nil
+		}
+		return session{}, nil
+	})
+	sess, _ := v.(session)
+	if err != nil {
+		return sess, false, err
+	}
+	// A zero session means it has ended.
+	return sess, !sess.expiresAt.IsZero(), nil
+}
+
+// currentSession returns the ID and the session of the request's cookie;
+// touch restarts its idle timeout (see sessionStore.get).
+func (a *Authenticator) currentSession(r *http.Request, touch bool) (string, session, bool) {
 	c, err := r.Cookie(a.sessionCookie)
 	if err != nil {
-		return session{}, false
+		return "", session{}, false
 	}
-	return a.sessions.get(c.Value, touch)
+	sess, ok := a.sessions.get(c.Value, touch)
+	return c.Value, sess, ok
 }
 
 // setCookie sets an HttpOnly, SameSite=Lax cookie. maxAge 0 makes a session
@@ -397,7 +477,7 @@ func (a *Authenticator) verifyLogoutToken(ctx context.Context, raw string) (stri
 }
 
 func (a *Authenticator) me(w http.ResponseWriter, r *http.Request) {
-	sess, ok := a.currentSession(r, true)
+	_, sess, ok := a.currentSession(r, true)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return
