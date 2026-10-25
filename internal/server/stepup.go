@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"authentikManager/internal/auth"
@@ -23,9 +24,11 @@ func (s *Server) requireRecentAuth(h http.HandlerFunc) http.HandlerFunc {
 			h(w, r)
 			return
 		}
+		safePath := strings.ReplaceAll(r.URL.Path, "\n", "")
+		safePath = strings.ReplaceAll(safePath, "\r", "")
 		s.logger.InfoContext(r.Context(), "re-authentication required",
 			slog.String("username", u.Username),
-			slog.String("path", r.URL.Path),
+			slog.String("path", safePath),
 			slog.Bool("recent", recent),
 			slog.Bool("mfa", mfa),
 		)
