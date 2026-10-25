@@ -34,6 +34,10 @@ import (
 // maxRequestBytes bounds JSON request bodies.
 const maxRequestBytes = 1 << 20
 
+// strictTransportSecurity is the HSTS header value: browsers use only https
+// for this host and its subdomains for a year.
+const strictTransportSecurity = "max-age=31536000; includeSubDomains"
+
 // cspNoncePlaceholder is written into index.html by Vite (html.cspNonce in
 // frontend/vite.config.ts) and replaced with a fresh nonce on every request.
 const cspNoncePlaceholder = "__CSP_NONCE__"
@@ -239,6 +243,9 @@ type Deps struct {
 	// APIKeys keeps the API keys of service accounts. When nil, API keys and
 	// the service API are disabled.
 	APIKeys APIKeyStore
+	// HTTPS is set when the app is served over https (behind a TLS-terminating
+	// proxy), so responses ask browsers to use only https (HSTS).
+	HTTPS bool
 }
 
 // Server is the HTTP handler for the application.
@@ -266,6 +273,8 @@ type Server struct {
 	apiKeys APIKeyStore
 	// crl caches the signed revocation list.
 	crl crlCache
+	// https adds the Strict-Transport-Security header.
+	https bool
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
@@ -289,6 +298,7 @@ func New(d Deps) *Server {
 		keyDownloads:       d.KeyDownloads,
 		notifications:      d.Notifications,
 		apiKeys:            d.APIKeys,
+		https:              d.HTTPS,
 	}
 
 	api := http.NewServeMux()
@@ -426,6 +436,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Content-Security-Policy", contentSecurityPolicy(""))
+	if s.https {
+		h.Set("Strict-Transport-Security", strictTransportSecurity)
+	}
 
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	s.handler.ServeHTTP(rec, r)

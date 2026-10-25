@@ -58,6 +58,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -191,6 +192,8 @@ func run(logger *slog.Logger) error {
 			KeyDownloads:       keyDownloads,
 			Notifications:      notifier,
 			APIKeys:            db,
+			// The public URL tells whether a TLS-terminating proxy serves the app.
+			HTTPS: strings.HasPrefix(cfg.OIDCRedirectURL, "https://"),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

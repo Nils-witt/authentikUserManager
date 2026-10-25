@@ -1989,3 +1989,27 @@ func TestServer_sendRecoveryEmail_disabled(t *testing.T) {
 		t.Errorf("GET /api/access = %s, want recovery_email false", rec.Body)
 	}
 }
+
+func TestServer_strictTransportSecurity(t *testing.T) {
+	t.Parallel()
+	for _, https := range []bool{false, true} {
+		policy, err := access.NewPolicy([]string{"admins"}, newFakeRules())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := server.New(server.Deps{
+			Users:  &fakeUsers{},
+			Auth:   fakeAuth{groups: []string{"admins"}},
+			Policy: policy,
+			Rules:  newFakeRules(),
+			Audit:  &fakeAudit{},
+			Logger: slog.New(slog.DiscardHandler),
+			HTTPS:  https,
+		})
+		rec := do(t, h, http.MethodGet, "/api/version", "")
+		got := rec.Header().Get("Strict-Transport-Security")
+		if https && !strings.HasPrefix(got, "max-age=31536000") || !https && got != "" {
+			t.Errorf("https = %v: Strict-Transport-Security = %q", https, got)
+		}
+	}
+}

@@ -455,7 +455,7 @@ the frontend, run `make build` again.
 - Sessions live in memory for at most `SESSION_LIFETIME_HOURS` (8 hours by default) and end after `SESSION_IDLE_TIMEOUT_MINUTES` (30 by default) without use. Polling the unread notification count does not count as use. Ended sessions are deleted within a minute. A restart logs everyone out, and you must run a single instance. Signing in again goes through authentik, so limit the session duration of authentik's authentication flow too, or authentik signs the user in again without asking.
 - Cross-origin state-changing requests are rejected (Go's `http.CrossOriginProtection`).
 - Changes to users go to authentik with `AUTHENTIK_TOKEN`, not as the logged-in user. The app logs each change with the operator's username (`actor`).
-- When serving over plain http on something other than localhost, put TLS in front of the app (reverse proxy).
+- The app speaks plain http, so it must be served through a TLS-terminating reverse proxy (e.g. Caddy, Traefik or nginx); keep the app's port off the network. `compose.yaml` publishes it on `127.0.0.1` only (`EXPOSE_ADDR`, `EXPOSE_PORT`). When `OIDC_REDIRECT_URL` is an https URL, every response carries `Strict-Transport-Security: max-age=31536000; includeSubDomains`, so browsers use only https for the host and its subdomains for a year.
 
 ## API
 
