@@ -2013,3 +2013,24 @@ func TestServer_strictTransportSecurity(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_cacheControl(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		target string
+		want   string
+	}{
+		{target: "/api/users", want: "no-store"},
+		{target: "/api/version", want: "no-store"},
+		{target: "/api/unknown", want: "no-store"},
+		{target: "/service-api/v1/certificates", want: "no-store"},
+		{target: "/healthz", want: ""},
+	}
+	h := newServer(t, &fakeUsers{})
+	for _, tt := range tests {
+		rec := do(t, h, http.MethodGet, tt.target, "")
+		if got := rec.Header().Get("Cache-Control"); got != tt.want {
+			t.Errorf("GET %s: Cache-Control = %q, want %q", tt.target, got, tt.want)
+		}
+	}
+}

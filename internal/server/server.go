@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"uuid"
@@ -438,6 +439,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Security-Policy", contentSecurityPolicy(""))
 	if s.https {
 		h.Set("Strict-Transport-Security", strictTransportSecurity)
+	}
+	// API responses hold personal data and secrets, which neither browsers nor
+	// proxies may store. The CRLs and CA chains under /pki/ stay cacheable.
+	if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/service-api/") {
+		h.Set("Cache-Control", "no-store")
 	}
 
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
