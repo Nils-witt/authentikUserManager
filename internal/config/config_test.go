@@ -226,3 +226,48 @@ func TestFromEnv_smtp(t *testing.T) {
 		})
 	}
 }
+
+func TestFromEnv_sessions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		env          map[string]string
+		wantErr      bool
+		wantLifetime time.Duration
+		wantIdle     time.Duration
+	}{
+		{name: "defaults", env: validEnv(nil), wantLifetime: 8 * time.Hour, wantIdle: 30 * time.Minute},
+		{
+			name:         "custom",
+			env:          validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "12", "SESSION_IDLE_TIMEOUT_MINUTES": " 15 "}),
+			wantLifetime: 12 * time.Hour,
+			wantIdle:     15 * time.Minute,
+		},
+		{
+			name:         "idle timeout capped by lifetime",
+			env:          validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "1", "SESSION_IDLE_TIMEOUT_MINUTES": "120"}),
+			wantLifetime: time.Hour,
+			wantIdle:     time.Hour,
+		},
+		{name: "zero lifetime", env: validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "0"}), wantErr: true},
+		{name: "lifetime too long", env: validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "169"}), wantErr: true},
+		{name: "idle timeout not a number", env: validEnv(map[string]string{"SESSION_IDLE_TIMEOUT_MINUTES": "1h"}), wantErr: true},
+		{name: "idle timeout too long", env: validEnv(map[string]string{"SESSION_IDLE_TIMEOUT_MINUTES": "1441"}), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.FromEnv(func(k string) string { return tt.env[k] })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FromEnv error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if cfg.SessionLifetime != tt.wantLifetime || cfg.SessionIdleTimeout != tt.wantIdle {
+				t.Errorf("SessionLifetime = %v, SessionIdleTimeout = %v, want %v and %v",
+					cfg.SessionLifetime, cfg.SessionIdleTimeout, tt.wantLifetime, tt.wantIdle)
+			}
+		})
+	}
+}

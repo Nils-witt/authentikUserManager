@@ -33,6 +33,11 @@ type Config struct {
 	OIDCClientSecret string
 	// OIDCRedirectURL is this app's public callback URL, ending in /auth/callback.
 	OIDCRedirectURL string
+	// SessionLifetime is the maximum lifetime of a login session.
+	SessionLifetime time.Duration
+	// SessionIdleTimeout ends sessions that were not used for this long. It is
+	// at most SessionLifetime.
+	SessionIdleTimeout time.Duration
 
 	// DatabaseURL is the PostgreSQL connection URL that stores the access rules
 	// and the audit log.
@@ -100,6 +105,14 @@ var defaultSMTPPorts = map[string]int{"starttls": 587, "tls": 465, "none": 25}
 // caEncryptionKeyLen is the length of the decoded CA_ENCRYPTION_KEY (AES-256).
 const caEncryptionKeyLen = 32
 
+// Bounds and defaults of SESSION_LIFETIME_HOURS and SESSION_IDLE_TIMEOUT_MINUTES.
+const (
+	defaultSessionLifetimeHours   = 8
+	maxSessionLifetimeHours       = 7 * 24
+	defaultSessionIdleTimeoutMins = 30
+	maxSessionIdleTimeoutMins     = 24 * 60
+)
+
 // Bounds and default of CERT_CRL_VALIDITY_DAYS.
 const (
 	defaultCRLValidityDays = 30
@@ -165,6 +178,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.AuditRetention = retention
+	errs = append(errs, cfg.parseSessions(getenv("SESSION_LIFETIME_HOURS"), getenv("SESSION_IDLE_TIMEOUT_MINUTES"))...)
 	errs = append(errs, cfg.parseCertificates(getenv("CA_ENCRYPTION_KEY"), getenv("CERT_VALIDITY_DAYS"), getenv("CERT_CRL_VALIDITY_DAYS"))...)
 	errs = append(errs, cfg.parseSMTP(getenv("SMTP_PORT"))...)
 	if cfg.StaticDir != "" {
@@ -181,6 +195,23 @@ func FromEnv(getenv func(string) string) (Config, error) {
 // parseRetention parses AUDIT_RETENTION_DAYS; empty means zero, keeping entries forever.
 func parseRetention(v string) (time.Duration, error) {
 	return parseDays("AUDIT_RETENTION_DAYS", v, 0, maxAuditRetentionDays)
+}
+
+// parseSessions sets SessionLifetime from lifetimeHours (SESSION_LIFETIME_HOURS)
+// and SessionIdleTimeout from idleMinutes (SESSION_IDLE_TIMEOUT_MINUTES).
+func (cfg *Config) parseSessions(lifetimeHours, idleMinutes string) []error {
+	var errs []error
+	hours, err := parseCount("SESSION_LIFETIME_HOURS", "hours", lifetimeHours, defaultSessionLifetimeHours, maxSessionLifetimeHours)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.SessionLifetime = time.Duration(hours) * time.Hour
+	minutes, err := parseCount("SESSION_IDLE_TIMEOUT_MINUTES", "minutes", idleMinutes, defaultSessionIdleTimeoutMins, maxSessionIdleTimeoutMins)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.SessionIdleTimeout = min(time.Duration(minutes)*time.Minute, cfg.SessionLifetime)
+	return errs
 }
 
 // parseCertificates sets CAEncryptionKey from encryptionKey
@@ -255,15 +286,24 @@ func (cfg *Config) parseSMTP(port string) []error {
 // parseDays parses the number of days in the variable name, between 1 and
 // maxDays; empty means defaultDays.
 func parseDays(name, v string, defaultDays, maxDays int) (time.Duration, error) {
-	days := defaultDays
-	if v = strings.TrimSpace(v); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > maxDays {
-			return 0, fmt.Errorf("%s must be a number of days between 1 and %d", name, maxDays)
-		}
-		days = n
+	days, err := parseCount(name, "days", v, defaultDays, maxDays)
+	if err != nil {
+		return 0, err
 	}
 	return time.Duration(days) * 24 * time.Hour, nil
+}
+
+// parseCount parses the number of units in the variable name, between 1 and
+// maxCount; empty means defaultCount.
+func parseCount(name, unit, v string, defaultCount, maxCount int) (int, error) {
+	if v = strings.TrimSpace(v); v == "" {
+		return defaultCount, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > maxCount {
+		return 0, fmt.Errorf("%s must be a number of %s between 1 and %d", name, unit, maxCount)
+	}
+	return n, nil
 }
 
 // splitList splits a comma-separated value, dropping empty entries.

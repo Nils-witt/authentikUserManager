@@ -404,22 +404,43 @@ export function redirectToLogin(): never {
   throw new ApiError(401, 'Redirecting to login…')
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await send(method, path, body)
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  options: SendOptions = {},
+): Promise<T> {
+  const res = await send(method, path, body, options)
   if (res.status === 204) {
     return undefined as T
   }
   return (await res.json()) as T
 }
 
+interface SendOptions {
+  /**
+   * The request is sent without the user doing anything, e.g. polling. It does not keep an idle
+   * session alive, and when the session has ended it fails instead of redirecting to the login.
+   */
+  background?: boolean
+}
+
 /** Sends a request and throws an ApiError unless it succeeded. */
-async function send(method: string, path: string, body?: unknown): Promise<Response> {
+async function send(
+  method: string,
+  path: string,
+  body?: unknown,
+  { background = false }: SendOptions = {},
+): Promise<Response> {
+  const headers: Record<string, string> = {}
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (background) headers['X-Background-Request'] = '1'
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (res.status === 401) {
+  if (res.status === 401 && !background) {
     // Session missing or expired.
     redirectToLogin()
   }
@@ -857,8 +878,11 @@ export function listNotifications(params: { before?: number } = {}) {
 }
 
 /** Counts the signed-in user's unread notifications. */
-export const countUnreadNotifications = () =>
-  request<{ unread: number }>('GET', '/api/notifications/unread-count').then((res) => res.unread)
+/** Counts the unread notifications; `background` marks polling (see SendOptions). */
+export const countUnreadNotifications = (background = false) =>
+  request<{ unread: number }>('GET', '/api/notifications/unread-count', undefined, {
+    background,
+  }).then((res) => res.unread)
 
 export const markNotificationRead = (id: number) =>
   request<void>('POST', `/api/notifications/${id}/read`)

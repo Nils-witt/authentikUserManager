@@ -16,9 +16,10 @@ export function useNotificationCount(version: number) {
 
   useEffect(() => {
     let cancelled = false
-    const load = () => {
+    // Polling is a background request, so it does not keep an idle session alive.
+    const load = (background: boolean) => {
       api
-        .countUnreadNotifications()
+        .countUnreadNotifications(background)
         .then((unread) => {
           if (cancelled) return
           setCount(unread)
@@ -32,13 +33,14 @@ export function useNotificationCount(version: number) {
           }
         })
     }
-    load()
-    const id = setInterval(load, POLL_INTERVAL_MS)
-    window.addEventListener('focus', load)
+    const loadNow = () => load(false)
+    load(false)
+    const id = setInterval(() => load(true), POLL_INTERVAL_MS)
+    window.addEventListener('focus', loadNow)
     return () => {
       cancelled = true
       clearInterval(id)
-      window.removeEventListener('focus', load)
+      window.removeEventListener('focus', loadNow)
     }
   }, [version])
 

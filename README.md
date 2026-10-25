@@ -30,6 +30,8 @@ Set these environment variables (see `.env.example`):
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
 | `OIDC_REDIRECT_URL`  | yes   |                  | Public callback URL of this app, ending in `/auth/callback` |
+| `SESSION_LIFETIME_HOURS` | no |  `8`             | Maximum lifetime of a login session (at most 168) |
+| `SESSION_IDLE_TIMEOUT_MINUTES` | no | `30`       | Ends sessions that were not used for this long (at most 1440, and never longer than the lifetime) |
 | `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, the join requests and the audit log, e.g. `postgres://am:secret@db:5432/am` |
 | `AUDIT_RETENTION_DAYS` | no |                | Days to keep [audit log](#audit-log) entries; kept forever when unset |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
@@ -448,7 +450,7 @@ the frontend, run `make build` again.
 - Every `/api/` route requires a login. The [service API](#service-api) requires the API key of an active service account instead and reads no cookies. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Any authentik user may log in; operators without an access rule see and manage no users.
 - The browser only holds an opaque session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` with a `__Host-` prefix when served over https). ID and access tokens never reach the browser.
 - Logging out of authentik also ends the app's sessions when the provider's **Back-Channel Logout URI** is set to `https://<app-host>/auth/backchannel-logout`. The app only accepts logout tokens signed by the provider for this client ID. It checks that the token is recent, carries the back-channel logout event and has no nonce. It ends the session with the token's `sid`. If the token or the session has no `sid`, it ends all sessions of the token's `sub`.
-- Sessions live in memory for 8 hours. A restart logs everyone out, and you must run a single instance.
+- Sessions live in memory for at most `SESSION_LIFETIME_HOURS` (8 hours by default) and end after `SESSION_IDLE_TIMEOUT_MINUTES` (30 by default) without use. Polling the unread notification count does not count as use. Ended sessions are deleted within a minute. A restart logs everyone out, and you must run a single instance. Signing in again goes through authentik, so limit the session duration of authentik's authentication flow too, or authentik signs the user in again without asking.
 - Cross-origin state-changing requests are rejected (Go's `http.CrossOriginProtection`).
 - Changes to users go to authentik with `AUTHENTIK_TOKEN`, not as the logged-in user. The app logs each change with the operator's username (`actor`).
 - When serving over plain http on something other than localhost, put TLS in front of the app (reverse proxy).

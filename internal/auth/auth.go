@@ -48,8 +48,26 @@ type Config struct {
 	ClientSecret string
 	// RedirectURL is this app's callback URL, ending in /auth/callback.
 	RedirectURL string
-	SessionTTL  time.Duration
+	// SessionTTL is the maximum lifetime of a session, by default DefaultSessionTTL.
+	SessionTTL time.Duration
+	// IdleTimeout ends sessions that were not used for this long, by default
+	// DefaultIdleTimeout. It is at most SessionTTL.
+	IdleTimeout time.Duration
 }
+
+// Defaults of Config.SessionTTL and Config.IdleTimeout.
+const (
+	DefaultSessionTTL  = 8 * time.Hour
+	DefaultIdleTimeout = 30 * time.Minute
+)
+
+// BackgroundHeader marks a request the browser sends without the user doing
+// anything, such as polling. It does not count as use of the session, so it
+// does not keep an idle session alive.
+const BackgroundHeader = "X-Background-Request"
+
+// PruneInterval is how often Run deletes the sessions that have ended.
+const PruneInterval = time.Minute
 
 // Authenticator serves the /auth/ endpoints and guards other handlers.
 type Authenticator struct {
@@ -73,8 +91,12 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 		return nil, fmt.Errorf("auth: redirect url %q must be absolute", cfg.RedirectURL)
 	}
 	if cfg.SessionTTL <= 0 {
-		cfg.SessionTTL = 8 * time.Hour
+		cfg.SessionTTL = DefaultSessionTTL
 	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = DefaultIdleTimeout
+	}
+	cfg.IdleTimeout = min(cfg.IdleTimeout, cfg.SessionTTL)
 
 	httpClient := &http.Client{Timeout: httpTimeout}
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, httpClient), cfg.IssuerURL)
@@ -108,7 +130,7 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 		// checked in backchannelLogout instead.
 		logoutVerifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID, SkipExpiryCheck: true}),
 		endSessionURL:  meta.EndSessionEndpoint,
-		sessions:       newSessionStore(cfg.SessionTTL),
+		sessions:       newSessionStore(cfg.SessionTTL, cfg.IdleTimeout),
 		secure:         secure,
 		sessionCookie:  sessionCookie,
 		httpClient:     httpClient,
@@ -126,11 +148,27 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Authenticator, 
 // Handler serves the /auth/ endpoints.
 func (a *Authenticator) Handler() http.Handler { return a.mux }
 
+// Run deletes the sessions that have ended every interval until ctx is done,
+// so their data does not stay in memory until the next login.
+func (a *Authenticator) Run(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.sessions.prune()
+		}
+	}
+}
+
 // Require rejects requests without a valid session with 401 and otherwise
-// stores the User in the request context (see UserFromContext).
+// stores the User in the request context (see UserFromContext). Requests
+// with BackgroundHeader do not restart the session's idle timeout.
 func (a *Authenticator) Require(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sess, ok := a.currentSession(r)
+		sess, ok := a.currentSession(r, r.Header.Get(BackgroundHeader) == "")
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 			return
@@ -139,12 +177,14 @@ func (a *Authenticator) Require(next http.Handler) http.Handler {
 	})
 }
 
-func (a *Authenticator) currentSession(r *http.Request) (session, bool) {
+// currentSession returns the session of the request's cookie; touch restarts
+// its idle timeout (see sessionStore.get).
+func (a *Authenticator) currentSession(r *http.Request, touch bool) (session, bool) {
 	c, err := r.Cookie(a.sessionCookie)
 	if err != nil {
 		return session{}, false
 	}
-	return a.sessions.get(c.Value)
+	return a.sessions.get(c.Value, touch)
 }
 
 // setCookie sets an HttpOnly, SameSite=Lax cookie. maxAge 0 makes a session
@@ -357,7 +397,7 @@ func (a *Authenticator) verifyLogoutToken(ctx context.Context, raw string) (stri
 }
 
 func (a *Authenticator) me(w http.ResponseWriter, r *http.Request) {
-	sess, ok := a.currentSession(r)
+	sess, ok := a.currentSession(r, true)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 		return

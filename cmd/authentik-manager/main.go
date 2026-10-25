@@ -14,6 +14,8 @@
 //	OIDC_CLIENT_ID       OIDC client ID (required)
 //	OIDC_CLIENT_SECRET   OIDC client secret (required)
 //	OIDC_REDIRECT_URL    public callback URL, ending in /auth/callback (required)
+//	SESSION_LIFETIME_HOURS        maximum lifetime of a login session (default 8)
+//	SESSION_IDLE_TIMEOUT_MINUTES  ends sessions unused for this long (default 30)
 //
 //	DATABASE_URL         PostgreSQL URL storing the access rules and the audit log (required)
 //	AUDIT_RETENTION_DAYS days to keep audit log entries; they are kept forever when unset (optional)
@@ -146,10 +148,18 @@ func run(logger *slog.Logger) error {
 		ClientID:     cfg.OIDCClientID,
 		ClientSecret: cfg.OIDCClientSecret,
 		RedirectURL:  cfg.OIDCRedirectURL,
+		SessionTTL:   cfg.SessionLifetime,
+		IdleTimeout:  cfg.SessionIdleTimeout,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("setting up oidc login: %w", err)
 	}
+	// Deferred after db.Close like the audit pruning; it stops with the server.
+	sessionCtx, stopSessions := context.WithCancel(ctx)
+	var sessionPruning sync.WaitGroup
+	defer sessionPruning.Wait()
+	defer stopSessions()
+	sessionPruning.Go(func() { authn.Run(sessionCtx, auth.PruneInterval) })
 
 	var static fs.FS
 	if cfg.StaticDir != "" {
