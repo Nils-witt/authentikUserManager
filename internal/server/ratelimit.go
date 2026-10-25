@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"authentikManager/internal/ratelimit"
@@ -52,10 +53,12 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, l *ratelimit.Limi
 	if ok {
 		return true
 	}
+	safePath := strings.ReplaceAll(r.URL.Path, "\n", "")
+	safePath = strings.ReplaceAll(safePath, "\r", "")
 	s.logger.WarnContext(r.Context(), "rate limit exceeded",
 		slog.String("limit", kind),
 		slog.String("key", key),
-		slog.String("path", r.URL.Path),
+		slog.String("path", safePath),
 	)
 	w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
 	writeError(w, http.StatusTooManyRequests, "too many requests; try again later", nil)
