@@ -700,9 +700,14 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, r *http.Request, err 
 }
 
 // truncate returns s cut to at most n bytes, for untrusted values in logs.
+// It also strips control characters that could forge multi-line log entries.
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+	if len(s) > n {
+		s = strings.ToValidUTF8(s[:n], "")
+	} else {
+		s = strings.ToValidUTF8(s, "")
 	}
-	return strings.ToValidUTF8(s[:n], "")
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	return s
 }
