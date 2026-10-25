@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"uuid"
@@ -26,13 +27,19 @@ import (
 	"authentikManager/internal/authority"
 	"authentikManager/internal/buildinfo"
 	"authentikManager/internal/certificate"
+	"authentikManager/internal/clientip"
 	"authentikManager/internal/joinrequest"
 	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
+	"authentikManager/internal/reqlog"
 )
 
 // maxRequestBytes bounds JSON request bodies.
 const maxRequestBytes = 1 << 20
+
+// strictTransportSecurity is the HSTS header value: browsers use only https
+// for this host and its subdomains for a year.
+const strictTransportSecurity = "max-age=31536000; includeSubDomains"
 
 // cspNoncePlaceholder is written into index.html by Vite (html.cspNonce in
 // frontend/vite.config.ts) and replaced with a fresh nonce on every request.
@@ -239,6 +246,18 @@ type Deps struct {
 	// APIKeys keeps the API keys of service accounts. When nil, API keys and
 	// the service API are disabled.
 	APIKeys APIKeyStore
+	// HTTPS is set when the app is served over https (behind a TLS-terminating
+	// proxy), so responses ask browsers to use only https (HSTS).
+	HTTPS bool
+	// ClientIP returns the IP address of the client of a request, for rate
+	// limits and logs. When nil, it is the address of the peer.
+	ClientIP func(*http.Request) string
+	// ReauthMaxAge, when positive, is how long ago operators may have
+	// authenticated at authentik to make critical changes; see requireRecentAuth.
+	ReauthMaxAge time.Duration
+	// RequireMFA restricts critical changes to operators who authenticated
+	// with more than one factor.
+	RequireMFA bool
 }
 
 // Server is the HTTP handler for the application.
@@ -266,6 +285,15 @@ type Server struct {
 	apiKeys APIKeyStore
 	// crl caches the signed revocation list.
 	crl crlCache
+	// https adds the Strict-Transport-Security header.
+	https bool
+	// clientIP returns the IP address of a request's client.
+	clientIP func(*http.Request) string
+	// limits are the rate limits; see ratelimit.go.
+	limits limiters
+	// reauthMaxAge and requireMFA guard critical changes; see requireRecentAuth.
+	reauthMaxAge time.Duration
+	requireMFA   bool
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
@@ -289,13 +317,22 @@ func New(d Deps) *Server {
 		keyDownloads:       d.KeyDownloads,
 		notifications:      d.Notifications,
 		apiKeys:            d.APIKeys,
+		https:              d.HTTPS,
+		clientIP:           d.ClientIP,
+		limits:             newLimiters(time.Now),
+		reauthMaxAge:       d.ReauthMaxAge,
+		requireMFA:         d.RequireMFA,
+	}
+	if s.clientIP == nil {
+		s.clientIP = clientip.Resolver{}.IP
 	}
 
+	// Critical changes require a recent login; see requireRecentAuth.
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/access", s.getAccess)
 	api.Handle("GET /api/access/rules", s.requireAdmin(s.listRules))
-	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.putRule))
-	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.deleteRule))
+	api.Handle("PUT /api/access/rules/{group}", s.requireAdmin(s.requireRecentAuth(s.putRule)))
+	api.Handle("DELETE /api/access/rules/{group}", s.requireAdmin(s.requireRecentAuth(s.deleteRule)))
 	api.Handle("GET /api/groups", s.requireAdmin(s.listGroups))
 	api.Handle("POST /api/groups", s.requireAdmin(s.createGroup))
 	// Every signed-in user may list the visible groups, their own groups and
@@ -323,9 +360,9 @@ func New(d Deps) *Server {
 	api.HandleFunc("GET /api/users/paths", s.listAccountPaths(userAccounts))
 	api.HandleFunc("GET /api/users/{id}", s.getAccount(userAccounts))
 	api.HandleFunc("PATCH /api/users/{id}", s.updateAccount(userAccounts))
-	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.deleteAccount(userAccounts)))
+	api.Handle("DELETE /api/users/{id}", s.requireAdmin(s.requireRecentAuth(s.deleteAccount(userAccounts))))
 	api.HandleFunc("PUT /api/users/{id}/groups", s.setAccountGroups(userAccounts))
-	api.HandleFunc("POST /api/users/{id}/recovery-email", s.sendRecoveryEmail)
+	api.HandleFunc("POST /api/users/{id}/recovery-email", s.requireRecentAuth(s.sendRecoveryEmail))
 	// Operators who may see a user may list the applications the user may access.
 	api.HandleFunc("GET /api/users/{id}/applications", s.listUserApplications)
 	// Service accounts follow the access rules of users; see serviceaccounts.go.
@@ -334,14 +371,14 @@ func New(d Deps) *Server {
 	api.HandleFunc("GET /api/service-accounts/paths", s.listAccountPaths(serviceAccounts))
 	api.HandleFunc("GET /api/service-accounts/{id}", s.getAccount(serviceAccounts))
 	api.HandleFunc("PATCH /api/service-accounts/{id}", s.updateAccount(serviceAccounts))
-	api.Handle("DELETE /api/service-accounts/{id}", s.requireAdmin(s.deleteAccount(serviceAccounts)))
+	api.Handle("DELETE /api/service-accounts/{id}", s.requireAdmin(s.requireRecentAuth(s.deleteAccount(serviceAccounts))))
 	api.HandleFunc("PUT /api/service-accounts/{id}/groups", s.setAccountGroups(serviceAccounts))
 	api.HandleFunc("GET /api/service-accounts/{id}/tokens", s.listServiceAccountTokens)
-	api.HandleFunc("POST /api/service-accounts/{id}/tokens", s.createServiceAccountToken)
+	api.HandleFunc("POST /api/service-accounts/{id}/tokens", s.requireRecentAuth(s.createServiceAccountToken))
 	api.HandleFunc("DELETE /api/service-accounts/{id}/tokens/{identifier}", s.deleteServiceAccountToken)
 	// The same operators manage the API keys of the service API; see apikeys.go.
 	api.Handle("GET /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.listAPIKeys))
-	api.Handle("POST /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.createAPIKey))
+	api.Handle("POST /api/service-accounts/{id}/api-keys", s.requireAPIKeys(s.requireRecentAuth(s.createAPIKey)))
 	api.Handle("DELETE /api/service-accounts/{id}/api-keys/{keyID}", s.requireAPIKeys(s.deleteAPIKey))
 	// Users issue certificates for their own account only and download the
 	// generated key once; see certificates.go. Operators who may change a
@@ -365,16 +402,16 @@ func New(d Deps) *Server {
 	api.Handle("GET /api/certificates/{serial}/pem", s.requireCertificates(s.requireAdmin(s.downloadCertificate).ServeHTTP))
 	api.Handle("POST /api/certificates/{serial}/revoke", s.requireCertificates(s.requireAdmin(s.revokeAnyCertificate).ServeHTTP))
 	// Access administrators may import certificates the CA signed elsewhere, so they can be revoked.
-	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.importCertificates).ServeHTTP))
+	api.Handle("POST /api/certificates/import", s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.importCertificates)).ServeHTTP))
 	// They may assign an imported certificate to its account once the account exists.
 	api.Handle("POST /api/certificates/{serial}/assign", s.requireCertificates(s.requireAdmin(s.assignCertificate).ServeHTTP))
 	// Every signed-in user may view the certificate authorities; access
 	// administrators manage them. See authorities.go.
 	api.Handle("GET /api/certificate-authorities", s.requireCertificates(s.listAuthorities))
-	api.Handle("POST /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.createAuthority).ServeHTTP))
-	api.Handle("PUT /api/certificate-authorities/{id}", s.requireCertificates(s.requireAdmin(s.updateAuthority).ServeHTTP))
+	api.Handle("POST /api/certificate-authorities", s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.createAuthority)).ServeHTTP))
+	api.Handle("PUT /api/certificate-authorities/{id}", s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.updateAuthority)).ServeHTTP))
 	api.Handle("POST /api/certificate-authorities/{id}/default",
-		s.requireCertificates(s.requireAdmin(s.setDefaultAuthority).ServeHTTP))
+		s.requireCertificates(s.requireAdmin(s.requireRecentAuth(s.setDefaultAuthority)).ServeHTTP))
 	// Every signed-in internal user reads their own notifications and chooses
 	// which ones they receive; see notifications.go.
 	api.Handle("GET /api/notifications", s.requireNotifications(s.listNotifications))
@@ -394,7 +431,7 @@ func New(d Deps) *Server {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.Handle("/auth/", d.Auth.Handler())
+	mux.Handle("/auth/", s.limitLogins(d.Auth.Handler()))
 	// The CRL and the chain of each CA are public, for relying parties. The
 	// unnamed URLs serve the CA imported from CA_CERT_FILE, whose certificates
 	// may embed them.
@@ -405,10 +442,11 @@ func New(d Deps) *Server {
 	mux.Handle("GET /pki/{ca}/crl", s.requireCertificates(s.getCRL))
 	mux.Handle("GET /pki/{ca}/crl.pem", s.requireCertificates(s.getCRLPEM))
 	mux.Handle("GET /pki/{ca}/ca.pem", s.requireCertificates(s.getCAChain))
-	mux.Handle("/api/", d.Auth.Require(api))
+	mux.Handle("/api/", d.Auth.Require(noteUser(s.limitByUser(s.limits.api, "api", api))))
 	// Service accounts authenticate to the service API with an API key
-	// instead of a session; see serviceapi.go.
-	mux.Handle("/service-api/", s.serviceAPI())
+	// instead of a session; see serviceapi.go. Requests are limited before
+	// the key is checked, so guessing keys is limited too.
+	mux.Handle("/service-api/", s.limitByIP(s.limits.serviceAPI, "service-api", s.serviceAPI()))
 	if d.Static != nil {
 		mux.Handle("/", s.spaHandler(d.Static))
 	}
@@ -418,14 +456,49 @@ func New(d Deps) *Server {
 	return s
 }
 
+// requestInfo collects what the request log names once the request is handled.
+type requestInfo struct {
+	// user is the signed-in user or the service account of the API key, set
+	// by noteUser once authenticated.
+	user string
+}
+
+type requestInfoKey struct{}
+
+// noteUser names the authenticated user of the request in the request log.
+// It must run after authentication.
+func noteUser(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if info, ok := r.Context().Value(requestInfoKey{}).(*requestInfo); ok {
+			info.user = actorName(r)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // ServeHTTP adds security headers and request logging around the router.
+// Each request gets an ID, returned as X-Request-ID and added to every log
+// record written for it (see reqlog).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	requestID := rand.Text()[:16]
+	info := &requestInfo{}
+	ctx := reqlog.WithRequestID(r.Context(), requestID)
+	r = r.WithContext(context.WithValue(ctx, requestInfoKey{}, info))
 	h := w.Header()
+	h.Set("X-Request-ID", requestID)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Content-Security-Policy", contentSecurityPolicy(""))
+	if s.https {
+		h.Set("Strict-Transport-Security", strictTransportSecurity)
+	}
+	// API responses hold personal data and secrets, which neither browsers nor
+	// proxies may store. The CRLs and CA chains under /pki/ stay cacheable.
+	if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/service-api/") {
+		h.Set("Cache-Control", "no-store")
+	}
 
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	s.handler.ServeHTTP(rec, r)
@@ -435,6 +508,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.String("path", r.URL.Path),
 		slog.Int("status", rec.status),
 		slog.Duration("duration", time.Since(start)),
+		slog.String("client_ip", s.clientIP(r)),
+		slog.String("user", info.user),
+		slog.String("user_agent", truncate(r.UserAgent(), 256)),
 	)
 }
 
@@ -581,6 +657,9 @@ func OpenStatic(dir string) (fs.FS, error) {
 type errorBody struct {
 	Error  string              `json:"error"`
 	Fields map[string][]string `json:"fields,omitempty"`
+	// Reauthenticate is set when the operator must sign in again before
+	// repeating the request; see requireRecentAuth.
+	Reauthenticate bool `json:"reauthenticate,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -618,4 +697,17 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, r *http.Request, err 
 		slog.Any("error", err),
 	)
 	writeError(w, http.StatusBadGateway, "authentik request failed", nil)
+}
+
+// truncate returns s cut to at most n bytes, for untrusted values in logs.
+// It also strips control characters that could forge multi-line log entries.
+func truncate(s string, n int) string {
+	if len(s) > n {
+		s = strings.ToValidUTF8(s[:n], "")
+	} else {
+		s = strings.ToValidUTF8(s, "")
+	}
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	return s
 }

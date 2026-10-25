@@ -19,8 +19,10 @@ services:
 
   usermanger:
     image: ghcr.io/nils-witt/authentikusermanager:main
+    # Plain http: publish it on the loopback interface for a TLS-terminating
+    # reverse proxy on the host, not to the network.
     ports:
-      - ${EXPOSE_PORT:-8080}:8080
+      - ${EXPOSE_ADDR:-127.0.0.1}:${EXPOSE_PORT:-8080}:8080
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-authentik_manager}:${POSTGRES_PASSWORD:-authentik_manager}@db:5432/${POSTGRES_DB:-authentik_manager}?sslmode=disable
     env_file:

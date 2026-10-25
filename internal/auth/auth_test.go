@@ -1,22 +1,26 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 
 	"github.com/go-jose/go-jose/v4"
@@ -40,6 +44,11 @@ type fakeProvider struct {
 	mu        sync.Mutex
 	nonce     string
 	challenge string
+	// query is the query of the last authorize request.
+	query url.Values
+	// authTime and amr, when set, are the auth_time and amr claims of ID tokens.
+	authTime int64
+	amr      []string
 }
 
 func newFakeProvider(t *testing.T, groups []string) *fakeProvider {
@@ -93,6 +102,7 @@ func (p *fakeProvider) authorize(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	p.nonce = q.Get("nonce")
 	p.challenge = q.Get("code_challenge")
+	p.query = q
 	p.mu.Unlock()
 	back := q.Get("redirect_uri") + "?" + url.Values{"code": {"the-code"}, "state": {q.Get("state")}}.Encode()
 	http.Redirect(w, r, back, http.StatusFound)
@@ -104,14 +114,14 @@ func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
 	}
 	sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 	p.mu.Lock()
-	nonce, challenge := p.nonce, p.challenge
+	nonce, challenge, authTime, amr := p.nonce, p.challenge, p.authTime, p.amr
 	p.mu.Unlock()
 	if base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
 		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 		return
 	}
 
-	idToken := p.sign(map[string]any{
+	claims := map[string]any{
 		"iss":                p.srv.URL,
 		"aud":                clientID,
 		"sub":                "user-1",
@@ -123,7 +133,14 @@ func (p *fakeProvider) token(w http.ResponseWriter, r *http.Request) {
 		"email":              "alice@example.com",
 		"groups":             p.groups,
 		"sid":                providerSID,
-	})
+	}
+	if authTime != 0 {
+		claims["auth_time"] = authTime
+	}
+	if amr != nil {
+		claims["amr"] = amr
+	}
+	idToken := p.sign(claims)
 	writeJSON(p.t, w, map[string]any{
 		"access_token": "access",
 		"token_type":   "Bearer",
@@ -167,16 +184,27 @@ func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 // its URL plus a browser-like client that keeps cookies and follows redirects.
 func newApp(t *testing.T, provider *fakeProvider) (string, *http.Client) {
 	t.Helper()
+	return newAppWith(t, provider, nil)
+}
+
+// newAppWith is newApp with configure applied to the auth.Config. The app
+// also serves /api/groups, listing the user's groups.
+func newAppWith(t *testing.T, provider *fakeProvider, configure func(*auth.Config)) (string, *http.Client) {
+	t.Helper()
 	mux := http.NewServeMux()
 	app := httptest.NewServer(mux)
 	t.Cleanup(app.Close)
 
-	a, err := auth.New(t.Context(), auth.Config{
+	cfg := auth.Config{
 		IssuerURL:    provider.srv.URL,
 		ClientID:     clientID,
 		ClientSecret: "secret",
 		RedirectURL:  app.URL + "/auth/callback",
-	}, slog.New(slog.DiscardHandler))
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	a, err := auth.New(t.Context(), cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
 	}
@@ -184,6 +212,10 @@ func newApp(t *testing.T, provider *fakeProvider) (string, *http.Client) {
 	mux.Handle("/api/ping", a.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, _ := auth.UserFromContext(r.Context())
 		_, _ = io.WriteString(w, "pong "+u.Username)
+	})))
+	mux.Handle("/api/groups", a.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := auth.UserFromContext(r.Context())
+		_, _ = io.WriteString(w, strings.Join(u.Groups, ","))
 	})))
 
 	jar, err := cookiejar.New(nil)
@@ -465,5 +497,247 @@ func TestBackchannelLogout(t *testing.T) {
 				t.Errorf("after back-channel logout: status = %d, want %d", code, wantPing)
 			}
 		})
+	}
+}
+
+// accountState is what a test AccountChecker reports, changeable while the app runs.
+type accountState struct {
+	mu     sync.Mutex
+	groups []string
+	err    error
+	calls  int
+}
+
+func (s *accountState) set(groups []string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.groups, s.err = groups, err
+}
+
+func (s *accountState) check(_ context.Context, u auth.User) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if u.Username != "alice" {
+		return nil, auth.ErrAccountGone
+	}
+	return s.groups, s.err
+}
+
+func TestRequire_checksAccount(t *testing.T) {
+	t.Parallel()
+	state := &accountState{groups: []string{"users", "admins"}}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"users", "admins"}), func(cfg *auth.Config) {
+		cfg.CheckAccount = state.check
+		// Every request checks the account.
+		cfg.CheckInterval = time.Nanosecond
+	})
+	if code, _ := get(t, client, appURL+"/auth/login"); code != http.StatusNotFound {
+		t.Fatalf("login flow ended with %d, want 404 from /", code)
+	}
+	if code, body := get(t, client, appURL+"/api/groups"); code != http.StatusOK || body != "users,admins" {
+		t.Fatalf("groups = %d %q, want the groups of the login", code, body)
+	}
+
+	// Groups withdrawn in the provider apply without a new login.
+	state.set([]string{"users"}, nil)
+	if code, body := get(t, client, appURL+"/api/groups"); code != http.StatusOK || body != "users" {
+		t.Errorf("groups after removal = %d %q, want \"users\"", code, body)
+	}
+
+	// A failing check fails the request instead of using the previous groups.
+	state.set([]string{"users"}, errors.New("authentik is down"))
+	if code, _ := get(t, client, appURL+"/api/groups"); code != http.StatusServiceUnavailable {
+		t.Errorf("status while the check fails = %d, want 503", code)
+	}
+
+	// A deactivated account ends the session.
+	state.set(nil, auth.ErrAccountGone)
+	if code, _ := get(t, client, appURL+"/api/groups"); code != http.StatusUnauthorized {
+		t.Errorf("status after deactivation = %d, want 401", code)
+	}
+	state.set([]string{"users"}, nil)
+	if code, _ := get(t, client, appURL+"/api/groups"); code != http.StatusUnauthorized {
+		t.Errorf("status after reactivation = %d, want 401 until the next login", code)
+	}
+}
+
+func TestRequire_checksAccountEveryInterval(t *testing.T) {
+	t.Parallel()
+	state := &accountState{groups: []string{"users"}}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"users"}), func(cfg *auth.Config) {
+		cfg.CheckAccount = state.check
+		cfg.CheckInterval = time.Hour
+	})
+	if code, _ := get(t, client, appURL+"/auth/login"); code != http.StatusNotFound {
+		t.Fatalf("login flow ended with %d, want 404 from /", code)
+	}
+	for range 3 {
+		if code, _ := get(t, client, appURL+"/api/ping"); code != http.StatusOK {
+			t.Fatalf("ping = %d, want 200", code)
+		}
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.calls != 0 {
+		t.Errorf("account checked %d times within the interval after login, want 0", state.calls)
+	}
+}
+
+// lastQuery returns the query of the last authorize request.
+func (p *fakeProvider) lastQuery() url.Values {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.query
+}
+
+// loginRedirect logs in through login, a path of the app, and returns where
+// the callback redirects to.
+func loginRedirect(t *testing.T, client *http.Client, appURL, login string) string {
+	t.Helper()
+	c := *client
+	// Stop at the redirect back into the app, to see where it leads.
+	c.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if strings.HasPrefix(req.URL.String(), appURL) && req.URL.Path != "/auth/callback" {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, appURL+login, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.Header.Get("Location")
+}
+
+func TestLogin_reauth(t *testing.T) {
+	t.Parallel()
+	provider := newFakeProvider(t, []string{"admins"})
+	authTime := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+	provider.authTime = authTime.Unix()
+	provider.amr = []string{"pwd", "mfa"}
+	appURL, client := newApp(t, provider)
+
+	if got := loginRedirect(t, client, appURL, "/auth/login?reauth=1&return="+url.QueryEscape("/users?page=2")); got != "/users?page=2" {
+		t.Errorf("redirect after login = %q, want the return path", got)
+	}
+	if q := provider.lastQuery(); q.Get("prompt") != "login" || q.Get("max_age") != "0" {
+		t.Errorf("authorize query %v, want prompt=login and max_age=0", q)
+	}
+	code, body := get(t, client, appURL+"/auth/me")
+	var me auth.User
+	if err := json.Unmarshal([]byte(body), &me); err != nil || code != http.StatusOK {
+		t.Fatalf("/auth/me = %d %q", code, body)
+	}
+	if !me.AuthTime.Equal(authTime) || !me.MFA() {
+		t.Errorf("/auth/me auth_time %v, amr %v, want %v with mfa", me.AuthTime, me.AMR, authTime)
+	}
+}
+
+func TestLogin_returnOnlyToLocalPaths(t *testing.T) {
+	t.Parallel()
+	provider := newFakeProvider(t, []string{"admins"})
+	appURL, client := newApp(t, provider)
+	for _, target := range []string{"//evil.example/x", "https://evil.example/", "/\\evil.example", "users"} {
+		if got := loginRedirect(t, client, appURL, "/auth/login?return="+url.QueryEscape(target)); got != "/" {
+			t.Errorf("return %q: redirect after login = %q, want /", target, got)
+		}
+	}
+	if q := provider.lastQuery(); q.Has("prompt") || q.Has("max_age") {
+		t.Errorf("authorize query %v of a normal login, want no prompt or max_age", q)
+	}
+}
+
+func TestUser_MFA(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		amr  []string
+		want bool
+	}{
+		{amr: nil, want: false},
+		{amr: []string{"pwd"}, want: false},
+		{amr: []string{"pwd", "pwd"}, want: false},
+		{amr: []string{"mfa"}, want: true},
+		{amr: []string{"pwd", "otp"}, want: true},
+	}
+	for _, tt := range tests {
+		if got := (auth.User{AMR: tt.amr}).MFA(); got != tt.want {
+			t.Errorf("MFA with amr %v = %v, want %v", tt.amr, got, tt.want)
+		}
+	}
+}
+
+// auditLog collects the entries an Authenticator records.
+type auditLog struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (l *auditLog) record(_ context.Context, e audit.Entry) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, e)
+}
+
+func (l *auditLog) actions() []audit.Action {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []audit.Action
+	for _, e := range l.entries {
+		if e.Details["client_ip"] != "198.51.100.7" {
+			return nil
+		}
+		out = append(out, e.Action)
+	}
+	return out
+}
+
+func TestAudit(t *testing.T) {
+	t.Parallel()
+	log := &auditLog{}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"admins"}), func(cfg *auth.Config) {
+		cfg.RecordAudit = log.record
+		cfg.ClientIP = func(*http.Request) string { return "198.51.100.7" }
+	})
+
+	// A callback without a login is refused and recorded.
+	get(t, client, appURL+"/auth/callback?code=x&state=y")
+	get(t, client, appURL+"/auth/login")
+	send(t, client, http.MethodPost, appURL+"/auth/logout")
+
+	want := []audit.Action{audit.ActionLoginFailed, audit.ActionLogin, audit.ActionLogout}
+	if got := log.actions(); !slices.Equal(got, want) {
+		t.Fatalf("audit = %v, want %v, each naming the client IP", log.entries, want)
+	}
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if failed := log.entries[0]; failed.Actor != "" || failed.Details["reason"] != "login state missing or expired" {
+		t.Errorf("failed login = %+v", failed)
+	}
+	if login := log.entries[1]; login.Actor != "alice" || login.Details["mfa"] != "false" {
+		t.Errorf("login = %+v", login)
+	}
+}
+
+func TestAudit_sessionEnded(t *testing.T) {
+	t.Parallel()
+	log := &auditLog{}
+	state := &accountState{err: auth.ErrAccountGone}
+	appURL, client := newAppWith(t, newFakeProvider(t, []string{"admins"}), func(cfg *auth.Config) {
+		cfg.RecordAudit = log.record
+		cfg.ClientIP = func(*http.Request) string { return "198.51.100.7" }
+		cfg.CheckAccount = state.check
+		cfg.CheckInterval = time.Nanosecond
+	})
+	get(t, client, appURL+"/auth/login")
+	get(t, client, appURL+"/api/ping")
+	want := []audit.Action{audit.ActionLogin, audit.ActionSessionEnded}
+	if got := log.actions(); !slices.Equal(got, want) {
+		t.Errorf("audit = %v, want %v", log.entries, want)
 	}
 }

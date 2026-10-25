@@ -591,7 +591,20 @@ func (s *Server) findGroup(w http.ResponseWriter, r *http.Request, field, name s
 			map[string][]string{field: {"You may not add users to an administrator group."}})
 		return nil, false
 	}
+	if !s.mayGrantGroup(r, group) {
+		writeError(w, http.StatusBadRequest, "validation failed",
+			map[string][]string{field: {"Only access administrators may add users to an access administrator group."}})
+		return nil, false
+	}
 	return group, true
+}
+
+// mayGrantGroup reports whether the signed-in operator may add users to
+// group. Members of an access administrator group (ACCESS_ADMIN_GROUPS) become
+// access administrators, so only access administrators may add them, even
+// operators with full access to the users.
+func (s *Server) mayGrantGroup(r *http.Request, group *authentik.Group) bool {
+	return !s.policy.IsAdmin([]string{group.Name}) || s.policy.IsAdmin(operatorGroups(r))
 }
 
 // updateUserInput is the body of PATCH /api/users/{id} and PATCH
@@ -722,13 +735,17 @@ func (s *Server) setAccountGroups(k accountKind) http.HandlerFunc {
 }
 
 // setAccountGroupsOf replaces the groups of an account with the names in the
-// body and sets its primary group. Restricted operators may only add or remove their
+// body and sets its primary group. Only access administrators may change their
+// own groups. Restricted operators may only add or remove their
 // target groups, and the user must stay in one of them so the operator does
 // not lose access to it. The user's primary group cannot be removed unless the
 // same request chooses another one.
 func (s *Server) setAccountGroupsOf(w http.ResponseWriter, r *http.Request, k accountKind) {
 	user, scope, ok := s.changeableAccount(w, r, k)
 	if !ok {
+		return
+	}
+	if !s.mayChangeGroupsOf(w, r, user) {
 		return
 	}
 	var in userGroupsInput
@@ -790,6 +807,21 @@ func (s *Server) setAccountGroupsOf(w http.ResponseWriter, r *http.Request, k ac
 		return
 	}
 	writeJSON(w, http.StatusOK, newUserView(updated, scope))
+}
+
+// mayChangeGroupsOf reports whether the signed-in operator may change the
+// groups of user, and answers 403 otherwise. For separation of duties, only
+// access administrators may change their own groups: other operators could
+// grant themselves groups.
+func (s *Server) mayChangeGroupsOf(w http.ResponseWriter, r *http.Request, user *authentik.User) bool {
+	if !isActor(r, user) || s.policy.IsAdmin(operatorGroups(r)) {
+		return true
+	}
+	s.recordUser(r, audit.ActionAccessDenied, user, map[string]string{"reason": "own groups"})
+	writeError(w, http.StatusForbidden, "validation failed", map[string][]string{
+		"groups": {"You may not change your own groups; ask another operator."},
+	})
+	return false
 }
 
 // groupChange is the difference between a user's groups and the requested ones.

@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"authentikManager/internal/apikey"
+	"authentikManager/internal/audit"
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/certificate"
@@ -60,12 +63,14 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 		}
 		key, ok := bearerToken(r)
 		if !ok || !apikey.WellFormed(key) {
+			s.recordKeyRejected(r, "missing or malformed", nil)
 			writeUnauthorized(w)
 			return
 		}
 		// The lookup is by hash, so its timing reveals nothing about stored keys.
 		k, err := s.apiKeys.AuthenticateAPIKey(r.Context(), apikey.Hash(key), time.Now())
 		if errors.Is(err, apikey.ErrNotFound) {
+			s.recordKeyRejected(r, "unknown or expired", map[string]string{"key_start": apikey.Start(key)})
 			writeUnauthorized(w)
 			return
 		}
@@ -75,6 +80,7 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 		}
 		account, err := s.users.GetUser(r.Context(), k.UserPK)
 		if errors.Is(err, authentik.ErrNotFound) {
+			s.recordKeyRejected(r, "account deleted", map[string]string{"api_key_id": strconv.FormatInt(k.ID, 10)})
 			writeUnauthorized(w)
 			return
 		}
@@ -87,13 +93,28 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 				slog.Int64("api_key_id", k.ID),
 				slog.Int("user_id", account.PK),
 			)
+			s.recordKeyRejected(r, "inactive account or no service account", map[string]string{
+				"api_key_id": strconv.FormatInt(k.ID, 10),
+				"username":   account.Username,
+			})
 			writeUnauthorized(w)
 			return
 		}
 		ctx := auth.WithUser(r.Context(), auth.User{Username: account.Username})
 		ctx = context.WithValue(ctx, apiCallerKey{}, apiCaller{account: account, keyID: k.ID})
-		next.ServeHTTP(w, r.WithContext(ctx))
+		noteUser(next).ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// recordKeyRejected records in the audit log that the service API refused
+// the API key of r for reason.
+func (s *Server) recordKeyRejected(r *http.Request, reason string, details map[string]string) {
+	details = maps.Clone(details)
+	if details == nil {
+		details = map[string]string{}
+	}
+	details["reason"] = reason
+	s.record(r, audit.ActionAPIKeyRejected, "", details)
 }
 
 // bearerToken returns the token of the request's Bearer authorization.

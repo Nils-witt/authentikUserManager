@@ -25,11 +25,16 @@ Set these environment variables (see `.env.example`):
 | `AUTHENTIK_TOKEN` | yes      |                  | API token (Directory → Tokens, intent "API")            |
 | `LISTEN_ADDR`     | no       | `127.0.0.1:8080` | Address the server listens on                           |
 | `STATIC_DIR`      | no       |                  | Serve the frontend from this directory instead of the embedded build |
+| `TRUSTED_PROXIES` | no       |                  | Comma-separated IP addresses or CIDR prefixes of the reverse proxies in front of the app, e.g. `172.16.0.0/12` for Docker networks; their `X-Forwarded-For` header names the client for [rate limits](#rate-limits) and logs. Without it, the proxy's address counts as the client |
 | `AUTHENTIK_RECOVERY_EMAIL_STAGE` | no |              | UUID of the email stage that sends [recovery emails](#password-recovery-emails); disabled when unset |
 | `OIDC_ISSUER`     | yes      |                  | Issuer of the OIDC provider, `https://<host>/application/o/<slug>/` |
 | `OIDC_CLIENT_ID`  | yes      |                  | Client ID of the provider                               |
 | `OIDC_CLIENT_SECRET` | yes   |                  | Client secret of the provider                           |
 | `OIDC_REDIRECT_URL`  | yes   |                  | Public callback URL of this app, ending in `/auth/callback` |
+| `SESSION_LIFETIME_HOURS` | no |  `8`             | Maximum lifetime of a login session (at most 168) |
+| `SESSION_IDLE_TIMEOUT_MINUTES` | no | `30`       | Ends sessions that were not used for this long (at most 1440, and never longer than the lifetime) |
+| `REAUTH_MAX_AGE_MINUTES` | no |  `15`            | [Critical changes](#re-authentication-for-critical-changes) require a login at authentik at most this many minutes ago; `0` disables the check |
+| `REQUIRE_MFA`     | no       | `false`          | Critical changes also require a login with multi-factor authentication |
 | `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, the join requests and the audit log, e.g. `postgres://am:secret@db:5432/am` |
 | `AUDIT_RETENTION_DAYS` | no |                | Days to keep [audit log](#audit-log) entries; kept forever when unset |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
@@ -253,7 +258,10 @@ they are stored in PostgreSQL.
 - An operator may manage a user only if the user is a direct member of one of the target groups.
   Members of inherited (parent) groups are not matched.
 - The target "all users" (`*`) grants access to every user. Superusers are only visible to
-  operators with it and to access administrators.
+  operators with it and to access administrators. It does not make an operator an access
+  administrator: only access administrators may add users to the groups named in
+  `ACCESS_ADMIN_GROUPS`, whether in the user dialog, when creating a user or by approving a
+  [join request](#join-requests).
 - Access administrators can mark a user or service account **hidden**. Only access
   administrators see hidden users, even if a rule grants one of the user's groups or all
   users (`*`). Users still see their own account. Hidden is stored in authentik as the user
@@ -265,8 +273,13 @@ they are stored in PostgreSQL.
   per-user route.
 - Restricted operators must pick one of their target groups when creating a user.
   Groups that grant superuser rights are refused.
-- Rule changes apply immediately. An operator's own groups are read at login, so changes to
-  their membership apply after the next login.
+- Only access administrators may change their own groups. Other operators ask another operator
+  to, so nobody grants themselves a group (separation of duties); the attempt is recorded in the
+  audit log.
+- Rule changes apply immediately. An operator's own groups are read at login and again from
+  authentik at most 5 minutes later while they use the app, so changes to their membership apply
+  within 5 minutes. Deleting, deactivating or renaming their account in authentik ends their
+  sessions at that check. If authentik cannot be reached for the check, requests fail with 503.
 
 The schema is created and migrated automatically at startup
 (`internal/store/migrations`, applied with golang-migrate).
@@ -289,8 +302,8 @@ attributes or whether it grants superuser rights.
 
 - Access rules match groups by name, so renaming a group renames it in every rule too, in one
   transaction. If the rules cannot be updated, the group gets its previous name back.
-- An operator's groups are read at login, so members of a renamed operator group must sign in
-  again before the renamed rule applies to them.
+- An operator's groups are read again every 5 minutes (see [access rules](#access-rules)), so the
+  renamed rule applies to the members of a renamed operator group within 5 minutes.
 - Groups named in `ACCESS_ADMIN_GROUPS` cannot be renamed, and no group can be renamed to one of
   those names, to `*`, or to the name of another group.
 - Only access administrators can create groups. A new group has no members and never grants
@@ -339,7 +352,7 @@ optional message of up to 500 characters. The request is stored in PostgreSQL un
   may ask again. Nobody decides their own request.
 - Users see their pending requests in **Groups** and can withdraw them there.
 - Only internal users can ask, only for visible groups, and not for groups that grant superuser
-  rights. Each user has at most one pending request per group, and none for a group they are
+  rights or are named in `ACCESS_ADMIN_GROUPS`. Each user has at most one pending request per group, and none for a group they are
   already in.
 - Requests match groups by primary key, so renaming a group keeps them. They show the group's
   name as it was when the request was made. A request for a deleted group can still be rejected
@@ -381,6 +394,9 @@ Every change made through the app is recorded in PostgreSQL with the time, the o
 the action, the affected user or rule, and details such as the changed fields or groups:
 creating, updating and deleting users and service accounts, changing their groups and primary groups, sending recovery emails, issuing, importing, assigning and revoking certificates and downloading their keys, creating and deleting service account tokens and API keys (never their keys),
 saving and deleting access rules, renaming groups and changing their visibility, requesting to join groups and withdrawing, approving and rejecting those requests, and requests for users outside the operator's scope.
+Logins, failed logins (with the reason, e.g. an invalid state), logouts, sessions ended because
+the account was deleted or deactivated, and API keys the service API refuses (with the start of
+the key) are recorded too. Every entry names the client IP address (see `TRUSTED_PROXIES`).
 Access administrators review it in the UI (**Audit log** in the toolbar) or through
 `GET /api/audit` (query parameters `search`, `action`, `before`, `limit`).
 
@@ -389,6 +405,20 @@ back when its entry cannot be stored; the failure is logged instead.
 
 Entries are kept forever unless `AUDIT_RETENTION_DAYS` is set. Then entries older than that
 are deleted at startup and every hour after.
+
+### Application log
+
+The app writes JSON lines to stdout. Every request is logged (message `http request`) with its
+method, path, status, duration, client IP, user (or service account) and user agent. Each request
+gets an ID, returned in the `X-Request-ID` header and added as `request_id` to every record
+written for it, so a request's records can be found together.
+
+For OPS.1.1.5 (Protokollierung) of the IT-Grundschutz, ship the log to a central log system
+(e.g. with the Docker logging driver `syslog`, `gelf` or `journald`, or Loki's Docker driver), so
+it survives the container and an attacker on the host cannot quietly change it. The audit log
+lives in the application's database, which the app may change; to protect it, give the app a
+database role without `DELETE` and `UPDATE` on `audit_log` once the schema is migrated, and run
+the retention with another role, or export the table regularly to the central log system.
 
 ## Setting up the login in authentik
 
@@ -442,10 +472,53 @@ the frontend, run `make build` again.
 - Every `/api/` route requires a login. The [service API](#service-api) requires the API key of an active service account instead and reads no cookies. The login uses authentik via OIDC: authorization code flow with PKCE, plus state and nonce checks. Any authentik user may log in; operators without an access rule see and manage no users.
 - The browser only holds an opaque session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` with a `__Host-` prefix when served over https). ID and access tokens never reach the browser.
 - Logging out of authentik also ends the app's sessions when the provider's **Back-Channel Logout URI** is set to `https://<app-host>/auth/backchannel-logout`. The app only accepts logout tokens signed by the provider for this client ID. It checks that the token is recent, carries the back-channel logout event and has no nonce. It ends the session with the token's `sid`. If the token or the session has no `sid`, it ends all sessions of the token's `sub`.
-- Sessions live in memory for 8 hours. A restart logs everyone out, and you must run a single instance.
+- Sessions live in memory for at most `SESSION_LIFETIME_HOURS` (8 hours by default) and end after `SESSION_IDLE_TIMEOUT_MINUTES` (30 by default) without use. Polling the unread notification count does not count as use. Ended sessions are deleted within a minute. A restart logs everyone out, and you must run a single instance. Signing in again goes through authentik, so limit the session duration of authentik's authentication flow too, or authentik signs the user in again without asking.
 - Cross-origin state-changing requests are rejected (Go's `http.CrossOriginProtection`).
+- Responses of `/api/` and `/service-api/` carry `Cache-Control: no-store`, so browsers and proxies do not store the personal data and keys they hold. The CRLs and CA chains under `/pki/` stay cacheable.
 - Changes to users go to authentik with `AUTHENTIK_TOKEN`, not as the logged-in user. The app logs each change with the operator's username (`actor`).
-- When serving over plain http on something other than localhost, put TLS in front of the app (reverse proxy).
+- The app speaks plain http, so it must be served through a TLS-terminating reverse proxy (e.g. Caddy, Traefik or nginx); keep the app's port off the network. `compose.yaml` publishes it on `127.0.0.1` only (`EXPOSE_ADDR`, `EXPOSE_PORT`). When `OIDC_REDIRECT_URL` is an https URL, every response carries `Strict-Transport-Security: max-age=31536000; includeSubDomains`, so browsers use only https for the host and its subdomains for a year.
+
+## Re-authentication for critical changes
+
+Some changes can do lasting harm in the wrong hands, so an unattended or stolen session must not
+be enough for them. They require that the operator signed in at authentik within the last
+`REAUTH_MAX_AGE_MINUTES` (15 by default):
+
+- adding and changing certificate authorities and choosing the default one,
+- importing certificates,
+- saving and deleting access rules,
+- deleting users and service accounts,
+- sending password recovery emails,
+- creating tokens and API keys of service accounts.
+
+Otherwise the request fails with 403 and `"reauthenticate": true`. The UI then offers to sign in
+again: it starts the login with `prompt=login` and `max_age=0`, so authentik asks for the
+credentials even when its own session is still valid, and returns to the same page, where the
+operator makes the change again. The time of the login is the ID token's `auth_time` claim.
+
+With `REQUIRE_MFA=true`, these changes also require a login with multi-factor authentication, as
+the ID token's `amr` claim (RFC 8176) states: it must contain `mfa`, or name two methods.
+authentik sets it from the stages of the authentication flow, so add an authenticator validation
+stage to the flow. The app does not enforce MFA for other requests; make authentik's flow require
+it for everyone who may sign in, as recommended for an identity management tool.
+
+## Rate limits
+
+The app limits requests to protect itself and authentik against automated use. Each limit allows
+a burst of requests and then one more per interval; further requests get 429 with a
+`Retry-After` header and are logged as `rate limit exceeded`.
+
+| What | Per | Burst | Then |
+| --- | --- | --- | --- |
+| `/auth/login` and `/auth/callback` | client IP | 30 | one every 2 s |
+| `/service-api/`, before the API key is checked | client IP | 60 | one per second |
+| `/api/` | signed-in user | 300 | ten per second |
+| Issuing certificates, in the app and the service API | user or service account | 20 | one every 3 minutes |
+
+In addition, each user may have at most 5 generated keys waiting for download; a sixth is refused
+before a certificate is issued for it. Behind a reverse proxy, set `TRUSTED_PROXIES`, or all
+clients share the proxy's limit. Failed logins are limited by authentik; set up its reputation
+policies and the failed-attempt limits of its authenticator stages.
 
 ## API
 

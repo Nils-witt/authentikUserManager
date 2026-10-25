@@ -42,6 +42,8 @@ func TestFromEnv(t *testing.T) {
 		{name: "missing static dir", env: validEnv(map[string]string{"STATIC_DIR": "/does/not/exist"}), wantErr: true},
 		{name: "missing database url", env: validEnv(map[string]string{"DATABASE_URL": ""}), wantErr: true},
 		{name: "blank admin groups", env: validEnv(map[string]string{"ACCESS_ADMIN_GROUPS": " , "}), wantErr: true},
+		{name: "trusted proxies", env: validEnv(map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, ::1"}), wantListen: "127.0.0.1:8080"},
+		{name: "invalid trusted proxy", env: validEnv(map[string]string{"TRUSTED_PROXIES": "proxy.local"}), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -222,6 +224,89 @@ func TestFromEnv_smtp(t *testing.T) {
 			}
 			if cfg.SMTPPort != tt.expectedPort || cfg.SMTPTLS != tt.expectedTLS {
 				t.Errorf("SMTP port, tls = %d, %q, want %d, %q", cfg.SMTPPort, cfg.SMTPTLS, tt.expectedPort, tt.expectedTLS)
+			}
+		})
+	}
+}
+
+func TestFromEnv_sessions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		env          map[string]string
+		wantErr      bool
+		wantLifetime time.Duration
+		wantIdle     time.Duration
+	}{
+		{name: "defaults", env: validEnv(nil), wantLifetime: 8 * time.Hour, wantIdle: 30 * time.Minute},
+		{
+			name:         "custom",
+			env:          validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "12", "SESSION_IDLE_TIMEOUT_MINUTES": " 15 "}),
+			wantLifetime: 12 * time.Hour,
+			wantIdle:     15 * time.Minute,
+		},
+		{
+			name:         "idle timeout capped by lifetime",
+			env:          validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "1", "SESSION_IDLE_TIMEOUT_MINUTES": "120"}),
+			wantLifetime: time.Hour,
+			wantIdle:     time.Hour,
+		},
+		{name: "zero lifetime", env: validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "0"}), wantErr: true},
+		{name: "lifetime too long", env: validEnv(map[string]string{"SESSION_LIFETIME_HOURS": "169"}), wantErr: true},
+		{name: "idle timeout not a number", env: validEnv(map[string]string{"SESSION_IDLE_TIMEOUT_MINUTES": "1h"}), wantErr: true},
+		{name: "idle timeout too long", env: validEnv(map[string]string{"SESSION_IDLE_TIMEOUT_MINUTES": "1441"}), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.FromEnv(func(k string) string { return tt.env[k] })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FromEnv error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if cfg.SessionLifetime != tt.wantLifetime || cfg.SessionIdleTimeout != tt.wantIdle {
+				t.Errorf("SessionLifetime = %v, SessionIdleTimeout = %v, want %v and %v",
+					cfg.SessionLifetime, cfg.SessionIdleTimeout, tt.wantLifetime, tt.wantIdle)
+			}
+		})
+	}
+}
+
+func TestFromEnv_reauth(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		env        map[string]string
+		wantErr    bool
+		wantMaxAge time.Duration
+		wantMFA    bool
+	}{
+		{name: "defaults", env: validEnv(nil), wantMaxAge: 15 * time.Minute},
+		{name: "disabled", env: validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "0"}), wantMaxAge: 0},
+		{
+			name:       "mfa",
+			env:        validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "5", "REQUIRE_MFA": "true"}),
+			wantMaxAge: 5 * time.Minute,
+			wantMFA:    true,
+		},
+		{name: "negative", env: validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "-1"}), wantErr: true},
+		{name: "invalid mfa", env: validEnv(map[string]string{"REQUIRE_MFA": "yes please"}), wantErr: true},
+		{name: "mfa without reauth", env: validEnv(map[string]string{"REAUTH_MAX_AGE_MINUTES": "0", "REQUIRE_MFA": "1"}), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.FromEnv(func(k string) string { return tt.env[k] })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FromEnv error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if cfg.ReauthMaxAge != tt.wantMaxAge || cfg.RequireMFA != tt.wantMFA {
+				t.Errorf("ReauthMaxAge = %v, RequireMFA = %v, want %v and %v", cfg.ReauthMaxAge, cfg.RequireMFA, tt.wantMaxAge, tt.wantMFA)
 			}
 		})
 	}

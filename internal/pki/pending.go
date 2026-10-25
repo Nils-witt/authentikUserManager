@@ -15,10 +15,17 @@ const (
 	PruneInterval = time.Minute
 	// maxPending bounds the number of downloads held in memory.
 	maxPending = 1000
+	// MaxPendingPerDownloader bounds the downloads pending for one
+	// downloader, so that one user cannot take up all of maxPending.
+	MaxPendingPerDownloader = 5
 )
 
 // ErrTooManyDownloads is returned by Put when too many downloads are pending.
 var ErrTooManyDownloads = errors.New("pki: too many pending downloads")
+
+// ErrTooManyDownloaderDownloads is returned by Put and Check when
+// MaxPendingPerDownloader downloads are pending for the downloader.
+var ErrTooManyDownloaderDownloads = errors.New("pki: too many pending downloads of this user")
 
 // Download is a file holding a generated private key, which the user who
 // requested it may download once.
@@ -56,17 +63,42 @@ func NewPending(now func() time.Time) *Pending {
 }
 
 // Put stores d for the certificate with serial and returns when it expires.
-// It returns ErrTooManyDownloads when the limit of pending downloads is reached.
+// It returns ErrTooManyDownloads or ErrTooManyDownloaderDownloads when the
+// limit of pending downloads, or of those of d.Downloader, is reached.
 func (p *Pending) Put(serial string, d Download) (time.Time, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pruneLocked()
-	if len(p.entries) >= maxPending {
-		return time.Time{}, ErrTooManyDownloads
+	if err := p.checkLocked(d.Downloader); err != nil {
+		return time.Time{}, err
 	}
 	expires := p.now().Add(DownloadTTL)
 	p.entries[serial] = pendingEntry{download: d, expires: expires}
 	return expires, nil
+}
+
+// Check returns the error Put would return for a download of downloader now,
+// so a key is not generated when it could not be held for download.
+func (p *Pending) Check(downloader string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.checkLocked(downloader)
+}
+
+func (p *Pending) checkLocked(downloader string) error {
+	p.pruneLocked()
+	if len(p.entries) >= maxPending {
+		return ErrTooManyDownloads
+	}
+	n := 0
+	for _, e := range p.entries {
+		if e.download.Downloader == downloader {
+			n++
+		}
+	}
+	if n >= MaxPendingPerDownloader {
+		return ErrTooManyDownloaderDownloads
+	}
+	return nil
 }
 
 // Take removes and returns the download for serial when username is its

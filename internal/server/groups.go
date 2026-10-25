@@ -300,7 +300,7 @@ func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
 			ParentName: g.ParentName,
 			Path:       groupFolder(g),
 			Member:     isMember(g),
-			Joinable:   isVisible(g) && !g.IsSuperuser,
+			Joinable:   isVisible(g) && !g.IsSuperuser && !s.policy.IsAdmin([]string{g.Name}),
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

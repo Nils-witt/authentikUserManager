@@ -13,7 +13,7 @@ import (
 	"authentikManager/internal/store"
 )
 
-// newTestAuthority returns a CA record with a fresh name and fingerprint,
+// newTestAuthority returns a CA record with a fresh ID, name and fingerprint,
 // since the table is not wiped. Its certificate and key are placeholders: the
 // store does not parse them.
 func newTestAuthority(t *testing.T) authority.Authority {
@@ -23,6 +23,7 @@ func newTestAuthority(t *testing.T) authority.Authority {
 		t.Fatal(err)
 	}
 	return authority.Authority{
+		ID:              uuid.New(),
 		Name:            "t-" + hex.EncodeToString(fingerprint[:8]),
 		ValidityDays:    365,
 		CRLValidityDays: 30,

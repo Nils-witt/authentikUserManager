@@ -461,6 +461,36 @@ func TestServer_decideJoinRequest_superuserGroup(t *testing.T) {
 	}
 }
 
+func TestServer_decideJoinRequest_accessAdminGroup(t *testing.T) {
+	t.Parallel()
+	users := &fakeUsers{groups: joinTestGroups()}
+	jrs := &fakeJoinRequests{requests: []joinrequest.Request{pending(1, "g0", "admins", "bob")}}
+
+	// Full access to the users does not make an operator an access administrator.
+	rec := do(t, newJoinServer(t, users, jrs, &fakeAudit{}, "superhelp"), http.MethodPost, "/api/join-requests/1/approve", "")
+	if rec.Code != http.StatusForbidden || users.mutated || jrs.requests[0].Status != joinrequest.StatusPending {
+		t.Errorf("full access approve = %d %s, want 403 and nothing changed", rec.Code, rec.Body)
+	}
+	rec = do(t, newJoinServer(t, users, jrs, &fakeAudit{}, "admins"), http.MethodPost, "/api/join-requests/1/approve", "")
+	if rec.Code != http.StatusOK || !slices.Equal(users.added, []string{"g0"}) {
+		t.Errorf("admin approve = %d %s, added %v", rec.Code, rec.Body, users.added)
+	}
+}
+
+func TestServer_requestJoin_accessAdminGroup(t *testing.T) {
+	t.Parallel()
+	groups := joinTestGroups()
+	admins := groups["admins"]
+	admins.Attributes = map[string]any{visibleAttribute: true}
+	groups["admins"] = admins
+	jrs := &fakeJoinRequests{}
+	h := newJoinServer(t, &fakeUsers{groups: groups, listed: requester()}, jrs, &fakeAudit{}, "staff")
+	rec := do(t, h, http.MethodPost, "/api/groups/g0/join-requests", `{}`)
+	if rec.Code != http.StatusForbidden || len(jrs.requests) != 0 {
+		t.Errorf("request = %d %s, %d requests stored, want 403 and none", rec.Code, rec.Body, len(jrs.requests))
+	}
+}
+
 func TestServer_rejectJoinRequest_deletedGroup(t *testing.T) {
 	t.Parallel()
 	jrs := &fakeJoinRequests{requests: []joinrequest.Request{pending(1, "gone", "staff", "bob")}}

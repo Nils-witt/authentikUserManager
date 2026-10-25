@@ -1,5 +1,6 @@
-// Package audit defines the audit log: a record of the changes operators make
-// and of their denied access attempts, which access administrators can review.
+// Package audit defines the audit log: a record of the changes operators make,
+// of their denied access attempts and of logins, which access administrators
+// can review.
 package audit
 
 import (
@@ -76,6 +77,19 @@ const (
 	// ActionAuthorityDefaultChanged is recorded when an access administrator makes a certificate
 	// authority the default one.
 	ActionAuthorityDefaultChanged Action = "certificate_authority.default_changed"
+	// ActionLogin is recorded when a user signs in.
+	ActionLogin Action = "auth.login"
+	// ActionLoginFailed is recorded when a login cannot be completed, e.g. for
+	// an invalid state or a code the provider refuses. Its actor is empty.
+	ActionLoginFailed Action = "auth.login_failed"
+	// ActionLogout is recorded when a user signs out, or the provider ends their session.
+	ActionLogout Action = "auth.logout"
+	// ActionSessionEnded is recorded when a session ends because the user's
+	// account was deleted, deactivated or renamed.
+	ActionSessionEnded Action = "auth.session_ended"
+	// ActionAPIKeyRejected is recorded when the service API refuses an API key.
+	// Its actor is empty.
+	ActionAPIKeyRejected Action = "service_api.api_key_rejected"
 )
 
 // Valid reports whether a is one of the recorded actions.
@@ -90,7 +104,8 @@ func (a Action) Valid() bool {
 		ActionCertificateAssigned,
 		ActionServiceAccountCreated, ActionServiceAccountUpdated, ActionServiceAccountDeleted,
 		ActionTokenCreated, ActionTokenDeleted, ActionAPIKeyCreated, ActionAPIKeyDeleted,
-		ActionAuthorityCreated, ActionAuthorityUpdated, ActionAuthorityDefaultChanged:
+		ActionAuthorityCreated, ActionAuthorityUpdated, ActionAuthorityDefaultChanged,
+		ActionLogin, ActionLoginFailed, ActionLogout, ActionSessionEnded, ActionAPIKeyRejected:
 		return true
 	}
 	return false

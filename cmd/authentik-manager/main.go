@@ -7,6 +7,8 @@
 //	AUTHENTIK_TOKEN  authentik API token (required)
 //	LISTEN_ADDR      listen address (default 127.0.0.1:8080)
 //	STATIC_DIR       serve the frontend from this directory instead of the embedded build (optional)
+//	TRUSTED_PROXIES  comma-separated IP addresses or CIDR prefixes of reverse proxies whose
+//	                 X-Forwarded-For header names the client (optional)
 //	AUTHENTIK_RECOVERY_EMAIL_STAGE  UUID of the email stage for password recovery emails;
 //	                                sending them is disabled when unset (optional)
 //
@@ -14,6 +16,10 @@
 //	OIDC_CLIENT_ID       OIDC client ID (required)
 //	OIDC_CLIENT_SECRET   OIDC client secret (required)
 //	OIDC_REDIRECT_URL    public callback URL, ending in /auth/callback (required)
+//	SESSION_LIFETIME_HOURS        maximum lifetime of a login session (default 8)
+//	SESSION_IDLE_TIMEOUT_MINUTES  ends sessions unused for this long (default 30)
+//	REAUTH_MAX_AGE_MINUTES        critical changes require a login this recent (default 15; 0 disables)
+//	REQUIRE_MFA                   critical changes require a login with multi-factor authentication
 //
 //	DATABASE_URL         PostgreSQL URL storing the access rules and the audit log (required)
 //	AUDIT_RETENTION_DAYS days to keep audit log entries; they are kept forever when unset (optional)
@@ -56,6 +62,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -66,17 +73,20 @@ import (
 	"authentikManager/internal/auth"
 	"authentikManager/internal/authentik"
 	"authentikManager/internal/authority"
+	"authentikManager/internal/clientip"
 	"authentikManager/internal/config"
 	"authentikManager/internal/mail"
 	"authentikManager/internal/notification"
 	"authentikManager/internal/pki"
+	"authentikManager/internal/reqlog"
 	"authentikManager/internal/server"
 	"authentikManager/internal/store"
 	"authentikManager/internal/web"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// Records written for a request carry its ID (see reqlog).
+	logger := slog.New(reqlog.NewHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(logger); err != nil {
 		logger.Error("fatal", slog.Any("error", err))
 		os.Exit(1)
@@ -141,15 +151,30 @@ func run(logger *slog.Logger) error {
 	defer stopDelivering()
 	delivering.Go(func() { notifier.Run(deliverCtx) })
 
+	clientIPs, err := clientip.NewResolver(cfg.TrustedProxies)
+	if err != nil {
+		return err
+	}
 	authn, err := auth.New(ctx, auth.Config{
 		IssuerURL:    cfg.OIDCIssuer,
 		ClientID:     cfg.OIDCClientID,
 		ClientSecret: cfg.OIDCClientSecret,
 		RedirectURL:  cfg.OIDCRedirectURL,
+		SessionTTL:   cfg.SessionLifetime,
+		IdleTimeout:  cfg.SessionIdleTimeout,
+		CheckAccount: accountChecker(client),
+		RecordAudit:  auditRecorder(db, logger),
+		ClientIP:     clientIPs.IP,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("setting up oidc login: %w", err)
 	}
+	// Deferred after db.Close like the audit pruning; it stops with the server.
+	sessionCtx, stopSessions := context.WithCancel(ctx)
+	var sessionPruning sync.WaitGroup
+	defer sessionPruning.Wait()
+	defer stopSessions()
+	sessionPruning.Go(func() { authn.Run(sessionCtx, auth.PruneInterval) })
 
 	var static fs.FS
 	if cfg.StaticDir != "" {
@@ -180,6 +205,11 @@ func run(logger *slog.Logger) error {
 			KeyDownloads:       keyDownloads,
 			Notifications:      notifier,
 			APIKeys:            db,
+			// The public URL tells whether a TLS-terminating proxy serves the app.
+			HTTPS:        strings.HasPrefix(cfg.OIDCRedirectURL, "https://"),
+			ClientIP:     clientIPs.IP,
+			ReauthMaxAge: cfg.ReauthMaxAge,
+			RequireMFA:   cfg.RequireMFA,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -214,6 +244,47 @@ func serve(ctx context.Context, srv *http.Server, logger *slog.Logger) error {
 		return fmt.Errorf("shutting down http server: %w", err)
 	}
 	return nil
+}
+
+// accountChecker returns the auth.AccountChecker reading the groups of
+// signed-in users from authentik. Sessions are matched to accounts by
+// username, so a session ends when its user is renamed, deleted or deactivated.
+func accountChecker(client *authentik.Client) auth.AccountChecker {
+	return func(ctx context.Context, u auth.User) ([]string, error) {
+		if u.Username == "" {
+			return nil, auth.ErrAccountGone
+		}
+		list, err := client.ListUsers(ctx, authentik.ListUsersParams{Username: u.Username, PageSize: 1})
+		if err != nil {
+			return nil, fmt.Errorf("looking up user %q: %w", u.Username, err)
+		}
+		for _, account := range list.Results {
+			if account.Username == u.Username && account.IsActive {
+				return account.GroupNames(), nil
+			}
+		}
+		return nil, auth.ErrAccountGone
+	}
+}
+
+// auditRecorder returns the function recording the login events of the
+// auth package in the audit log of db and the application log. A failure to
+// store an entry is logged, like the server does for its entries.
+func auditRecorder(db *store.Store, logger *slog.Logger) func(context.Context, audit.Entry) {
+	return func(ctx context.Context, e audit.Entry) {
+		logger.LogAttrs(ctx, slog.LevelInfo, "audit",
+			slog.String("actor", e.Actor),
+			slog.String("action", string(e.Action)),
+			slog.String("target", e.Target),
+			slog.Any("details", e.Details),
+		)
+		// Store the entry even when the client has gone away meanwhile.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := db.RecordAudit(ctx, e); err != nil {
+			logger.ErrorContext(ctx, "recording audit entry failed", slog.String("action", string(e.Action)), slog.Any("error", err))
+		}
+	}
 }
 
 // newNotifier returns the notifier storing notifications in db and emailing
