@@ -626,8 +626,8 @@ func TestLogin_reauth(t *testing.T) {
 	if got := loginRedirect(t, client, appURL, "/auth/login?reauth=1&return="+url.QueryEscape("/users?page=2")); got != "/users?page=2" {
 		t.Errorf("redirect after login = %q, want the return path", got)
 	}
-	if q := provider.lastQuery(); q.Get("prompt") != "login" || q.Get("max_age") != "0" {
-		t.Errorf("authorize query %v, want prompt=login and max_age=0", q)
+	if q := provider.lastQuery(); q.Get("prompt") != "login" || q.Get("max_age") != "60" {
+		t.Errorf("authorize query %v, want prompt=login and max_age=60", q)
 	}
 	code, body := get(t, client, appURL+"/auth/me")
 	var me auth.User

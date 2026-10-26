@@ -380,7 +380,7 @@ export interface CreatedApiKey {
 export class ApiError extends Error {
   readonly status: number
   readonly fields: Record<string, string[]>
-  /** The change requires signing in again (a recent login, or one with MFA) first. */
+  /** The change requires signing in again (a recent login) first. */
   readonly reauthenticate: boolean
 
   constructor(

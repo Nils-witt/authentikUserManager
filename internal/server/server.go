@@ -255,9 +255,6 @@ type Deps struct {
 	// ReauthMaxAge, when positive, is how long ago operators may have
 	// authenticated at authentik to make critical changes; see requireRecentAuth.
 	ReauthMaxAge time.Duration
-	// RequireMFA restricts critical changes to operators who authenticated
-	// with more than one factor.
-	RequireMFA bool
 }
 
 // Server is the HTTP handler for the application.
@@ -291,9 +288,8 @@ type Server struct {
 	clientIP func(*http.Request) string
 	// limits are the rate limits; see ratelimit.go.
 	limits limiters
-	// reauthMaxAge and requireMFA guard critical changes; see requireRecentAuth.
+	// reauthMaxAge guards critical changes; see requireRecentAuth.
 	reauthMaxAge time.Duration
-	requireMFA   bool
 	// handler is the router wrapped in CSRF protection.
 	handler http.Handler
 }
@@ -321,7 +317,6 @@ func New(d Deps) *Server {
 		clientIP:           d.ClientIP,
 		limits:             newLimiters(time.Now),
 		reauthMaxAge:       d.ReauthMaxAge,
-		requireMFA:         d.RequireMFA,
 	}
 	if s.clientIP == nil {
 		s.clientIP = clientip.Resolver{}.IP

@@ -34,7 +34,6 @@ Set these environment variables (see `.env.example`):
 | `SESSION_LIFETIME_HOURS` | no |  `8`             | Maximum lifetime of a login session (at most 168) |
 | `SESSION_IDLE_TIMEOUT_MINUTES` | no | `30`       | Ends sessions that were not used for this long (at most 1440, and never longer than the lifetime) |
 | `REAUTH_MAX_AGE_MINUTES` | no |  `15`            | [Critical changes](#re-authentication-for-critical-changes) require a login at authentik at most this many minutes ago; `0` disables the check |
-| `REQUIRE_MFA`     | no       | `false`          | Critical changes also require a login with multi-factor authentication |
 | `DATABASE_URL`    | yes      |                  | PostgreSQL URL for the access rules, the join requests and the audit log, e.g. `postgres://am:secret@db:5432/am` |
 | `AUDIT_RETENTION_DAYS` | no |                | Days to keep [audit log](#audit-log) entries; kept forever when unset |
 | `ACCESS_ADMIN_GROUPS` | yes  |                  | Comma-separated authentik groups with full access that may edit the [access rules](#access-rules) |
@@ -492,15 +491,10 @@ be enough for them. They require that the operator signed in at authentik within
 - creating tokens and API keys of service accounts.
 
 Otherwise the request fails with 403 and `"reauthenticate": true`. The UI then offers to sign in
-again: it starts the login with `prompt=login` and `max_age=0`, so authentik asks for the
-credentials even when its own session is still valid, and returns to the same page, where the
+again: it starts the login with `prompt=login` and `max_age=60`, so authentik asks for the
+credentials even when its own session is still valid (unless the user signed in during the last
+minute), and returns to the same page, where the
 operator makes the change again. The time of the login is the ID token's `auth_time` claim.
-
-With `REQUIRE_MFA=true`, these changes also require a login with multi-factor authentication, as
-the ID token's `amr` claim (RFC 8176) states: it must contain `mfa`, or name two methods.
-authentik sets it from the stages of the authentication flow, so add an authenticator validation
-stage to the flow. The app does not enforce MFA for other requests; make authentik's flow require
-it for everyone who may sign in, as recommended for an identity management tool.
 
 ## Rate limits
 

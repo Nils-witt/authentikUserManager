@@ -34,6 +34,11 @@ const (
 	loginCookiePath = "/auth/callback"
 	loginTTL        = 10 * time.Minute
 	httpTimeout     = 15 * time.Second
+	// reauthMaxAge is the max_age of re-authentications: the provider asks for
+	// the credentials unless the user signed in this recently. It is not 0,
+	// because authentik ignores max_age=0, and prompt=login alone forces a new
+	// login only once per authentik session.
+	reauthMaxAge = "60"
 
 	// backchannelLogoutEvent is the "events" member that marks a logout token.
 	backchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
@@ -334,7 +339,7 @@ func (a *Authenticator) login(w http.ResponseWriter, r *http.Request) {
 	a.setCookie(w, loginCookieName, base64.RawURLEncoding.EncodeToString(buf), loginCookiePath, int(loginTTL.Seconds()))
 	opts := []oauth2.AuthCodeOption{oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier)}
 	if q.Get("reauth") == "1" {
-		opts = append(opts, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", "0"))
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", reauthMaxAge))
 	}
 	http.Redirect(w, r, a.oauth.AuthCodeURL(st.State, opts...), http.StatusFound)
 }
