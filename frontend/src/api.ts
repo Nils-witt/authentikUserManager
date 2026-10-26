@@ -46,6 +46,11 @@ export interface PublicGroup {
   member?: boolean
   /** The signed-in user may request to join; set in the group list of non-administrators only. */
   joinable?: boolean
+  /**
+   * The signed-in user manages the group's members and may list them; set in the group list of
+   * non-administrators only.
+   */
+  manageable?: boolean
 }
 
 /** An authentik group, as access administrators see it. */
@@ -602,7 +607,10 @@ export const updateGroup = (
   changes: { name?: string; visible?: boolean; path?: string },
 ) => request<Group>('PATCH', `/api/groups/${encodeURIComponent(pk)}`, changes)
 
-/** Loads a page of the direct members of a group, ordered by username. */
+/**
+ * Loads a page of the direct members of a group, ordered by username. Operators who are no access
+ * administrators only see the members of the groups they manage that they may see in the user list.
+ */
 export function listGroupMembers(
   pk: string,
   params: { search: string; page: number; pageSize: number },

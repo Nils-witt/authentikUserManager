@@ -345,7 +345,8 @@ func New(d Deps) *Server {
 	api.HandleFunc("POST /api/groups/{pk}/join-requests", s.requestJoin)
 	api.Handle("GET /api/groups/{pk}", s.requireAdmin(s.getGroup))
 	api.Handle("PATCH /api/groups/{pk}", s.requireAdmin(s.updateGroup))
-	api.Handle("GET /api/groups/{pk}/members", s.requireAdmin(s.listGroupMembers))
+	// The operators managing a group may list its members; see listGroupMembers.
+	api.HandleFunc("GET /api/groups/{pk}/members", s.listGroupMembers)
 	api.Handle("PUT /api/groups/{pk}/members/{id}", s.requireAdmin(s.addGroupMember))
 	api.Handle("DELETE /api/groups/{pk}/members/{id}", s.requireAdmin(s.removeGroupMember))
 	// The operators managing a group decide the requests to join it; see joinrequests.go.

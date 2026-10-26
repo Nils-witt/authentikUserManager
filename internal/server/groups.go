@@ -18,7 +18,8 @@ import (
 
 // The group handlers are restricted to access administrators (see requireAdmin),
 // who have full access, so they do not check the operator's scope. Only they
-// may create groups. The only exceptions are listVisibleGroups and requestJoin.
+// may create groups. The only exceptions are listVisibleGroups, requestJoin and
+// listGroupMembers, which the operators managing the group may use too.
 
 // visibleAttribute is the authentik group attribute that, when true, lets every
 // signed-in user see the group's name. Its members stay hidden.
@@ -139,6 +140,9 @@ type publicGroup struct {
 	// Joinable is set when the signed-in user may request to join the group
 	// (see requestJoin), unless already a member.
 	Joinable bool `json:"joinable"`
+	// Manageable is set when the signed-in user manages the group's members
+	// (see access.Scope.HasGroup) and may list them (see listGroupMembers).
+	Manageable bool `json:"manageable"`
 }
 
 // page is one page of a list response.
@@ -301,6 +305,7 @@ func (s *Server) listVisibleGroups(w http.ResponseWriter, r *http.Request) {
 			Path:       groupFolder(g),
 			Member:     isMember(g),
 			Joinable:   isVisible(g) && !g.IsSuperuser && !s.policy.IsAdmin([]string{g.Name}),
+			Manageable: scope.HasGroup(g.Name),
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -581,6 +586,11 @@ func (s *Server) undoRename(r *http.Request, group *authentik.Group) {
 
 // listGroupMembers returns a page of the direct members of a group, ordered by
 // username. The query parameters search, page and page_size filter and page it.
+// Access administrators see every member. The operators managing the group
+// (see access.Scope.HasGroup) see the members they may see in the user list,
+// which leaves out superusers and hidden users unless they have full access.
+// Groups they do not manage are reported as not found so their existence is
+// not revealed.
 func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	params := authentik.ListUsersParams{Search: q.Get("search"), Ordering: "username"}
@@ -588,11 +598,30 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 	if params.Page, params.PageSize, ok = parsePaging(w, q); !ok {
 		return
 	}
+	scope, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if scope.Empty() {
+		writeError(w, http.StatusNotFound, "group not found", nil)
+		return
+	}
 	group, ok := s.loadGroup(w, r)
 	if !ok {
 		return
 	}
+	if !scope.HasGroup(group.Name) {
+		writeError(w, http.StatusNotFound, "group not found", nil)
+		return
+	}
 	params.GroupsByPK = []string{group.PK}
+	if !scope.IncludesHidden {
+		// Leave the hidden users out upstream, so that every page stays full.
+		params.WithoutAttributes = []string{access.HiddenAttribute}
+	}
+	if !scope.All {
+		params.IsSuperuser = new(false)
+	}
 
 	list, err := s.users.ListUsers(r.Context(), params)
 	if err != nil {
@@ -600,12 +629,11 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// authentik silently ignores filters it does not know, so drop non-members
-	// in case the filter was not applied.
+	// and users outside the scope in case the filters were not applied.
 	list.Results = slices.DeleteFunc(list.Results, func(u authentik.User) bool {
-		return !slices.ContainsFunc(u.Groups, func(g authentik.UserGroup) bool { return g.PK == group.PK })
+		return !scope.Allows(&u) || !slices.ContainsFunc(u.Groups, func(g authentik.UserGroup) bool { return g.PK == group.PK })
 	})
-	// Only access administrators list the members, and they may change every user.
-	writeJSON(w, http.StatusOK, newUserPage(list, access.Scope{All: true, IncludesHidden: true}))
+	writeJSON(w, http.StatusOK, newUserPage(list, scope))
 }
 
 func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request) {

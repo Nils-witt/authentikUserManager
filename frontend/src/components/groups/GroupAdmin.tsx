@@ -5,6 +5,7 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import Container from '@mui/material/Container'
+import DialogContent from '@mui/material/DialogContent'
 import InputAdornment from '@mui/material/InputAdornment'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
@@ -20,6 +21,7 @@ import { Modal } from '../common/Modal'
 import { FolderTree } from '../folders/FolderTree'
 import { CreateGroupForm } from './CreateGroupForm'
 import { GroupEditor } from './GroupEditor'
+import { GroupMembers } from './GroupMembers'
 import { GroupsTable } from './GroupsTable'
 import { JoinGroupForm } from './JoinGroupForm'
 
@@ -28,8 +30,8 @@ const PAGE_SIZE = 20
 interface GroupAdminProps {
   /**
    * The operator is an access administrator, who sees every group and edits
-   * them. Everyone else sees the visible groups, without their members, and
-   * may request to join them.
+   * them. Everyone else sees the visible groups, may request to join them and
+   * sees the members of the groups they manage.
    */
   admin: boolean
   /** Called after a group was edited; its members may include the operator. */
@@ -53,6 +55,8 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
   const [editing, setEditing] = useState<Group | null>(null)
   const [creating, setCreating] = useState(false)
   const [requesting, setRequesting] = useState<PublicGroup | null>(null)
+  // The group whose members a non-administrator managing it views.
+  const [viewing, setViewing] = useState<PublicGroup | null>(null)
   // The signed-in user's pending join requests; only loaded for non-administrators.
   const [pending, setPending] = useState<JoinRequest[]>([])
   // Bumped after a group was edited or a join request changed, to reload the list.
@@ -105,6 +109,19 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
   }
 
   function renderJoin(group: PublicGroup) {
+    const membership = renderMembership(group)
+    if (!group.manageable) return membership
+    return (
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center', justifyContent: 'flex-end' }}>
+        {membership}
+        <Button size="small" onClick={() => setViewing(group)}>
+          Members
+        </Button>
+      </Stack>
+    )
+  }
+
+  function renderMembership(group: PublicGroup) {
     if (group.member) return <Chip size="small" label="Member" />
     if (!group.joinable) return null
     const request = pending.find((r) => r.group_pk === group.pk)
@@ -167,7 +184,7 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
         <Typography variant="body2" color="text.secondary">
           {admin
             ? 'Groups marked visible are listed here for every signed-in user, without their members.'
-            : 'Your groups, the groups of the users you manage, and the groups the access administrators made visible to everyone. Their members are not shown. You can request to join a visible group; the operators managing it decide.'}
+            : 'Your groups, the groups of the users you manage, and the groups the access administrators made visible to everyone. You see the members of the groups you manage only. You can request to join a visible group; the operators managing it decide.'}
         </Typography>
         <TextField
           type="search"
@@ -242,6 +259,14 @@ export function GroupAdmin({ admin, onChange }: GroupAdminProps) {
       {editing && (
         <Modal title={`Group ${editing.name}`} onClose={closeEditor} wide>
           <GroupEditor group={editing} onUpdated={setEditing} onBack={closeEditor} />
+        </Modal>
+      )}
+
+      {viewing && (
+        <Modal title={`Group ${viewing.name}`} onClose={() => setViewing(null)} wide>
+          <DialogContent sx={{ pt: 0 }}>
+            <GroupMembers group={viewing} readOnly />
+          </DialogContent>
         </Modal>
       )}
 

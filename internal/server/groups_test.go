@@ -38,7 +38,6 @@ func TestServer_groups_requireAdmin(t *testing.T) {
 		{http.MethodGet, "/api/groups/g1", ""},
 		{http.MethodPatch, "/api/groups/g1", `{"name":"employees"}`},
 		{http.MethodPatch, "/api/groups/g1", `{"visible":true}`},
-		{http.MethodGet, "/api/groups/g1/members", ""},
 		{http.MethodPut, "/api/groups/g1/members/4", ""},
 		{http.MethodDelete, "/api/groups/g1/members/4", ""},
 	}
@@ -191,8 +190,8 @@ func TestServer_listVisibleGroups_details(t *testing.T) {
 	}
 	// Only the names are listed; a hidden group can only be joined by the operators managing it.
 	expected := `{"pagination":{"count":5,"current":2,"total_pages":3,"next":3,"previous":1,"start_index":3,"end_index":4},"results":[` +
-		`{"pk":"g3","name":"mine","parent_name":"","path":"own","member":true,"joinable":false},` +
-		`{"pk":"g4","name":"open","parent_name":"","path":"","member":false,"joinable":true}]}`
+		`{"pk":"g3","name":"mine","parent_name":"","path":"own","member":true,"joinable":false,"manageable":false},` +
+		`{"pk":"g4","name":"open","parent_name":"","path":"","member":false,"joinable":true,"manageable":false}]}`
 	if got := strings.TrimSpace(rec.Body.String()); got != expected {
 		t.Errorf("body = %s, want %s", got, expected)
 	}
@@ -696,6 +695,117 @@ func TestServer_listGroupMembers(t *testing.T) {
 	}
 	if !slices.Equal(names, []string{"ann", "svc"}) {
 		t.Errorf("members = %v, want [ann svc]", names)
+	}
+}
+
+func TestServer_listGroupMembers_scoped(t *testing.T) {
+	t.Parallel()
+	inStaff := []authentik.UserGroup{{PK: "g1", Name: "staff"}}
+	members := []authentik.User{
+		{PK: 1, Username: "ann", Groups: inStaff},
+		// Returned as if authentik ignored the filters; they must be dropped
+		// for operators without full access.
+		{PK: 2, Username: "root", IsSuperuser: true, Groups: inStaff},
+		{PK: 3, Username: "hal", Groups: inStaff, Attributes: map[string]any{access.HiddenAttribute: true}},
+	}
+	tests := []struct {
+		name     string
+		operator string
+		target   string
+		// expectedStatus is the response status; expected the listed usernames on 200.
+		expectedStatus int
+		expected       []string
+		// expectedSuperuser is the superuser filter sent to authentik.
+		expectedSuperuser *bool
+	}{
+		{
+			name: "operator managing the group sees the members in scope", operator: "helpdesk",
+			target: "/api/groups/g1/members", expectedStatus: http.StatusOK,
+			expected: []string{"ann"}, expectedSuperuser: new(false),
+		},
+		{
+			name: "operator managing all users sees superusers but no hidden users", operator: "superhelp",
+			target: "/api/groups/g1/members", expectedStatus: http.StatusOK,
+			expected: []string{"ann", "root"},
+		},
+		{
+			name: "access administrator sees every member", operator: "admins",
+			target: "/api/groups/g1/members", expectedStatus: http.StatusOK,
+			expected: []string{"ann", "root", "hal"},
+		},
+		{
+			name: "group the operator does not manage", operator: "helpdesk",
+			target: "/api/groups/g3/members", expectedStatus: http.StatusNotFound,
+		},
+		{
+			name: "operator without access", operator: "guests",
+			target: "/api/groups/g1/members", expectedStatus: http.StatusNotFound,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			users := &fakeUsers{groups: testGroups(), listed: members}
+			rec := do(t, newScopedServer(t, users, tt.operator), http.MethodGet, tt.target, "")
+			if rec.Code != tt.expectedStatus {
+				t.Fatalf("status = %d %s, want %d", rec.Code, rec.Body, tt.expectedStatus)
+			}
+			if rec.Code != http.StatusOK {
+				if users.listCalls != nil {
+					t.Error("members were listed")
+				}
+				return
+			}
+			p := users.listParams
+			if (p.IsSuperuser == nil) != (tt.expectedSuperuser == nil) ||
+				p.IsSuperuser != nil && *p.IsSuperuser != *tt.expectedSuperuser {
+				t.Errorf("superuser filter = %v, want %v", p.IsSuperuser, tt.expectedSuperuser)
+			}
+			hiddenFiltered := slices.Contains(p.WithoutAttributes, access.HiddenAttribute)
+			if hiddenFiltered == (tt.operator == "admins") {
+				t.Errorf("without attributes = %v", p.WithoutAttributes)
+			}
+			var list authentik.UserList
+			if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+				t.Fatalf("decoding body: %v", err)
+			}
+			var names []string
+			for _, u := range list.Results {
+				names = append(names, u.Username)
+			}
+			if !slices.Equal(names, tt.expected) {
+				t.Errorf("members = %v, want %v", names, tt.expected)
+			}
+		})
+	}
+}
+
+func TestServer_listVisibleGroups_manageable(t *testing.T) {
+	t.Parallel()
+	groups, accounts := listableGroupsFixture()
+	users := &fakeUsers{groupList: groups, listed: accounts}
+	rec := do(t, newScopedServer(t, users, "helpdesk"), http.MethodGet, "/api/groups/visible", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Results []struct {
+			Name       string `json:"name"`
+			Manageable bool   `json:"manageable"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding body: %v", err)
+	}
+	var manageable []string
+	for _, g := range body.Results {
+		if g.Manageable {
+			manageable = append(manageable, g.Name)
+		}
+	}
+	// helpdesk manages staff and students; only staff is listed.
+	if !slices.Equal(manageable, []string{"staff"}) {
+		t.Errorf("manageable groups = %v, want [staff]", manageable)
 	}
 }
 

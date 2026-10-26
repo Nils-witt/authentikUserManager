@@ -19,7 +19,7 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import { useEffect, useState } from 'react'
 import * as api from '../../api'
-import type { Group, User, UserList } from '../../api'
+import type { Group, PublicGroup, User, UserList } from '../../api'
 import { errorMessage } from '../../errors'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useDebounced } from '../../hooks/useDebounced'
@@ -27,8 +27,14 @@ import { ListPagination } from '../common/ListPagination'
 
 const PAGE_SIZE = 10
 
-/** Lists the direct members of a group and adds or removes them. */
-export function GroupMembers({ group }: { group: Group }) {
+interface GroupMembersProps {
+  group: Group | PublicGroup
+  /** Only list the members, for operators who are no access administrators. */
+  readOnly?: boolean
+}
+
+/** Lists the direct members of a group and, unless read-only, adds or removes them. */
+export function GroupMembers({ group, readOnly = false }: GroupMembersProps) {
   const [search, setSearch] = useState('')
   const query = useDebounced(search)
   const [page, setPage] = useState(1)
@@ -58,7 +64,7 @@ export function GroupMembers({ group }: { group: Group }) {
   }, [group.pk, query, page, requestKey])
 
   async function add(user: User) {
-    if (group.is_superuser) {
+    if ('is_superuser' in group && group.is_superuser) {
       const ok = await confirm({
         title: `Add ${user.username} to ${group.name}?`,
         message: 'Members of this group are authentik superusers with full access to authentik.',
@@ -119,7 +125,7 @@ export function GroupMembers({ group }: { group: Group }) {
             },
           }}
         />
-        <UserPicker onPick={(user) => void add(user)} />
+        {!readOnly && <UserPicker onPick={(user) => void add(user)} />}
       </Stack>
       <TableContainer component={Paper} variant="outlined" aria-busy={loading}>
         <Box sx={{ height: 4 }}>{loading && <LinearProgress />}</Box>
@@ -128,7 +134,7 @@ export function GroupMembers({ group }: { group: Group }) {
             <TableRow>
               <TableCell>Username</TableCell>
               <TableCell>Name</TableCell>
-              <TableCell aria-label="Actions" />
+              {!readOnly && <TableCell aria-label="Actions" />}
             </TableRow>
           </TableHead>
           <TableBody>
@@ -136,18 +142,24 @@ export function GroupMembers({ group }: { group: Group }) {
               <TableRow key={user.pk} hover>
                 <TableCell>{user.username}</TableCell>
                 <TableCell>{user.name}</TableCell>
-                <TableCell align="right">
-                  <Tooltip title="Remove from group">
-                    <IconButton size="small" color="error" onClick={() => void remove(user)}>
-                      <PersonRemoveIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </TableCell>
+                {!readOnly && (
+                  <TableCell align="right">
+                    <Tooltip title="Remove from group">
+                      <IconButton size="small" color="error" onClick={() => void remove(user)}>
+                        <PersonRemoveIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
             {members?.length === 0 && (
               <TableRow>
-                <TableCell colSpan={3} align="center" sx={{ color: 'text.secondary', py: 3 }}>
+                <TableCell
+                  colSpan={readOnly ? 2 : 3}
+                  align="center"
+                  sx={{ color: 'text.secondary', py: 3 }}
+                >
                   No members found.
                 </TableCell>
               </TableRow>
